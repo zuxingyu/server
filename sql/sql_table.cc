@@ -7944,6 +7944,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   MY_BITMAP *dropped_fields= NULL; // if it's NULL - no dropped fields
   bool save_reopen= table->m_needs_reopen;
   bool drop_period= false;
+  bool save_reopen= table->m_needs_reopen;
   DBUG_ENTER("mysql_prepare_alter_table");
 
   /*
