@@ -4892,7 +4892,7 @@ byte* page_zip_parse_compress(const byte* ptr, const byte* end_ptr,
 	}
 
 	if (block) {
-		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+		ut_ad(block->page.state() == BUF_BLOCK_FILE_PAGE);
 		page_zip_des_t* page_zip = buf_block_get_page_zip(block);
 		if (!page_zip || page_zip_get_size(page_zip) < size
 		    || block->page.id.page_no() < 3) {
