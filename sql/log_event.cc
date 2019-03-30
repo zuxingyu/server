@@ -2169,6 +2169,9 @@ Log_event* Log_event::read_log_event(const char* buf, uint event_len,
     case XID_EVENT:
       ev = new Xid_log_event(buf, fdle);
       break;
+    case XA_PREPARE_LOG_EVENT:
+      ev = new XA_prepare_log_event(buf, fdle);
+      break;
     case RAND_EVENT:
       ev = new Rand_log_event(buf, fdle);
       break;
@@ -2220,7 +2223,6 @@ Log_event* Log_event::read_log_event(const char* buf, uint event_len,
     case PREVIOUS_GTIDS_LOG_EVENT:
     case TRANSACTION_CONTEXT_EVENT:
     case VIEW_CHANGE_EVENT:
-    case XA_PREPARE_LOG_EVENT:
       ev= new Ignorable_log_event(buf, fdle,
                                   get_type_str((Log_event_type) event_type));
       break;
@@ -4465,6 +4467,7 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg, size_t que
       case SQLCOM_RELEASE_SAVEPOINT:
       case SQLCOM_ROLLBACK_TO_SAVEPOINT:
       case SQLCOM_SAVEPOINT:
+      case SQLCOM_XA_END:
         use_cache= trx_cache= TRUE;
         break;
       default:
@@ -6313,6 +6316,7 @@ Format_description_log_event(uint8 binlog_ver, const char* server_ver)
       post_header_len[USER_VAR_EVENT-1]= USER_VAR_HEADER_LEN;
       post_header_len[FORMAT_DESCRIPTION_EVENT-1]= FORMAT_DESCRIPTION_HEADER_LEN;
       post_header_len[XID_EVENT-1]= XID_HEADER_LEN;
+      post_header_len[XA_PREPARE_LOG_EVENT-1]= XA_PREPARE_HEADER_LEN;
       post_header_len[BEGIN_LOAD_QUERY_EVENT-1]= BEGIN_LOAD_QUERY_HEADER_LEN;
       post_header_len[EXECUTE_LOAD_QUERY_EVENT-1]= EXECUTE_LOAD_QUERY_HEADER_LEN;
       /*
@@ -7952,7 +7956,7 @@ bool Binlog_checkpoint_log_event::write()
 
 Gtid_log_event::Gtid_log_event(const char *buf, uint event_len,
                const Format_description_log_event *description_event)
-  : Log_event(buf, description_event), seq_no(0), commit_id(0)
+  : Log_event(buf, description_event), seq_no(0), commit_id(0), xid_pins_idx(0)
 {
   uint8 header_size= description_event->common_header_len;
   uint8 post_header_len= description_event->post_header_len[GTID_EVENT-1];
@@ -7965,7 +7969,7 @@ Gtid_log_event::Gtid_log_event(const char *buf, uint event_len,
   buf+= 8;
   domain_id= uint4korr(buf);
   buf+= 4;
-  flags2= *buf;
+  flags2= *(buf++);
   if (flags2 & FL_GROUP_COMMIT_ID)
   {
     if (event_len < (uint)header_size + GTID_HEADER_LEN + 2)
@@ -7973,8 +7977,24 @@ Gtid_log_event::Gtid_log_event(const char *buf, uint event_len,
       seq_no= 0;                                // So is_valid() returns false
       return;
     }
-    ++buf;
     commit_id= uint8korr(buf);
+    buf+= 8;
+  }
+  if (flags2 & (FL_PREPARED_XA | FL_COMPLETED_XA))
+  {
+    uint32 temp= 0;
+
+    memcpy(&temp, buf, sizeof(temp));
+    xid.formatID= le32toh(temp);
+    buf += sizeof(temp);
+
+    xid.gtrid_length= (long) buf[0];
+    xid.bqual_length= (long) buf[1];
+    buf+= 2;
+
+    long data_length= xid.bqual_length + xid.gtrid_length;
+    memcpy(xid.data, buf, data_length);
+    buf+= data_length;
   }
 }
 
@@ -8006,6 +8026,28 @@ Gtid_log_event::Gtid_log_event(THD *thd_arg, uint64 seq_no_arg,
   /* Preserve any DDL or WAITED flag in the slave's binlog. */
   if (thd_arg->rgi_slave)
     flags2|= (thd_arg->rgi_slave->gtid_ev_flags2 & (FL_DDL|FL_WAITED));
+  /*
+    A non-transaction DML in the middle of XA can create own separate from
+    the transaction GTID and event group.
+  */
+  XID_STATE &xid_state= thd->transaction.xid_state;
+  if (is_transactional &&
+      xid_state.is_explicit_XA() &&
+      thd->lex->xa_opt != XA_ONE_PHASE)
+  {
+    DBUG_ASSERT(xid_state.xid_cache_element->xa_state == XA_IDLE ||
+                (xid_state.is_binlogged() &&
+                 xid_state.xid_cache_element->xa_state == XA_PREPARED));
+
+    flags2|= xid_state.xid_cache_element->xa_state == XA_IDLE ?
+      FL_PREPARED_XA : FL_COMPLETED_XA;
+
+    xid.formatID=     xid_state.xid_cache_element->xid.formatID;
+    xid.gtrid_length= xid_state.xid_cache_element->xid.gtrid_length;
+    xid.bqual_length= xid_state.xid_cache_element->xid.bqual_length;
+    long data_length= xid.bqual_length + xid.gtrid_length;
+    memcpy(xid.data, xid_state.xid_cache_element->xid.data, data_length);
+  }
 }
 
 
@@ -8048,7 +8090,7 @@ Gtid_log_event::peek(const char *event_start, size_t event_len,
 bool
 Gtid_log_event::write()
 {
-  uchar buf[GTID_HEADER_LEN+2];
+  uchar buf[GTID_HEADER_LEN+2+sizeof(XID)];
   size_t write_len;
 
   int8store(buf, seq_no);
@@ -8060,8 +8102,22 @@ Gtid_log_event::write()
     write_len= GTID_HEADER_LEN + 2;
   }
   else
+    write_len= 13;
+
+  if (flags2 & (FL_PREPARED_XA | FL_COMPLETED_XA))
   {
-    bzero(buf+13, GTID_HEADER_LEN-13);
+    int4store(&buf[write_len],   xid.formatID);
+    buf[write_len +4]=   (uchar) xid.gtrid_length;
+    buf[write_len +4+1]= (uchar) xid.bqual_length;
+    write_len+= 6;
+    long data_length= xid.bqual_length + xid.gtrid_length;
+    memcpy(buf+write_len, xid.data, data_length);
+    write_len+= data_length;
+  }
+
+  if (write_len < GTID_HEADER_LEN)
+  {
+    bzero(buf+write_len, GTID_HEADER_LEN-write_len);
     write_len= GTID_HEADER_LEN;
   }
   return write_header(write_len) ||
@@ -8104,9 +8160,14 @@ Gtid_log_event::make_compatible_event(String *packet, bool *need_dummy_event,
 void
 Gtid_log_event::pack_info(Protocol *protocol)
 {
-  char buf[6+5+10+1+10+1+20+1+4+20+1];
+  char buf[6+5+10+1+10+1+20+1+4+20+1+ser_buf_size+5];
   char *p;
-  p = strmov(buf, (flags2 & FL_STANDALONE ? "GTID " : "BEGIN GTID "));
+  p = strmov(buf, (flags2 & FL_STANDALONE  ? "GTID " :
+                   flags2 & FL_PREPARED_XA ? "XA START " : "BEGIN GTID "));
+  if (flags2 & FL_PREPARED_XA)
+  {
+    p += sprintf(p, "%s GTID ", xid.serialize());
+  }
   p= longlong10_to_str(domain_id, p, 10);
   *p++= '-';
   p= longlong10_to_str(server_id, p, 10);
@@ -8171,10 +8232,23 @@ Gtid_log_event::do_apply_event(rpl_group_info *rgi)
   thd->lex->sql_command= SQLCOM_BEGIN;
   thd->is_slave_error= 0;
   status_var_increment(thd->status_var.com_stat[thd->lex->sql_command]);
-  if (trans_begin(thd, 0))
+  if (flags2 & FL_PREPARED_XA)
   {
-    DBUG_PRINT("error", ("trans_begin() failed"));
-    thd->is_slave_error= 1;
+    thd->lex->xid= &xid;
+    thd->lex->xa_opt= XA_NONE;
+    if (trans_xa_start(thd))
+    {
+      DBUG_PRINT("error", ("trans_xa_start() failed"));
+      thd->is_slave_error= 1;
+    }
+  }
+  else
+  {
+    if (trans_begin(thd, 0))
+    {
+      DBUG_PRINT("error", ("trans_begin() failed"));
+      thd->is_slave_error= 1;
+    }
   }
   thd->update_stats();
 
@@ -8294,9 +8368,20 @@ Gtid_log_event::print(FILE *file, PRINT_EVENT_INFO *print_event_info)
                       buf, print_event_info->delimiter))
         goto err;
   }
-  if (!(flags2 & FL_STANDALONE))
-    if (my_b_printf(&cache, is_flashback ? "COMMIT\n%s\n" : "BEGIN\n%s\n", print_event_info->delimiter))
+  if ((flags2 & FL_PREPARED_XA) && !is_flashback)
+  {
+    my_b_write_string(&cache, "XA START ");
+    xid.serialize();
+    my_b_write(&cache, (uchar*) xid.buf, strlen(xid.buf));
+    if (my_b_printf(&cache, "%s\n", print_event_info->delimiter))
       goto err;
+  }
+  else if (!(flags2 & FL_STANDALONE))
+  {
+    if (my_b_printf(&cache, is_flashback ? "COMMIT\n%s\n" : "BEGIN\n%s\n",
+                    print_event_info->delimiter))
+      goto err;
+  }
 
   return cache.flush_data();
 err:
@@ -8917,6 +9002,142 @@ bool slave_execute_deferred_events(THD *thd)
 
 
 /**************************************************************************
+  Xid_apply_log_event methods
+**************************************************************************/
+
+#if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
+
+int Xid_apply_log_event::do_record_gtid(THD *thd, rpl_group_info *rgi,
+                                        bool in_trans, void **out_hton)
+{
+  int err= 0;
+  Relay_log_info const *rli= rgi->rli;
+
+  rgi->gtid_pending= false;
+  err= rpl_global_gtid_slave_state->record_gtid(thd, &rgi->current_gtid,
+                                                rgi->gtid_sub_id,
+                                                in_trans, false, out_hton);
+
+  if (unlikely(err))
+  {
+    int ec= thd->get_stmt_da()->sql_errno();
+    /*
+      Do not report an error if this is really a kill due to a deadlock.
+      In this case, the transaction will be re-tried instead.
+    */
+    if (!is_parallel_retry_error(rgi, ec))
+      rli->report(ERROR_LEVEL, ER_CANNOT_UPDATE_GTID_STATE, rgi->gtid_info(),
+                  "Error during XID COMMIT: failed to update GTID state in "
+                  "%s.%s: %d: %s",
+                  "mysql", rpl_gtid_slave_state_table_name.str, ec,
+                  thd->get_stmt_da()->message());
+    thd->is_slave_error= 1;
+  }
+
+  return err;
+}
+
+int Xid_apply_log_event::do_apply_event(rpl_group_info *rgi)
+{
+  bool res;
+  int err;
+  uint64 sub_id= 0;
+  void *hton= NULL;
+  rpl_gtid gtid;
+
+  /*
+    An instance of this class such as XID_EVENT works like a COMMIT
+    statement. It updates mysql.gtid_slave_pos with the GTID of the
+    current transaction.
+    Therefore, it acts much like a normal SQL statement, so we need to do
+    THD::reset_for_next_command() as if starting a new statement.
+
+    XA_PREPARE_LOG_EVENT also updates the gtid table *but* the update gets
+    committed as separate "autocommit" transaction.
+  */
+  thd->reset_for_next_command();
+  /*
+    Record any GTID in the same transaction, so slave state is transactionally
+    consistent.
+  */
+#ifdef WITH_WSREP
+  thd->wsrep_affected_rows= 0;
+#endif
+
+  if (rgi->gtid_pending)
+  {
+    sub_id= rgi->gtid_sub_id;
+    gtid= rgi->current_gtid;
+
+    if (!thd->transaction.xid_state.is_explicit_XA())
+    {
+      if ((err= do_record_gtid(thd, rgi, true /* in_trans */, &hton)))
+        return err;
+
+      DBUG_EXECUTE_IF("gtid_fail_after_record_gtid",
+                      {
+                        my_error(ER_ERROR_DURING_COMMIT, MYF(0),
+                                 HA_ERR_WRONG_COMMAND);
+                        thd->is_slave_error= 1;
+                        return 1;
+                      });
+    }
+  }
+  /* For a slave Xid_log_event is COMMIT */
+  general_log_print(thd, COM_QUERY,
+                    "COMMIT /* implicit, from Xid_log_event */");
+  thd->variables.option_bits&= ~OPTION_GTID_BEGIN;
+  res= do_commit();
+  // TODO: signal to followers (log-bin OFF)
+  if (!res && rgi->gtid_pending)
+  {
+    DBUG_ASSERT(!thd->transaction.xid_state.is_explicit_XA());
+
+    if ((err= do_record_gtid(thd, rgi, false, &hton)))
+      return err;
+  }
+  if (likely(!res) && sub_id)
+    rpl_global_gtid_slave_state->update_state_hash(sub_id, &gtid,
+                                                   hton, rgi);
+
+  /*
+    Increment the global status commit count variable
+  */
+  status_var_increment(thd->status_var.com_stat[SQLCOM_COMMIT]);
+
+  return res;
+}
+
+Log_event::enum_skip_reason
+Xid_apply_log_event::do_shall_skip(rpl_group_info *rgi)
+{
+  DBUG_ENTER("Xid_apply_log_event::do_shall_skip");
+  if (rgi->rli->slave_skip_counter > 0)
+  {
+    DBUG_ASSERT(!rgi->rli->get_flag(Relay_log_info::IN_TRANSACTION));
+    thd->variables.option_bits&= ~(OPTION_BEGIN | OPTION_GTID_BEGIN);
+    DBUG_RETURN(Log_event::EVENT_SKIP_COUNT);
+  }
+#ifdef WITH_WSREP
+  else if (wsrep_mysql_replication_bundle && WSREP_ON &&
+           opt_slave_domain_parallel_threads == 0)
+  {
+    if (++thd->wsrep_mysql_replicated < (int)wsrep_mysql_replication_bundle)
+    {
+      WSREP_DEBUG("skipping wsrep commit %d", thd->wsrep_mysql_replicated);
+      DBUG_RETURN(Log_event::EVENT_SKIP_IGNORE);
+    }
+    else
+    {
+      thd->wsrep_mysql_replicated = 0;
+    }
+  }
+#endif
+  DBUG_RETURN(Log_event::do_shall_skip(rgi));
+}
+#endif /* !MYSQL_CLIENT */
+
+/**************************************************************************
   Xid_log_event methods
 **************************************************************************/
 
@@ -8943,7 +9164,7 @@ void Xid_log_event::pack_info(Protocol *protocol)
 Xid_log_event::
 Xid_log_event(const char* buf,
               const Format_description_log_event *description_event)
-  :Log_event(buf, description_event)
+  :Xid_apply_log_event(buf, description_event)
 {
   /* The Post-Header is empty. The Variable Data part begins immediately. */
   buf+= description_event->common_header_len +
@@ -8990,107 +9211,152 @@ err:
 
 
 #if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
-int Xid_log_event::do_apply_event(rpl_group_info *rgi)
+int Xid_log_event::do_commit()
 {
   bool res;
-  int err;
-  rpl_gtid gtid;
-  uint64 sub_id= 0;
-  Relay_log_info const *rli= rgi->rli;
-  void *hton= NULL;
-
-  /*
-    XID_EVENT works like a COMMIT statement. And it also updates the
-    mysql.gtid_slave_pos table with the GTID of the current transaction.
-
-    Therefore, it acts much like a normal SQL statement, so we need to do
-    THD::reset_for_next_command() as if starting a new statement.
-  */
-  thd->reset_for_next_command();
-  /*
-    Record any GTID in the same transaction, so slave state is transactionally
-    consistent.
-  */
-#ifdef WITH_WSREP
-  thd->wsrep_affected_rows= 0;
-#endif
-
-  if (rgi->gtid_pending)
-  {
-    sub_id= rgi->gtid_sub_id;
-    rgi->gtid_pending= false;
-
-    gtid= rgi->current_gtid;
-    err= rpl_global_gtid_slave_state->record_gtid(thd, &gtid, sub_id, true,
-                                                  false, &hton);
-    if (unlikely(err))
-    {
-      int ec= thd->get_stmt_da()->sql_errno();
-      /*
-        Do not report an error if this is really a kill due to a deadlock.
-        In this case, the transaction will be re-tried instead.
-      */
-      if (!is_parallel_retry_error(rgi, ec))
-        rli->report(ERROR_LEVEL, ER_CANNOT_UPDATE_GTID_STATE, rgi->gtid_info(),
-                    "Error during XID COMMIT: failed to update GTID state in "
-                    "%s.%s: %d: %s",
-                    "mysql", rpl_gtid_slave_state_table_name.str, ec,
-                    thd->get_stmt_da()->message());
-      thd->is_slave_error= 1;
-      return err;
-    }
-
-    DBUG_EXECUTE_IF("gtid_fail_after_record_gtid",
-        { my_error(ER_ERROR_DURING_COMMIT, MYF(0), HA_ERR_WRONG_COMMAND);
-          thd->is_slave_error= 1;
-          return 1;
-        });
-  }
-
-  /* For a slave Xid_log_event is COMMIT */
-  general_log_print(thd, COM_QUERY,
-                    "COMMIT /* implicit, from Xid_log_event */");
-  thd->variables.option_bits&= ~OPTION_GTID_BEGIN;
   res= trans_commit(thd); /* Automatically rolls back on error. */
   thd->mdl_context.release_transactional_locks();
-
-  if (likely(!res) && sub_id)
-    rpl_global_gtid_slave_state->update_state_hash(sub_id, &gtid, hton, rgi);
-
-  /*
-    Increment the global status commit count variable
-  */
-  status_var_increment(thd->status_var.com_stat[SQLCOM_COMMIT]);
-
   return res;
 }
+#endif /* !MYSQL_CLIENT */
 
-Log_event::enum_skip_reason
-Xid_log_event::do_shall_skip(rpl_group_info *rgi)
+
+/**************************************************************************
+  XA_prepare_log_event methods
+**************************************************************************/
+/**
+  [These are Holyfoot's comments, and I think unnecessary,
+   specifically to int8store.
+   Todo: sort out with him and fixme: remove]
+
+  @note
+  It's ok not to use int8store here,
+  as long as xid_t::set(ulonglong) and
+  xid_t::get_n_xid doesn't do it either.
+  We don't care about actual values of xids as long as
+  identical numbers compare identically
+*/
+
+XA_prepare_log_event::
+XA_prepare_log_event(const char* buf,
+                     const Format_description_log_event *description_event)
+  :Xid_apply_log_event(buf, description_event)
 {
-  DBUG_ENTER("Xid_log_event::do_shall_skip");
-  if (rgi->rli->slave_skip_counter > 0)
-  {
-    DBUG_ASSERT(!rgi->rli->get_flag(Relay_log_info::IN_TRANSACTION));
-    thd->variables.option_bits&= ~(OPTION_BEGIN | OPTION_GTID_BEGIN);
-    DBUG_RETURN(Log_event::EVENT_SKIP_COUNT);
-  }
-#ifdef WITH_WSREP
-  else if (wsrep_mysql_replication_bundle && WSREP_ON &&
-           opt_slave_domain_parallel_threads == 0)
-  {
-    if (++thd->wsrep_mysql_replicated < (int)wsrep_mysql_replication_bundle)
-    {
-      WSREP_DEBUG("skipping wsrep commit %d", thd->wsrep_mysql_replicated);
-      DBUG_RETURN(Log_event::EVENT_SKIP_IGNORE);
-    }
-    else
-    {
-      thd->wsrep_mysql_replicated = 0;
-    }
-  }
+  uint32 temp= 0;
+  uint8 temp_byte;
+
+  buf+= description_event->common_header_len +
+    description_event->post_header_len[XA_PREPARE_LOG_EVENT-1];
+  memcpy(&temp_byte, buf, 1);
+  one_phase= (bool) temp_byte;
+  buf += sizeof(temp_byte);
+  memcpy(&temp, buf, sizeof(temp));
+  m_xid.formatID= le32toh(temp);
+  buf += sizeof(temp);
+  memcpy(&temp, buf, sizeof(temp));
+  m_xid.gtrid_length= le32toh(temp);
+  buf += sizeof(temp);
+  memcpy(&temp, buf, sizeof(temp));
+  m_xid.bqual_length= le32toh(temp);
+  buf += sizeof(temp);
+  memcpy(m_xid.data, buf, m_xid.gtrid_length + m_xid.bqual_length);
+
+  xid= NULL;
+}
+
+
+#if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
+void XA_prepare_log_event::pack_info(Protocol *protocol)
+{
+  char query[sizeof("XA COMMIT ONE PHASE") + 1 + ser_buf_size];
+
+  sprintf(query,
+          (one_phase ? "XA COMMIT %s ONE PHASE" :  "XA PREPARE %s"),
+          m_xid.serialize());
+
+  protocol->store(query, strlen(query), &my_charset_bin);
+}
 #endif
-  DBUG_RETURN(Log_event::do_shall_skip(rgi));
+
+
+#ifndef MYSQL_CLIENT
+bool XA_prepare_log_event::write()
+{
+  uchar data[1 + 4 + 4 + 4]= {one_phase,};
+  uint8 one_phase_byte= one_phase;
+
+  // TODO: 4 byte limit must be imposed on the size of formatID
+  // for cross platform/arch replication.
+  // Fixme: a server option to allow 64 bit 'long' sized formatID
+  // even with --log-bin? (Naturally allow that with --skip-log-bin.)
+  int4store(data+1, static_cast<XID*>(xid)->formatID);
+  int4store(data+(1+4), static_cast<XID*>(xid)->gtrid_length);
+  int4store(data+(1+4+4), static_cast<XID*>(xid)->bqual_length);
+
+  DBUG_ASSERT(xid_subheader_no_data == sizeof(data) - 1);
+
+  return write_header(sizeof(one_phase_byte) + xid_subheader_no_data +
+                      static_cast<XID*>(xid)->gtrid_length +
+                      static_cast<XID*>(xid)->bqual_length) ||
+         write_data(data, sizeof(data)) ||
+         write_data((uchar*) static_cast<XID*>(xid)->data,
+                     static_cast<XID*>(xid)->gtrid_length +
+                     static_cast<XID*>(xid)->bqual_length) ||
+         write_footer();
+}
+#endif
+
+
+#ifdef MYSQL_CLIENT
+bool XA_prepare_log_event::print(FILE* file, PRINT_EVENT_INFO* print_event_info)
+{
+  Write_on_release_cache cache(&print_event_info->head_cache, file,
+                               Write_on_release_cache::FLUSH_F, this);
+  m_xid.serialize();
+
+  if (!print_event_info->short_form)
+  {
+    print_header(&cache, print_event_info, FALSE);
+    if (my_b_printf(&cache, "\tXID = %s\n", m_xid.buf))
+      goto error;
+  }
+
+  if (my_b_printf(&cache, "XA PREPARE %s\n%s\n",
+                   m_xid.buf, print_event_info->delimiter))
+    goto error;
+
+  return cache.flush_data();
+error:
+  return TRUE;
+}
+#endif /* MYSQL_CLIENT */
+
+
+#if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
+int XA_prepare_log_event::do_commit()
+{
+  int res;
+  xid_t xid;
+  xid.set(m_xid.formatID,
+          m_xid.data, m_xid.gtrid_length,
+          m_xid.data + m_xid.gtrid_length, m_xid.bqual_length);
+
+  thd->lex->xid= &xid;
+  if (!one_phase)
+  {
+    if ((res= thd->wait_for_prior_commit()))
+      return res;
+
+    thd->lex->sql_command= SQLCOM_XA_PREPARE;
+    res= trans_xa_prepare(thd);
+  }
+  else
+  {
+    res= trans_xa_commit(thd);
+    thd->mdl_context.release_transactional_locks();
+  }
+
+  return res;
 }
 #endif /* !MYSQL_CLIENT */
 
@@ -15152,7 +15418,6 @@ bool event_that_should_be_ignored(const char *buf)
       event_type == PREVIOUS_GTIDS_LOG_EVENT ||
       event_type == TRANSACTION_CONTEXT_EVENT ||
       event_type == VIEW_CHANGE_EVENT ||
-      event_type == XA_PREPARE_LOG_EVENT ||
       (uint2korr(buf + FLAGS_OFFSET) & LOG_EVENT_IGNORABLE_F))
     return 1;
   return 0;
