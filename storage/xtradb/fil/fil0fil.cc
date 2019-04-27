@@ -657,13 +657,13 @@ fil_node_open_file(
 		is either disabled or not supported by encryption
 		plugin add this tablespace to key rotation list to
 		make required state change. */
-		if ((!node->space->crypt_data && srv_encrypt_tables)
+		if (((!node->space->crypt_data && srv_encrypt_tables)
 		    || (node->space->crypt_data
 			&& (node->space->crypt_data->should_encrypt()
-			|| node->space->crypt_data->should_decrypt()))
+			    || node->space->crypt_data->should_decrypt())))
 		    && (!srv_fil_crypt_rotate_key_age || !encryption_can_rotate())) {
 			ib_logf(IB_LOG_LEVEL_INFO,
-				"Adding tablespace %d:%s to rotation list",
+				"Adding tablespace %lu:%s to rotation list",
 				space->id, space->name);
 			UT_LIST_ADD_LAST(rotation_list, fil_system->rotation_list, node->space);
 			node->space->is_in_rotation_list = true;
@@ -1447,7 +1447,7 @@ fil_space_create(
 		&& (mode == FIL_ENCRYPTION_ON /*|| mode == FIL_ENCRYPTION_OFF*/ ||
 		    srv_encrypt_tables)) {
 		ib_logf(IB_LOG_LEVEL_INFO,
-			"Adding tablespace %d:%s to rotation list",
+			"Adding tablespace %lu:%s to rotation list",
 			space->id, space->name);
 		/* Key rotation is not enabled, need to inform background
 		encryption threads. */
@@ -6944,7 +6944,7 @@ fil_space_remove_from_keyrotation(
 	if (space->n_pending_ops == 0 && space->is_in_rotation_list) {
 		space->is_in_rotation_list = false;
 		ib_logf(IB_LOG_LEVEL_INFO,
-			"Removing really space %d:%s from rotation list",
+			"Removing really space %lu:%s from rotation list",
 			space->id,space->name);
 		ut_a(UT_LIST_GET_LEN(fil_system->rotation_list) > 0);
 		UT_LIST_REMOVE(rotation_list, fil_system->rotation_list, space);
@@ -6976,17 +6976,21 @@ fil_space_keyrotate_next(
 	processed this item. To avoid other threads again taking it we
 	remove also it from the list. */
 	if (UT_LIST_GET_LEN(fil_system->rotation_list) == 0
-	    || (space && space == UT_LIST_GET_FIRST(fil_system->rotation_list))) {
+		/*	    || (space && space == UT_LIST_GET_FIRST(fil_system->rotation_list))*/) {
 		if (space) {
 			ut_ad(space->n_pending_ops > 0);
 			space->n_pending_ops--;
 			ib_logf(IB_LOG_LEVEL_INFO,
-				"Removing 2 space %d:%s from rotation list pending %d",
+				"Removing 2 space %lu:%s from rotation list pending %lu",
 				space->id,space->name, space->n_pending_ops);
 
 			fil_space_remove_from_keyrotation(space);
 		}
 		mutex_exit(&fil_system->mutex);
+
+		ib_logf(IB_LOG_LEVEL_INFO,
+			"No space found");
+
 		return(NULL);
 	}
 
@@ -7007,7 +7011,7 @@ fil_space_keyrotate_next(
 		space = UT_LIST_GET_NEXT(rotation_list, space);
 
 		ib_logf(IB_LOG_LEVEL_INFO,
-			"Removing space %d:%s from rotation list pending %d",
+			"Removing space %lu:%s from rotation list pending %lu",
 			old->id,old->name, old->n_pending_ops);
 		fil_space_remove_from_keyrotation(old);
 	}
@@ -7021,17 +7025,17 @@ fil_space_keyrotate_next(
 
 		old = space;
 		space = UT_LIST_GET_NEXT(rotation_list, space);
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Removing space %d:%s from rotation list pending %d",
-			old->id,old->name, old->n_pending_ops);
 		fil_space_remove_from_keyrotation(old);
 	}
 
 	if (space != NULL) {
 		space->n_pending_ops++;
 		ib_logf(IB_LOG_LEVEL_INFO,
-			"New space %d:%s from rotation list pending %d",
+			"New space %lu:%s from rotation list pending %lu",
 			space->id,space->name, space->n_pending_ops);
+	} else {
+		ib_logf(IB_LOG_LEVEL_INFO,
+			"No space found");
 	}
 
 	mutex_exit(&fil_system->mutex);

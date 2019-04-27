@@ -1541,10 +1541,6 @@ fil_crypt_find_space_to_rotate(
 	while (!state->should_shutdown() && state->space) {
 		fil_crypt_read_crypt_data(state->space);
 
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Investigating tablespace %d:%s from rotation list",
-			state->space->id, state->space->name);
-
 		if (fil_crypt_space_needs_rotation(state, key_state, recheck)) {
 			ut_ad(key_state->key_id);
 			/* init state->min_key_version_found before
@@ -1557,6 +1553,11 @@ fil_crypt_find_space_to_rotate(
 			state->space = fil_space_next(state->space);
 		} else {
 			state->space = fil_space_keyrotate_next(state->space);
+		}
+
+		if (!state->space) {
+			ib_logf(IB_LOG_LEVEL_INFO,
+				"Not found a  tablespace ");
 		}
 	}
 
@@ -1644,9 +1645,6 @@ fil_crypt_find_page_to_rotate(
 
 	bool found = crypt_data->rotate_state.max_offset >=
 		crypt_data->rotate_state.next_offset;
-
-	fprintf(stderr, "JAN: trying to find page for rotation from id %d:%s\n",space->id,space->name);
-	fflush(stderr);
 
 	if (found) {
 		state->offset = crypt_data->rotate_state.next_offset;
@@ -2211,7 +2209,16 @@ DECLARE_THREAD(fil_crypt_thread)(
 			* new rotate_key_age */
 			os_event_reset(fil_crypt_threads_event);
 
-			if (os_event_wait_time(fil_crypt_threads_event, 1000000) == 0) {
+			ib_logf(IB_LOG_LEVEL_INFO,
+				"Thread #%u going to sleep",
+				thread_no);
+
+			if (srv_fil_crypt_rotate_key_age && encryption_can_rotate()) {
+				if (os_event_wait_time(fil_crypt_threads_event, 1000000) == 0) {
+					break;
+				}
+			} else {
+				os_event_wait(fil_crypt_threads_event);
 				break;
 			}
 
@@ -2240,6 +2247,10 @@ DECLARE_THREAD(fil_crypt_thread)(
 		/* iterate all spaces searching for those needing rotation */
 		while (!thr.should_shutdown() &&
 		       fil_crypt_find_space_to_rotate(&new_state, &thr, &recheck)) {
+
+			ib_logf(IB_LOG_LEVEL_INFO,
+				"Thr #%u found a space %lu:%s",
+				thread_no, thr.space->id, thr.space->name);
 
 			/* we found a space to rotate */
 			fil_crypt_start_rotate_space(&new_state, &thr);
@@ -2404,19 +2415,19 @@ fil_crypt_set_encrypt_tables(
 				is either disabled or not supported by encryption
 				plugin add this tablespace to key rotation list to
 				make required state change. */
-				if ((!space->crypt_data && srv_encrypt_tables)
+				if (((!space->crypt_data && srv_encrypt_tables)
 				    || (space->crypt_data &&
 					(space->crypt_data->should_encrypt()
-					 || space->crypt_data->should_decrypt()))
+						|| space->crypt_data->should_decrypt())))
 				    && (!srv_fil_crypt_rotate_key_age || !encryption_can_rotate())) {
 					ib_logf(IB_LOG_LEVEL_INFO,
-						"Adding tablespace %d:%s to rotation list",
+						"Adding tablespace %lu:%s to rotation list",
 						space->id, space->name);
 					UT_LIST_ADD_LAST(rotation_list, fil_system->rotation_list, space);
 					space->is_in_rotation_list = true;
 				}
 			}
-		} while(space = UT_LIST_GET_NEXT(space_list, space));
+		} while((space = UT_LIST_GET_NEXT(space_list, space)));
 
 		mutex_exit(&fil_system->mutex);
 
