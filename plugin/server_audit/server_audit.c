@@ -2400,6 +2400,7 @@ static int server_audit_init(void *p __attribute__((unused)))
     PSI_server->register_mutex("server_audit", mutex_key_list, 1);
 #endif
   flogger_mutex_init(key_LOCK_operations, &lock_operations, MY_MUTEX_INIT_FAST);
+  flogger_mutex_init(key_LOCK_operations, &lock_atomic, MY_MUTEX_INIT_FAST);
   flogger_mutex_init(key_LOCK_operations, &lock_bigbuffer, MY_MUTEX_INIT_FAST);
 
   coll_init(&incl_user_coll);
@@ -2487,6 +2488,7 @@ static int server_audit_deinit(void *p __attribute__((unused)))
 
   (void) free(big_buffer);
   flogger_mutex_destroy(&lock_operations);
+  flogger_mutex_destroy(&lock_atomic);
   flogger_mutex_destroy(&lock_bigbuffer);
 
   error_header();
