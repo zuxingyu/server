@@ -4349,7 +4349,10 @@ void wsrep_plugins_post_init()
       // Save options_bits as it will get overwritten in plugin_thdvar_init()
       ulonglong option_bits_saved= thd->variables.option_bits;
 
+      set_current_thd(thd);
+      mysql_mutex_lock(&LOCK_global_system_variables);
       plugin_thdvar_init(thd);
+      mysql_mutex_unlock(&LOCK_global_system_variables);
 
       // Restore option_bits
       thd->variables.option_bits= option_bits_saved;
