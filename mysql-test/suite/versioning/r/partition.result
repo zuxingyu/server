@@ -566,7 +566,7 @@ insert into t1 values (0), (1), (2), (3);
 delete from t1 where x < 3;
 delete from t1;
 Warnings:
-Warning	4114	Versioned table `test`.`t1`: partition `p1` is full, add more HISTORY partitions
+Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of LIMIT, need more HISTORY partitions
 unlock tables;
 #
 # MDEV-20336 Assertion bitmap_is_set(read_partitions) upon SELECT FOR UPDATE from versioned table

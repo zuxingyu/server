@@ -5983,7 +5983,8 @@ find_field_in_table(THD *thd, TABLE *table, const char *name, size_t length,
 
     if (field->invisible == INVISIBLE_SYSTEM &&
         thd->column_usage != MARK_COLUMNS_READ &&
-        thd->column_usage != COLUMNS_READ)
+        thd->column_usage != COLUMNS_READ &&
+        !thd->vers_modify_history())
       DBUG_RETURN((Field*)0);
   }
   else
@@ -8296,6 +8297,12 @@ bool setup_on_expr(THD *thd, TABLE_LIST *table, bool is_update)
           return TRUE;
         thd->change_item_tree(&table->check_option, view->check_option);
       }
+      if (table->table && table->table->versioned() &&
+          !table->table->vers_write && table->on_expr)
+      {
+        table->on_expr= table->on_expr->transform(
+          thd, &Item::vers_remove_conds_transformer, NULL);
+      }
     }
   }
   return FALSE;
@@ -8371,6 +8378,9 @@ int setup_conds(THD *thd, TABLE_LIST *tables, List<TABLE_LIST> &leaves,
     (*conds)->mark_as_condition_AND_part(NO_JOIN_NEST);
     if ((*conds)->fix_fields_if_needed_for_bool(thd, conds))
       goto err_no_arena;
+
+    if (!thd->stmt_arena->is_stmt_prepare())
+      *conds= (*conds)->transform(thd, &Item::vers_remove_conds_transformer, NULL);
   }
 
   /*
@@ -8464,7 +8474,7 @@ fill_record(THD *thd, TABLE *table_arg, List<Item> &fields, List<Item> &values,
         rfield->field_index ==  table->next_number_field->field_index)
       table->auto_increment_field_not_null= TRUE;
     Item::Type type= value->type();
-    const bool skip_sys_field= rfield->vers_sys_field(); // TODO: && !thd->vers_modify_history() [MDEV-16546]
+    const bool skip_sys_field= rfield->vers_sys_field() && !thd->vers_modify_history();
     if ((rfield->vcol_info || skip_sys_field) &&
         type != Item::DEFAULT_VALUE_ITEM &&
         type != Item::NULL_ITEM &&
