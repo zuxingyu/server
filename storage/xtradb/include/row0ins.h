@@ -189,6 +189,21 @@ row_ins_step(
 /*=========*/
 	que_thr_t*	thr);	/*!< in: query thread */
 
+#ifdef WITH_WSREP
+/* Report foreign key error from Galera append key.
+@param[in]	trx		Transaction
+@param[in]	foreign		Foreign key constraint
+@param[in]	rec		Index record in the child table
+@param[in]	entry		Index entry in the parent table */
+UNIV_INTERN
+void
+wsrep_report_foreign_key_error(
+	trx_t*			trx,
+	dict_foreign_t*		foreign,
+	const rec_t*		rec,
+	const dtuple_t*		entry);
+#endif /* WITH_WSREP */
+
 /* Insert node structure */
 
 struct ins_node_t{

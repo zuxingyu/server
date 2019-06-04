@@ -790,6 +790,53 @@ row_ins_foreign_trx_print(
 	ut_ad(mutex_own(&dict_foreign_err_mutex));
 }
 
+/** Report a foreign key error to a provided file handle
+@param[in]	ef		file handle
+@param[in]	errstr		error string from the viewpoint
+				of the parent table
+@param[in]	trx		Transaction
+@param[in]	foreign		Foreign key constraint
+@param[in]      rec		Index record in the child table
+@param[in]	entry		Index entry in the parent table */
+static
+void
+row_ins_foreign_report_err_low(
+	FILE*		ef,
+	const char*	errstr,
+	trx_t*		trx,
+	dict_foreign_t*	foreign,
+	const rec_t*	rec,
+	const dtuple_t* entry)
+{
+	std::string fk_str;
+
+	fputs("Foreign key constraint fails for table ", ef);
+	ut_print_name(ef, trx, TRUE, foreign->foreign_table_name);
+	fputs(":\n", ef);
+	fk_str = dict_print_info_on_foreign_key_in_create_format(trx, foreign,
+							TRUE);
+	fputs(fk_str.c_str(), ef);
+	putc('\n', ef);
+	fputs(errstr, ef);
+	fputs(" in parent table, in index ", ef);
+	ut_print_name(ef, trx, FALSE, foreign->referenced_index->name);
+	if (entry) {
+		fputs(" tuple:\n", ef);
+		dtuple_print(ef, entry);
+	}
+	fputs("\nBut in child table ", ef);
+	ut_print_name(ef, trx, TRUE, foreign->foreign_table_name);
+	fputs(", in index ", ef);
+	ut_print_name(ef, trx, FALSE, foreign->foreign_index->name);
+	if (rec) {
+		fputs(", there is a record:\n", ef);
+		rec_print(ef, rec, foreign->foreign_index);
+	} else {
+		fputs(", the record is not available\n", ef);
+	}
+	putc('\n', ef);
+}
+
 /*********************************************************************//**
 Reports a foreign key error associated with an update or a delete of a
 parent table index entry. */
@@ -817,34 +864,8 @@ row_ins_foreign_report_err(
 	trx_t*	trx	= thr_get_trx(thr);
 
 	row_ins_set_detailed(trx, foreign);
-
 	row_ins_foreign_trx_print(trx);
-
-	fputs("Foreign key constraint fails for table ", ef);
-	ut_print_name(ef, trx, TRUE, foreign->foreign_table_name);
-	fputs(":\n", ef);
-	fk_str = dict_print_info_on_foreign_key_in_create_format(trx, foreign,
-							TRUE);
-	fputs(fk_str.c_str(), ef);
-	putc('\n', ef);
-	fputs(errstr, ef);
-	fputs(" in parent table, in index ", ef);
-	ut_print_name(ef, trx, FALSE, foreign->referenced_index->name);
-	if (entry) {
-		fputs(" tuple:\n", ef);
-		dtuple_print(ef, entry);
-	}
-	fputs("\nBut in child table ", ef);
-	ut_print_name(ef, trx, TRUE, foreign->foreign_table_name);
-	fputs(", in index ", ef);
-	ut_print_name(ef, trx, FALSE, foreign->foreign_index->name);
-	if (rec) {
-		fputs(", there is a record:\n", ef);
-		rec_print(ef, rec, foreign->foreign_index);
-	} else {
-		fputs(", the record is not available\n", ef);
-	}
-	putc('\n', ef);
+	row_ins_foreign_report_err_low(ef, errstr, trx, foreign, rec, entry);
 
 	mutex_exit(&dict_foreign_err_mutex);
 }
@@ -935,6 +956,7 @@ row_ins_invalidate_query_cache(
 	innobase_invalidate_query_cache(thr_get_trx(thr), buf, len);
 	mem_free(buf);
 }
+
 #ifdef WITH_WSREP
 dberr_t wsrep_append_foreign_key(trx_t *trx,
 				dict_foreign_t*	foreign,
@@ -942,6 +964,25 @@ dberr_t wsrep_append_foreign_key(trx_t *trx,
 				dict_index_t*	clust_index,
 				ibool		referenced,
 				enum wsrep_key_type key_type);
+
+/* Report foreign key error from Galera append key.
+@param[in]	trx		Transaction
+@param[in]	foreign		Foreign key constraint
+@param[in]	rec		Index record in the child table
+@param[in]	entry		Index entry in the parent table */
+UNIV_INTERN
+void
+wsrep_report_foreign_key_error(
+	trx_t*			trx,
+	dict_foreign_t*		foreign,
+	const rec_t*		rec,
+	const dtuple_t*		entry)
+{
+	mutex_enter(&dict_foreign_err_mutex);
+	row_ins_foreign_report_err_low(stderr, "WSREP: append foreign key failed ",
+		trx, foreign, rec, entry);
+	mutex_exit(&dict_foreign_err_mutex);
+}
 #endif /* WITH_WSREP */
 
 /*********************************************************************//**
@@ -1272,6 +1313,15 @@ row_ins_foreign_check_on_constraint(
 		}
 	}
 
+#ifdef WITH_WSREP
+	err = wsrep_append_foreign_key(
+				       thr_get_trx(thr),
+				       foreign,
+				       clust_rec,
+				       clust_index,
+				       FALSE, WSREP_KEY_EXCLUSIVE);
+#endif /* WITH_WSREP */
+
 	/* Store pcur position and initialize or store the cascade node
 	pcur stored position */
 
@@ -1290,17 +1340,8 @@ row_ins_foreign_check_on_constraint(
 	cascade->state = UPD_NODE_UPDATE_CLUSTERED;
 
 #ifdef WITH_WSREP
-	err = wsrep_append_foreign_key(
-				       thr_get_trx(thr),
-				       foreign,
-				       clust_rec,
-				       clust_index,
-				       FALSE, WSREP_KEY_EXCLUSIVE);
-	if (err != DB_SUCCESS) {
-		fprintf(stderr,
-			"WSREP: foreign key append failed: %d\n", err);
-	} else
-#endif /* WITH_WSREP */
+	if (err == DB_SUCCESS)
+#endif
 		err = row_update_cascade_for_mysql(thr, cascade,
 					   foreign->foreign_table);
 

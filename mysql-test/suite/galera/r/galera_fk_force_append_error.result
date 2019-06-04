@@ -1,0 +1,162 @@
+call mtr.add_suppression("WSREP: Appending cascaded fk row key failed:.*");
+CREATE TABLE grandparent (
+id INT NOT NULL PRIMARY KEY
+) ENGINE=InnoDB;
+CREATE TABLE parent (
+id INT NOT NULL PRIMARY KEY,
+grandparent_id INT,
+FOREIGN KEY (grandparent_id)
+REFERENCES grandparent(id)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE child (
+id INT NOT NULL PRIMARY KEY, 
+parent_id INT,
+FOREIGN KEY (parent_id) 
+REFERENCES parent(id)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+INSERT INTO grandparent VALUES (1),(2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO parent VALUES (1,1), (2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO parent VALUES (1,1), (2,2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO child VALUES (1,1), (2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO child VALUES (1,1), (2,2);
+DELETE FROM grandparent WHERE id = 1;
+UPDATE grandparent SET id = 5 where id = 2;
+select * from child;
+id	parent_id
+2	2
+select * from parent;
+id	grandparent_id
+2	5
+select * from grandparent;
+id
+5
+select * from child;
+id	parent_id
+2	2
+select * from parent;
+id	grandparent_id
+2	5
+select * from grandparent;
+id
+5
+drop table child, parent, grandparent;
+CREATE TABLE grandparent (
+id INT NOT NULL PRIMARY KEY
+) ENGINE=InnoDB;
+CREATE TABLE parent (
+id INT NOT NULL,
+id2 INT NOT NULL,
+grandparent_id INT,
+id3 INT not null,
+id4 INT,
+id5 INT,
+PRIMARY KEY(id,id2),
+unique key(id3),
+key(id4,id5),
+key(id4,id),
+FOREIGN KEY (grandparent_id)
+REFERENCES grandparent(id)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE child (
+id INT NOT NULL PRIMARY KEY, 
+parent_id INT,
+FOREIGN KEY (parent_id) 
+REFERENCES parent(id)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE child2 (
+id INT NOT NULL PRIMARY KEY, 
+parent_id INT,
+FOREIGN KEY (parent_id) 
+REFERENCES parent(id3)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE child3 (
+id INT NOT NULL PRIMARY KEY, 
+parent_id INT,
+FOREIGN KEY (parent_id) 
+REFERENCES parent(id4)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE child4 (
+id INT NOT NULL PRIMARY KEY, 
+pid1 INT,
+pid2 INT,
+FOREIGN KEY (pid1,pid2) 
+REFERENCES parent(id4,id)
+ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+INSERT INTO grandparent VALUES (1),(2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO parent VALUES (1,1,1,1,1,1), (2,2,2,2,2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO parent VALUES (1,1,1,1,1,1), (2,2,2,2,2,2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO child VALUES (1,1), (2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO child VALUES (1,1), (2,2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO child2 VALUES (1,1), (2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO child2 VALUES (1,1), (2,2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO child3 VALUES (1,1), (2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO child3 VALUES (1,1), (2,2);
+SET GLOBAL debug_dbug = "+d,wsrep_append_foreign_key_error";
+INSERT INTO child4 VALUES (1,1,1), (2,2,2);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SET GLOBAL debug_dbug = "";
+INSERT INTO child4 VALUES (1,1,1), (2,2,2);
+DELETE FROM grandparent WHERE id = 1;
+UPDATE grandparent SET id = 5 where id = 2;
+select * from child;
+id	parent_id
+2	2
+select * from child2;
+id	parent_id
+2	2
+select * from child3;
+id	parent_id
+2	2
+select * from child4;
+id	pid1	pid2
+2	2	2
+select * from parent;
+id	id2	grandparent_id	id3	id4	id5
+2	2	5	2	2	2
+select * from grandparent;
+id
+5
+select * from child;
+id	parent_id
+2	2
+select * from child2;
+id	parent_id
+2	2
+select * from child3;
+id	parent_id
+2	2
+select * from child4;
+id	pid1	pid2
+2	2	2
+select * from parent;
+id	id2	grandparent_id	id3	id4	id5
+2	2	5	2	2	2
+select * from grandparent;
+id
+5
+drop table child, child2, child3, child4, parent, grandparent;
