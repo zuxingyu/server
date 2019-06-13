@@ -5993,19 +5993,26 @@ the generated partition syntax in a correct manner.
           !tab_part_info->part_field_list.elements &&
           table->s->primary_key != MAX_KEY)
       {
-        KEY *primary_key= table->key_info + table->s->primary_key;
-        List_iterator_fast<Alter_drop> drop_it(alter_info->drop_list);
-        const char *primary_name= primary_key->name.str;
-        const Alter_drop *drop;
-        drop_it.rewind();
-        while ((drop= drop_it++))
+        if (!(alter_info->flags & ALTER_DROP_SYSTEM_VERSIONING))
         {
-          if (drop->type == Alter_drop::KEY &&
-              0 == my_strcasecmp(system_charset_info, primary_name, drop->name))
-            break;
+          KEY *primary_key= table->key_info + table->s->primary_key;
+          List_iterator_fast<Alter_drop> drop_it(alter_info->drop_list);
+          const char *primary_name= primary_key->name.str;
+          const Alter_drop *drop;
+          drop_it.rewind();
+          while ((drop= drop_it++))
+          {
+            if (drop->type == Alter_drop::KEY &&
+                0 == my_strcasecmp(system_charset_info, primary_name, drop->name))
+              break;
+          }
+          if (drop)
+            *partition_changed= true;
         }
-        if (drop)
-          *partition_changed= TRUE;
+        else
+        {
+          *partition_changed= true;
+        }
       }
     }
     if (thd->work_part_info)
