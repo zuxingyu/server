@@ -1,0 +1,68 @@
+DROP DATABASE IF EXISTS db1;
+Warnings:
+Note	1008	Can't drop database 'db1'; database doesn't exist
+CREATE DATABASE db1;
+USE db1;
+CREATE TABLE employee (
+id int(11) NOT NULL AUTO_INCREMENT,
+salary decimal(10, 2) DEFAULT NULL,
+PRIMARY KEY (id)
+)
+ENGINE = INNODB,
+CHARACTER SET latin1,
+COLLATE latin1_swedish_ci;
+CREATE TABLE employee_log (
+id int(11) NOT NULL AUTO_INCREMENT,
+cmnt text DEFAULT NULL,
+PRIMARY KEY (id)
+)
+ENGINE = INNODB;
+SET sql_mode=ORACLE;
+CREATE PROCEDURE p1(a INT)
+AS BEGIN
+NULL;
+END;
+CREATE OR REPLACE PACKAGE employee_tools AS
+FUNCTION getSalary(eid INT) RETURN DECIMAL(10,2);
+END;
+$$
+CREATE PACKAGE BODY employee_tools AS
+-- package body variables
+stdRaiseAmount DECIMAL(10,2):=500;
+-- private routines
+PROCEDURE log (eid INT, ecmnt TEXT) AS
+BEGIN
+INSERT INTO employee_log (id, cmnt) VALUES (eid, ecmnt);
+END;
+FUNCTION getSalary(eid INT) RETURN DECIMAL(10,2) AS
+nSalary DECIMAL(10,2);
+BEGIN
+SELECT salary INTO nSalary FROM employee WHERE id=eid;
+log(eid, 'getSalary id=' || eid || ' salary=' || nSalary);
+RETURN nSalary;
+END;
+BEGIN
+-- This code is executed when the current session
+-- accesses any of the package routines for the first time
+log(0, 'Session ' || connection_id() || ' ' || current_user || ' started');
+END;
+$$
+SELECT *, '---------------' FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA='db1';
+SPECIFIC_CATALOG	def
+SPECIFIC_SCHEMA	db1
+SPECIFIC_NAME	p1
+ORDINAL_POSITION	1
+PARAMETER_MODE	IN
+PARAMETER_NAME	a
+DATA_TYPE	int
+CHARACTER_MAXIMUM_LENGTH	NULL
+CHARACTER_OCTET_LENGTH	NULL
+NUMERIC_PRECISION	10
+NUMERIC_SCALE	0
+DATETIME_PRECISION	NULL
+CHARACTER_SET_NAME	NULL
+COLLATION_NAME	NULL
+DTD_IDENTIFIER	int(11)
+ROUTINE_TYPE	PROCEDURE
+---------------	---------------
+drop database db1;

@@ -243,6 +243,12 @@ public:
                               const DDL_options_st ddl_options,
                               sql_mode_t sql_mode) const;
 
+  virtual bool skip_object() const
+  {
+    if(!this)
+      return 1;
+    return 0;
+  }
 };
 
 
@@ -394,7 +400,13 @@ public:
   sp_cache **get_cache(THD *) const;
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   HASH *get_priv_hash() const;
-#endif
+#endif  
+  bool skip_object() const
+  {
+    if(this->type() == TYPE_ENUM_PACKAGE)
+      return 1;
+    return 0;
+  }
 };
 
 
@@ -428,6 +440,12 @@ public:
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   HASH *get_priv_hash() const;
 #endif
+  bool skip_object() const
+  {
+    if(this->type() == TYPE_ENUM_PACKAGE_BODY)
+      return 1;
+    return 0;
+  }
 };
 
 
