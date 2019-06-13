@@ -356,7 +356,7 @@ my $source_dist=  -d "../sql";
 
 my $opt_max_save_core= env_or_val(MTR_MAX_SAVE_CORE => 5);
 my $opt_max_save_datadir= env_or_val(MTR_MAX_SAVE_DATADIR => 20);
-my $opt_max_test_fail= env_or_val(MTR_MAX_TEST_FAIL => 10);
+my $opt_max_test_fail= undef;
 my $opt_core_on_failure= 0;
 
 my $opt_parallel= $ENV{MTR_PARALLEL} || 1;
@@ -1394,6 +1394,15 @@ sub command_line_setup {
   {
     # Run big tests if explicitly specified on command line
     $opt_big_test= 1;
+  }
+
+  if ( defined $opt_max_test_fail && !$opt_force )
+  {
+    $opt_force= 1;
+  }
+  if ( not defined $opt_max_test_fail )
+  {
+    $opt_max_test_fail= env_or_val(MTR_MAX_TEST_FAIL => 10);
   }
 
   # --------------------------------------------------------------------------
@@ -6342,9 +6351,9 @@ Options for debugging the product
                         $opt_max_save_datadir, set to 0 for no limit. Set
                         it's default with MTR_MAX_SAVE_DATADIR
   max-test-fail         Limit the number of test failures before aborting
-                        the current test run. Defaults to
-                        $opt_max_test_fail, set to 0 for no limit. Set
-                        it's default with MTR_MAX_TEST_FAIL
+                        the current test run. Command line option implies --force.
+                        Defaults to $opt_max_test_fail, set to 0 for no limit.
+                        Set it's default with MTR_MAX_TEST_FAIL
   core-in-failure	Generate a core even if run server is run with valgrind
 
 Options for valgrind
