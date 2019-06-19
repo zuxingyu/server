@@ -1,0 +1,92 @@
+# ==== Purpose ====
+#
+# Test verifies that Seconds_Behind_Master(SBM) values are as expected in various
+# scenario listed below.
+#
+# case 1: SBM=0 if SQL thread is in sync with IO thread and IO thread is UP
+# case 2: SBM=NULL if SQL thread is in sync with IO thread and IO thread is
+#         stopped.
+# case 3: SBM=NULL if SQL thread is stopped while IO thread is up and running.
+# case 4: SBM > 0 and SBM != NULL if IO thread is stopped. SQL thread is
+#         consuming existing relay log.
+#
+# ==== Implementation ====
+#
+# Steps:
+#    1 - Create a table and sync it with slave and verify SBM value.
+#    2 - Now stop IO thread and verify SBM
+#    3 - Start IO thread, Stop SQL thread and verify SBM
+#    4 - Execute slow INSERT statements with SLEEP(2) on master. Ensure that
+#        the IO thread has read these INSERT statements and then bring it down.
+#    5 - Start the SQL thread and verify that while it is trying to consume
+#        these slow INSERT statements in relay log the SBM value is > 0.
+#
+# ==== References ====
+#
+# MDEV-15010: Wrong Seconds_Behind_Master when only starting the SQL_Thread.
+
+--source include/have_binlog_format_statement.inc
+--source include/master-slave.inc
+
+--disable_query_log
+CALL mtr.add_suppression("Unsafe statement written to the binary log using statement format since BINLOG_FORMAT = STATEMENT");
+--enable_query_log
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+--sync_slave_with_master
+
+-- echo ******************************************************************
+-- echo * Case1: SQL thread is in sync with IO thread and IO thread is UP
+-- echo *        Seconds_Behind_Master should be '0'.
+-- echo ******************************************************************
+--let $assert_cond= [SHOW SLAVE STATUS, Seconds_Behind_Master, 1] = 0
+--let $assert_text= Seconds_Behind_Master should be 0
+--source include/assert.inc
+
+-- echo ******************************************************************
+-- echo * Case2: SQL thread is in sync with IO thread and IO thread is
+-- echo *        stopped.
+-- echo *        Seconds_Behind_Master should be 'NULL'.
+-- echo ******************************************************************
+--source include/stop_slave_io.inc
+--let $assert_cond= "[SHOW SLAVE STATUS, Seconds_Behind_Master, 1]" = "NULL"
+--let $assert_text= Seconds_Behind_Master should be NULL
+--source include/assert.inc
+
+-- echo ******************************************************************
+-- echo * Case3: SQL thread is stopped while IO thread is up and running.
+-- echo *        Seconds_Behind_Master should be 'NULL'.
+-- echo ******************************************************************
+START SLAVE IO_THREAD;
+--source include/wait_for_slave_io_to_start.inc
+--source include/stop_slave_sql.inc
+--let $assert_cond= "[SHOW SLAVE STATUS, Seconds_Behind_Master, 1]" = "NULL"
+--let $assert_text= Seconds_Behind_Master should be NULL
+--source include/assert.inc
+
+-- echo ******************************************************************
+-- echo * Case4: IO thread is stopped. SQL thread is consuming existing relay
+-- echo *        log. Hence the Seconds_Behind_Master should have a numeric
+-- echo *        value > 0
+-- echo ******************************************************************
+--connection master
+--disable_warnings
+INSERT INTO t1 VALUES (1,sleep(2));
+INSERT INTO t1 VALUES (2,sleep(2));
+--enable_warnings
+--source include/sync_slave_io_with_master.inc
+--source include/stop_slave_io.inc
+
+START SLAVE SQL_THREAD;
+--source include/wait_for_slave_sql_to_start.inc
+--let $assert_cond= [SHOW SLAVE STATUS, Seconds_Behind_Master, 1] > 0
+--let $assert_text= Seconds_Behind_Master should be > 0
+--source include/assert.inc
+START SLAVE IO_THREAD;
+--source include/wait_for_slave_io_to_start.inc
+
+--echo ******* CLEANUP *********
+--connection master
+DROP TABLE t1;
+
+--source include/rpl_end.inc

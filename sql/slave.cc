@@ -2192,38 +2192,66 @@ bool show_master_info(THD* thd, Master_info* mi)
     protocol->store(mi->ssl_cert, &my_charset_bin);
     protocol->store(mi->ssl_cipher, &my_charset_bin);
     protocol->store(mi->ssl_key, &my_charset_bin);
-
     /*
-      Seconds_Behind_Master: if SQL thread is running and I/O thread is
-      connected, we can compute it otherwise show NULL (i.e. unknown).
+       The pseudo code to compute Seconds_Behind_Master:
+       if (SQL thread is running)
+       {
+         if (SQL thread processed all the available relay log)
+         {
+           if (IO thread is running)
+             print 0;
+           else
+             print NULL;
+         }
+         else
+           compute Seconds_Behind_Master;
+       }
+       else
+         print NULL;
     */
-    if ((mi->slave_running == MYSQL_SLAVE_RUN_CONNECT) &&
-        mi->rli.slave_running)
+    if (mi->rli.slave_running)
     {
-      long time_diff= ((long)(time(0) - mi->rli.last_master_timestamp)
-                       - mi->clock_diff_with_master);
       /*
-        Apparently on some systems time_diff can be <0. Here are possible
-        reasons related to MySQL:
-        - the master is itself a slave of another master whose time is ahead.
-        - somebody used an explicit SET TIMESTAMP on the master.
-        Possible reason related to granularity-to-second of time functions
-        (nothing to do with MySQL), which can explain a value of -1:
-        assume the master's and slave's time are perfectly synchronized, and
-        that at slave's connection time, when the master's timestamp is read,
-        it is at the very end of second 1, and (a very short time later) when
-        the slave's timestamp is read it is at the very beginning of second
-        2. Then the recorded value for master is 1 and the recorded value for
-        slave is 2. At SHOW SLAVE STATUS time, assume that the difference
-        between timestamp of slave and rli->last_master_timestamp is 0
-        (i.e. they are in the same second), then we get 0-(2-1)=-1 as a result.
-        This confuses users, so we don't go below 0: hence the max().
-
-        last_master_timestamp == 0 (an "impossible" timestamp 1970) is a
-        special marker to say "consider we have caught up".
+         Check if SQL thread is at the end of relay log
+         Checking should be done using two conditions
+         condition1: compare the log positions and
+         condition2: compare the file names (to handle rotation case)
       */
-      protocol->store((longlong)(mi->rli.last_master_timestamp ?
-                                 max(0, time_diff) : 0));
+      if ((mi->master_log_pos == mi->rli.group_master_log_pos) &&
+          (!strcmp(mi->master_log_name, mi->rli.group_master_log_name)))
+      {
+        if (mi->slave_running == MYSQL_SLAVE_RUN_CONNECT)
+          protocol->store(0LL);
+        else
+          protocol->store_null();
+      }
+      else
+      {
+        long time_diff = ((long)(time(0) - mi->rli.last_master_timestamp)
+            - mi->clock_diff_with_master);
+        /*
+           Apparently on some systems time_diff can be <0. Here are possible
+           reasons related to MySQL:
+           - the master is itself a slave of another master whose time is ahead.
+           - somebody used an explicit SET TIMESTAMP on the master.
+           Possible reason related to granularity-to-second of time functions
+           (nothing to do with MySQL), which can explain a value of -1:
+           assume the master's and slave's time are perfectly synchronized, and
+           that at slave's connection time, when the master's timestamp is read,
+           it is at the very end of second 1, and (a very short time later) when
+           the slave's timestamp is read it is at the very beginning of second
+           2. Then the recorded value for master is 1 and the recorded value for
+           slave is 2. At SHOW SLAVE STATUS time, assume that the difference
+           between timestamp of slave and rli->last_master_timestamp is 0
+           (i.e. they are in the same second), then we get 0-(2-1)=-1 as a result.
+           This confuses users, so we don't go below 0: hence the max().
+
+           last_master_timestamp == 0 (an "impossible" timestamp 1970) is a
+           special marker to say "consider we have caught up".
+        */
+        protocol->store((longlong)(mi->rli.last_master_timestamp ?
+              max(0, time_diff) : 0));
+      }
     }
     else
     {
