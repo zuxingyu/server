@@ -1246,7 +1246,6 @@ struct rec_offsets_print
 std::ostream&
 operator<<(std::ostream& o, const rec_offsets_print& r);
 
-# ifndef DBUG_OFF
 /** Pretty-printer of records and tuples */
 class rec_printer : public std::ostringstream {
 public:
@@ -1301,7 +1300,6 @@ private:
 	/** Assignment operator */
 	rec_printer& operator=(const rec_printer& other);
 };
-# endif /* !DBUG_OFF */
 
 # ifdef UNIV_DEBUG
 /** Read the DB_TRX_ID of a clustered index record.

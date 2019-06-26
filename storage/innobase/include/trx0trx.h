@@ -759,15 +759,13 @@ struct trx_rsegs_t {
 
 struct trx_t {
 private:
-  /**
-    Count of references.
+	/** Count of references.
 
-    We can't release the locks nor commit the transaction until this reference
-    is 0. We can change the state to TRX_STATE_COMMITTED_IN_MEMORY to signify
-    that it is no longer "active".
-  */
+	We can't release the locks nor commit the transaction until this reference
+	is 0. We can change the state to TRX_STATE_COMMITTED_IN_MEMORY to signify
+	that it is no longer "active". */
 
-  Atomic_counter<int32_t> n_ref;
+	Atomic_counter<int32_t> n_ref;
 
 
 public:
@@ -1130,30 +1128,30 @@ public:
 	void evict_table(table_id_t table_id);
 
 
-  bool is_referenced()
-  {
-    return n_ref > 0;
-  }
+	bool is_referenced()
+	{
+		return n_ref > 0;
+	}
 
 
-  void reference()
-  {
+	void reference()
+	{
 #ifdef UNIV_DEBUG
-    auto old_n_ref=
+		auto old_n_ref=
 #endif
-    n_ref++;
-    ut_ad(old_n_ref >= 0);
-  }
+		n_ref++;
+		ut_ad(old_n_ref >= 0);
+	}
 
 
-  void release_reference()
-  {
+	void release_reference()
+	{
 #ifdef UNIV_DEBUG
-    auto old_n_ref=
+		auto old_n_ref=
 #endif
-    n_ref--;
-    ut_ad(old_n_ref > 0);
-  }
+		n_ref--;
+		ut_ad(old_n_ref > 0);
+	}
 
 
 private:

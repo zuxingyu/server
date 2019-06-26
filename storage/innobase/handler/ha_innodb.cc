@@ -20657,13 +20657,8 @@ innobase_get_computed_value(
 	dbug_tmp_restore_column_map(mysql_table->write_set, old_write_set);
 
 	if (ret != 0) {
-	// FIXME: Why this error message is macro-hidden?
-#ifdef INNODB_VIRTUAL_DEBUG
-		ib::warn() << "Compute virtual column values failed ";
-		fputs("InnoDB: Cannot compute value for following record ",
-		      stderr);
-		dtuple_print(stderr, row);
-#endif /* INNODB_VIRTUAL_DEBUG */
+		ib::warn() << "Compute virtual column values failed";
+		ib::info() << rec_printer(row).str();
 		DBUG_RETURN(NULL);
 	}
 
