@@ -2706,7 +2706,7 @@ main(int argc, char **argv)
        time zones to nodes in Galera cluster. */
     printf("set @prep1=if((select count(*) from information_schema.global_variables where variable_name='wsrep_on'), 'SET SESSION SQL_LOG_BIN=?, WSREP_ON=OFF;', 'do ?');\n"
           "prepare set_wsrep_write_binlog from @prep1;\n"
-	  "set @toggle=1; execute set_wsrep_write_binlog using @toggle;\n");
+	  "set @toggle=0; execute set_wsrep_write_binlog using @toggle;\n");
   else
     // Replicate MyISAM DDL for this session, cf. lp:1161432
     printf("set @prep=if((select count(*) from information_schema.global_variables where variable_name='wsrep_on'), 'SET GLOBAL wsrep_replicate_myisam=?', 'do ?');\n"
