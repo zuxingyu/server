@@ -7937,3 +7937,5 @@ ER_PART_STARTS_BEYOND_INTERVAL
         eng "%`s: STARTS is too late, first history partition may exceed INTERVAL value"
 ER_VERS_MODIFY_HISTORY
         eng "Modifying history is prohibited, set `secure_timestamp` to NO or SUPER"
+WARN_VERS_HIST_PART_ERROR
+        eng "Versioned table %`s.%`s: adding HISTORY partition failed with error %u, see error log for details"
