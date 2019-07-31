@@ -322,7 +322,7 @@ lock tables t1 write;
 insert t1 values (1);
 insert t1 values (1);
 Warnings:
-Warning	4164	Versioned table `test`.`t1`: adding HISTORY partition failed with error 1205, see error log for details
+Warning	4163	Versioned table `test`.`t1`: adding HISTORY partition failed with error 1205, see error log for details
 unlock tables;
 set global lock_wait_timeout= @lock_wait_timeout0;
 #
