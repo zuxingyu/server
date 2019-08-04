@@ -121,8 +121,7 @@ static bool check_view_insertability(THD *thd, TABLE_LIST *view);
 
 /*
  Swaps the context before and after calling setup_fields() and setup_wild() in
- INSERT...SELECT when LEX::returning_list is not empty
-
+ INSERT...SELECT when LEX::returning_list is not empty.
 */
 template <typename T>
 void swap_context(T& cxt1, T& cxt2)
@@ -796,7 +795,8 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
 			   update_fields, update_values, duplic, &unused_conds,
                            FALSE,result?true:false))
 	  goto abort;
- 
+  
+  /* Prepares LEX::returing_list if it is not empty */
   if (result)
 		(void)result->prepare(returning_list, NULL);
 	  
@@ -969,6 +969,11 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
       goto values_loop_end;
     }
   }
+  /*
+  If  statement returns result set, we need to send the result set metadata 
+  to the client so that it knows that it has to expect an EOF or ERROR. 
+  At this point we have all the required information to send the result set metadata.
+  */
   if (result)
   {
 	  if (unlikely(result->send_result_set_metadata(returning_list,
@@ -1090,12 +1095,6 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
         break;
       }
 	  
-	  if (result  &&  result->send_data(returning_list) < 0)
-	  {
-		  error = 1;
-		  break;
-	  }
-	  
 #ifndef EMBEDDED_LIBRARY
       if (lock_type == TL_WRITE_DELAYED)
       {
@@ -1110,6 +1109,22 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
         error=write_record(thd, table ,&info);	    
       if (unlikely(error))
         break;
+      /*
+        We send the rows after writing them to table so that the correct information
+        is sent to the client. Example INSERT...ON DUPLICAT KEY UPDATE and values
+        set to auto_increment. Write record handles auto_increment updating values
+        if there is a duplicate key. We want to send the rows to the client only
+        after these operations are carried out. Otherwise it shows 0 to the client
+        if the fields that are incremented automatically are not given explicitly 
+        and the irreplaced values in case of ON DUPLICATE KEY UPDATE (even if 
+        the values are replaced or incremented while writing record. 
+        Hence it shows different result set to the client)
+      */
+      if (result && result->send_data(returning_list) < 0)
+      {
+        error = 1;
+        break;
+      }
       thd->get_stmt_da()->inc_current_row_for_warning();
     }
     its.rewind();
@@ -1272,6 +1287,13 @@ values_loop_end:
   if ((iteration * values_list.elements) == 1 && (!(thd->variables.option_bits & OPTION_WARNINGS) ||
 				    !thd->cuted_fields))
   { 
+    /*
+      Client expects an EOF/Ok packet if result set metadata was sent. If 
+      LEX::returning_list is not empty and the statement returns result set 
+      we send EOF which is the indicator of the end of the row stream.
+      Else we send Ok packet i.e when the statement returns only the status 
+      information
+    */
 	  if (result)
       result->send_eof();
 	  else
@@ -1600,7 +1622,11 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
      */
     table_list->next_local= 0;
     context->resolve_in_table_list_only(table_list);
-    	
+  
+    /*
+      Perform checks like all given fields exists, if exists fill struct with 
+      current data and expand all '*' in given fields for LEX::returning_list.
+    */  	
 	if(with_returning_list) 
 	{
 	  res= ((select_lex->with_wild && setup_wild(thd, table_list, 
@@ -3633,6 +3659,7 @@ bool mysql_insert_select_prepare(THD *thd,select_result *sel_res)
                            &select_lex->where, TRUE,false))
     DBUG_RETURN(TRUE);
 
+  /* If LEX::returning_list is not empty, we prepare the list */
   if (sel_res)
 	  (void)sel_res->prepare(returning_list, NULL);
 
@@ -3694,7 +3721,7 @@ select_insert::select_insert(THD *thd_arg, TABLE_LIST *table_list_par,
   info.view= (table_list_par->view ? table_list_par : 0);
   info.table_list= table_list_par;
   sel_result= result;
-  insert_table=	save_first;
+  insert_table=	save_first; 
 }
 
 
@@ -3719,7 +3746,7 @@ select_insert::prepare(List<Item> &values, SELECT_LEX_UNIT *u)
 
   /*
     We want the returning_list to point to insert table. But the context is masked. 
-	So we swap it with the context saved during parsing stage. 
+	  So we swap it with the context saved during parsing stage. 
   */
   if(sel_result) 
   {     
@@ -3727,13 +3754,16 @@ select_insert::prepare(List<Item> &values, SELECT_LEX_UNIT *u)
     swap_context(select_lex->context.saved_table_list,select_lex->context.table_list);
     swap_context(select_lex->context.saved_name_resolution_table,select_lex->context.first_name_resolution_table);
 
+    /*
+      Perform checks for LEX::returning_list like we do for other variant of INSERT.
+    */
     res=((select_lex->with_wild && setup_wild(thd, table_list, 
 			thd->lex->returning_list, NULL, select_lex->with_wild,
 			&select_lex->hidden_bit_fields)) ||
 			setup_fields(thd, Ref_ptr_array(),
   			thd->lex->returning_list, MARK_COLUMNS_READ, 0, NULL, 0));
 
-		/*Swap it back to retore the previous state for the rest of the function*/
+		/* Swap it back to retore the previous state for the rest of the function */
 
 		swap_context(insert_table,select_lex->table_list.first);
     swap_context(select_lex->context.saved_table_list,select_lex->context.table_list);
@@ -3921,6 +3951,8 @@ int select_insert::prepare2(JOIN *)
     table->file->ha_start_bulk_insert((ha_rows) 0);
   if (table->validate_default_values_of_unset_fields(thd))
     DBUG_RETURN(1);
+
+  /* Same as the other variants of INSERT */
   if (sel_result)
   {
 	  if(unlikely(sel_result->send_result_set_metadata(returning_list,
@@ -3993,12 +4025,18 @@ int select_insert::send_data(List<Item> &values)
       DBUG_RETURN(1);
     }
   }
+  
+  error= write_record(thd, table, &info);
+  
+  /*
+    Sending the result set to the cliet after writing record. The reason is same
+    as other variants of insert.
+  */
   if (sel_result && sel_result->send_data(returning_list) < 0)
   {
-	  error = 1;
-	  DBUG_RETURN(1);
+    error = 1;
+    DBUG_RETURN(1);
   }
-  error= write_record(thd, table, &info);
   table->vers_write= table->versioned();
   table->auto_increment_field_not_null= FALSE;
   
@@ -4153,7 +4191,11 @@ bool select_insert::send_ok_packet() {
     (thd->arg_of_last_insert_id_function ?
      thd->first_successful_insert_id_in_prev_stmt :
      (info.copied ? autoinc_value_of_last_inserted_row : 0));
-
+  
+  /*
+    Client expects an EOF/Ok packet If LEX::returning_list is not empty and 
+    if result set meta was sent. See explanation for other variants of INSERT. 
+  */
   if (sel_result)
 	  sel_result->send_eof();
   else
