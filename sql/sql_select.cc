@@ -992,14 +992,22 @@ int SELECT_LEX::vers_setup_conds(THD *thd, TABLE_LIST *tables)
   }
 
   bool is_select= false;
+  bool makes_history= false;
   switch (thd->lex->sql_command)
   {
   case SQLCOM_SELECT:
   case SQLCOM_INSERT_SELECT:
+    is_select= true;
+    break;
+  case SQLCOM_DELETE:
+  case SQLCOM_UPDATE:
+    makes_history= true;
+    break;
   case SQLCOM_REPLACE_SELECT:
   case SQLCOM_DELETE_MULTI:
   case SQLCOM_UPDATE_MULTI:
     is_select= true;
+    makes_history= true;
   default:
     break;
   }
@@ -1012,6 +1020,7 @@ int SELECT_LEX::vers_setup_conds(THD *thd, TABLE_LIST *tables)
     vers_select_conds_t &vers_conditions= table->vers_conditions;
 
 #ifdef WITH_PARTITION_STORAGE_ENGINE
+    // Handle SYSTEM_TIME partitioning
     if (is_select && table->table->part_info &&
         table->table->part_info->vers_info)
     {
@@ -1027,11 +1036,9 @@ int SELECT_LEX::vers_setup_conds(THD *thd, TABLE_LIST *tables)
         else
           vers_conditions.set_all();
       }
-      else if (!vers_conditions.is_set() &&
-               /* We cannot optimize REPLACE .. SELECT because it may need
-                  to call vers_set_hist_part() to update history. */
-               thd->lex->sql_command != SQLCOM_REPLACE_SELECT)
+      else if (!vers_conditions.is_set() && !makes_history)
       {
+        // Prune to now-partition if we don't need to generate history
         table->partition_names= newx List<String>;
         String *s= newx String(table->table->part_info->
                                vers_info->now_part->partition_name,
