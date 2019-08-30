@@ -2399,6 +2399,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
 {
   uint idx;
   double scan_time;
+  Item *notnull_cond= NULL;
   DBUG_ENTER("SQL_SELECT::test_quick_select");
   DBUG_PRINT("enter",("keys_to_use: %lu  prev_tables: %lu  const_tables: %lu",
 		      (ulong) keys_to_use.to_ulonglong(), (ulong) prev_tables,
@@ -2412,6 +2413,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
   if (keys_to_use.is_clear_all() || head->is_filled_at_execution())
     DBUG_RETURN(0);
   records= head->stat_records();
+  notnull_cond= head->notnull_cond;
   if (!records)
     records++;					/* purecov: inspected */
   scan_time= (double) records / TIME_FOR_COMPARE + 1;
@@ -2419,7 +2421,10 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
   if (head->force_index)
     scan_time= read_time= DBL_MAX;
   if (limit < records)
+  {
     read_time= (double) records + scan_time + 1; // Force to use index
+    notnull_cond= NULL;
+  }
   
   possible_keys.clear_all();
 
@@ -2431,6 +2436,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
     uchar buff[STACK_BUFF_ALLOC];
     MEM_ROOT alloc;
     SEL_TREE *tree= NULL;
+    SEL_TREE *notnull_cond_tree= NULL;
     KEY_PART *key_parts;
     KEY *key_info;
     PARAM param;
@@ -2539,6 +2545,9 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
     TRP_GROUP_MIN_MAX *group_trp;
     double best_read_time= read_time;
 
+    if (notnull_cond)
+      notnull_cond_tree= notnull_cond->get_mm_tree(&param, &notnull_cond);
+
     if (cond)
     {
       if ((tree= cond->get_mm_tree(&param, &cond)))
@@ -2557,6 +2566,7 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
           tree= NULL;
       }
     }
+    tree= tree_and(&param, tree, notnull_cond_tree);
 
     /*
       Try to construct a QUICK_GROUP_MIN_MAX_SELECT.
