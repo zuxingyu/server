@@ -1263,6 +1263,19 @@ bool parse_vcol_defs(THD *thd, MEM_ROOT *mem_root, TABLE *table,
       goto end;
   }
 
+  for (Field **vf= table->vfield; vf && *vf; vf++)
+    if (fix_session_vcol_expr(thd, (*vf)->vcol_info))
+      goto end;
+
+  for (Field **df= table->default_field; df && *df; df++)
+    if ((*df)->default_value &&
+        fix_session_vcol_expr(thd, (*df)->default_value))
+      goto end;
+
+  for (Virtual_column_info **cc= table->check_constraints; cc && *cc; cc++)
+    if (fix_session_vcol_expr(thd, (*cc)))
+      goto end;
+
   table->find_constraint_correlated_indexes();
 
   res=0;
