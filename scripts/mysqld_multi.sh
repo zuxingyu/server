@@ -18,26 +18,28 @@
 # Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
 # MA 02110-1335  USA
 
+use strict;
+use warnings;
 use Getopt::Long;
 use POSIX qw(strftime getcwd);
 
 $|=1;
-$VER="2.16";
+my $VER="2.16";
 
 my @defaults_options;   #  Leading --no-defaults, --defaults-file, etc.
 
-$opt_example       = 0;
-$opt_help          = 0;
-$opt_log           = undef();
-$opt_mysqladmin    = "@bindir@/mysqladmin";
-$opt_mysqld        = "@sbindir@/mysqld";
-$opt_no_log        = 0;
-$opt_password      = undef();
-$opt_tcp_ip        = 0;
-$opt_user          = "root";
-$opt_version       = 0;
-$opt_silent        = 0;
-$opt_verbose       = 0;
+my $opt_example       = 0;
+my $opt_help          = 0;
+my $opt_log           = undef();
+my $opt_mysqladmin    = "\@bindir\@/mysqladmin";
+my $opt_mysqld        = "\@sbindir\@/mysqld";
+my $opt_no_log        = 0;
+my $opt_password      = undef();
+my $opt_tcp_ip        = 0;
+my $opt_user          = "root";
+my $opt_version       = 0;
+my $opt_silent        = 0;
+my $opt_verbose       = 0;
 
 my $my_print_defaults_exists= 1;
 my $logdir= undef();
@@ -80,7 +82,7 @@ sub main
 {
   my $flag_exit= 0;
 
-  if (!defined(my_which(my_print_defaults)))
+  if (!defined(my_which("my_print_defaults")))
   {
     # We can't throw out yet, since --version, --help, or --example may
     # have been given
@@ -134,7 +136,7 @@ sub main
     print "Error with an option, see $my_progname --help for more info.\n";
     exit(1);
   }
-  if (!defined(my_which(my_print_defaults)))
+  if (!defined(my_which("my_print_defaults")))
   {
     print "ABORT: Can't find command 'my_print_defaults'.\n";
     print "This command is available from the latest MySQL\n";
@@ -303,7 +305,8 @@ sub report_mysqlds
 
 sub start_mysqlds()
 {
-  my (@groups, $com, $tmp, $i, @options, $j, $mysqld_found, $info_sent);
+  my (@groups, $com, $tmp, $i, @options, $j, $mysqld_found, $info_sent,
+  	  $basedir_found, $basedir, $curdir);
 
   if (!$opt_no_log)
   {
@@ -426,7 +429,7 @@ sub stop_mysqlds()
 sub get_mysqladmin_options
 {
   my ($i, @groups)= @_;
-  my ($mysqladmin_found, $com, $tmp, $j);
+  my ($mysqladmin_found, $com, $tmp, $j, @options);
 
   @options = defaults_for_group($groups[$i]);
 
@@ -609,8 +612,8 @@ sub my_which
  # <absolute_path>/<program>
  return $command if ($command ne 'my_print_defaults' && -f $command &&
                      -x $command);
-
   @paths = split(':', $ENV{'PATH'});
+  push @paths, "./extra";
   foreach $path (@paths)
   {
     $path .= "/$command";
