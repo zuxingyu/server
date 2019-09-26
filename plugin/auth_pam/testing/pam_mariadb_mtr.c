@@ -10,10 +10,16 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <security/pam_modules.h>
 #include <security/pam_appl.h>
+#include <security/pam_modules.h>
 
 #define N 3
+
+#if defined(SOLARIS) || defined(__sun)
+#define PAM_CONST
+#else
+#define PAM_CONST const
+#endif
 
 int pam_sm_authenticate(pam_handle_t *pamh, int flags __attribute__((unused)),
                         int argc, const char *argv[])
@@ -26,10 +32,10 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags __attribute__((unused)),
     { PAM_PROMPT_ECHO_OFF, "Enter:" },
     { PAM_ERROR_MSG, "Now, the magic number!" }
   };
-  const struct pam_message *msgp[N] = { msg, msg+1, msg+2 };
+  PAM_CONST struct pam_message *msgp[N] = { msg, msg+1, msg+2 };
   char *r1 = 0, *r2 = 0;
 
-  pam_err = pam_get_item(pamh, PAM_CONV, (const void **)&conv);
+  pam_err = pam_get_item(pamh, PAM_CONV, (PAM_CONST void **)&conv);
   if (pam_err != PAM_SUCCESS)
     goto ret;
 
