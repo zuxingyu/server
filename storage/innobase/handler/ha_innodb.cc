@@ -10096,10 +10096,10 @@ ha_innobase::ft_init_ext(
 		return(NULL);
 	}
 
-	if (!(ft_table->fts->fts_status & ADDED_TABLE_SYNCED)) {
+	if (!(ft_table->fts->added_synced)) {
 		fts_init_index(ft_table, FALSE);
 
-		ft_table->fts->fts_status |= ADDED_TABLE_SYNCED;
+		ft_table->fts->added_synced = true;
 	}
 
 	const byte*	q = reinterpret_cast<const byte*>(
@@ -20616,8 +20616,8 @@ static MYSQL_SYSVAR_ENUM(stats_method, srv_innodb_stats_method,
 #if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
 static MYSQL_SYSVAR_UINT(change_buffering_debug, ibuf_debug,
   PLUGIN_VAR_RQCMDARG,
-  "Debug flags for InnoDB change buffering (0=none, 2=crash at merge)",
-  NULL, NULL, 0, 0, 2, 0);
+  "Debug flags for InnoDB change buffering (0=none, 1=try to buffer)",
+  NULL, NULL, 0, 0, 1, 0);
 
 static MYSQL_SYSVAR_BOOL(disable_background_merge,
   srv_ibuf_disable_background_merge,

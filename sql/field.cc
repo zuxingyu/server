@@ -79,7 +79,7 @@ const char field_separator=',';
                   ptr < table->record[0] + table->s->reclength))))
 
 #define ASSERT_COLUMN_MARKED_FOR_WRITE_OR_COMPUTED                   \
-  DBUG_ASSERT(is_stat_field || !table ||                             \
+  DBUG_ASSERT(!table ||                                              \
               (!table->write_set ||                                  \
                bitmap_is_set(table->write_set, field_index) ||       \
                (!(ptr >= table->record[0] &&                         \
@@ -1428,6 +1428,46 @@ void Field::load_data_set_value(const char *pos, uint length,
 }
 
 
+void Field::error_generated_column_function_is_not_allowed(THD *thd,
+                                                           bool error) const
+{
+  StringBuffer<64> tmp;
+  vcol_info->expr->print(&tmp, (enum_query_type)
+                               (QT_TO_SYSTEM_CHARSET |
+                                QT_ITEM_IDENT_SKIP_DB_NAMES |
+                                QT_ITEM_IDENT_SKIP_TABLE_NAMES));
+  my_error(ER_GENERATED_COLUMN_FUNCTION_IS_NOT_ALLOWED,
+           MYF(error ? 0 : ME_JUST_WARNING),
+           tmp.c_ptr(), vcol_info->get_vcol_type_name(),
+           const_cast<const char*>(field_name));
+}
+
+
+/*
+  Check if an indexed or a persistent virtual column depends on sql_mode flags
+  that it cannot handle.
+  See sql_mode.h for details.
+*/
+bool Field::check_vcol_sql_mode_dependency(THD *thd, vcol_init_mode mode) const
+{
+  DBUG_ASSERT(vcol_info);
+  if ((flags & PART_KEY_FLAG) != 0 || stored_in_db())
+  {
+    Sql_mode_dependency dep=
+        vcol_info->expr->value_depends_on_sql_mode() &
+        Sql_mode_dependency(~0, ~can_handle_sql_mode_dependency_on_store());
+    if (dep)
+    {
+      bool error= (mode & VCOL_INIT_DEPENDENCY_FAILURE_IS_ERROR) != 0;
+      error_generated_column_function_is_not_allowed(thd, error);
+      dep.push_dependency_warnings(thd);
+      return error;
+    }
+  }
+  return false;
+}
+
+
 /**
   Numeric fields base class constructor.
 */
@@ -1461,6 +1501,12 @@ void Field_num::prepend_zeros(String *value) const
       value->length(field_length);
     }
   }
+}
+
+
+sql_mode_t Field_num::can_handle_sql_mode_dependency_on_store() const
+{
+  return MODE_PAD_CHAR_TO_FULL_LENGTH;
 }
 
 
@@ -1776,8 +1822,7 @@ Field::Field(uchar *ptr_arg,uint32 length_arg,uchar *null_ptr_arg,
   flags=null_ptr ? 0: NOT_NULL_FLAG;
   comment.str= (char*) "";
   comment.length=0;
-  field_index= 0;   
-  is_stat_field= FALSE;
+  field_index= 0;
   cond_selectivity= 1.0;
   next_equal_field= NULL;
 }
@@ -2390,30 +2435,18 @@ Field *Field::clone(MEM_ROOT *root, TABLE *new_table)
 }
 
 
-
-Field *Field::clone(MEM_ROOT *root, TABLE *new_table, my_ptrdiff_t diff,
-                    bool stat_flag)
+Field *Field::clone(MEM_ROOT *root, TABLE *new_table, my_ptrdiff_t diff)
 {
   Field *tmp;
   if ((tmp= (Field*) memdup_root(root,(char*) this,size_of())))
   {
-    tmp->init(new_table);
-    tmp->move_field_offset(diff);
-  }
-  tmp->is_stat_field= stat_flag;
-  return tmp;
-}
-
-
-Field *Field::clone(MEM_ROOT *root, my_ptrdiff_t diff)
-{
-  Field *tmp;
-  if ((tmp= (Field*) memdup_root(root,(char*) this,size_of())))
-  {
+    if (new_table)
+      tmp->init(new_table);
     tmp->move_field_offset(diff);
   }
   return tmp;
 }
+
 
 int Field::set_default()
 {
@@ -2793,7 +2826,7 @@ int Field_decimal::store(const char *from_arg, uint len, CHARSET_INFO *cs)
   
   /*
     Write digits of the frac_% parts ;
-    Depending on get_thd()->count_cutted_fields, we may also want
+    Depending on get_thd()->count_cuted_fields, we may also want
     to know if some non-zero tail of these parts will
     be truncated (for example, 0.002->0.00 will generate a warning,
     while 0.000->0.00 will not)
@@ -5654,6 +5687,12 @@ my_time_t Field_timestampf::get_timestamp(const uchar *pos,
 
 
 /*************************************************************/
+sql_mode_t Field_temporal::can_handle_sql_mode_dependency_on_store() const
+{
+  return MODE_PAD_CHAR_TO_FULL_LENGTH;
+}
+
+
 uint Field_temporal::is_equal(Create_field *new_field)
 {
   return new_field->sql_type == real_type() &&
@@ -7027,7 +7066,7 @@ Field_longstr::check_string_copy_error(const String_copier *copier,
   if (!(pos= copier->most_important_error_pos()))
     return FALSE;
 
-  if (!is_stat_field)
+  if (get_thd()->count_cuted_fields)
   {
     convert_to_printable(tmp, sizeof(tmp), pos, (end - pos), cs, 6);
     set_warning_truncated_wrong_value("string", tmp);
@@ -7060,8 +7099,9 @@ int
 Field_longstr::report_if_important_data(const char *pstr, const char *end,
                                         bool count_spaces)
 {
-  THD *thd= get_thd();
-  if ((pstr < end) && thd->count_cuted_fields)
+  THD *thd;
+  if ((pstr < end) &&
+      (thd=get_thd())->count_cuted_fields)
   {
     if (test_if_important_data(field_charset, pstr, end))
     {
@@ -7072,7 +7112,8 @@ Field_longstr::report_if_important_data(const char *pstr, const char *end,
       return 2;
     }
     else if (count_spaces)
-    { /* If we lost only spaces then produce a NOTE, not a WARNING */
+    {
+      /* If we lost only spaces then produce a NOTE, not a WARNING */
       set_note(WARN_DATA_TRUNCATED, 1);
       return 2;
     }
@@ -7268,6 +7309,18 @@ longlong Field_string::val_int(void)
                                       Field_string::charset(),
                                       (const char *) ptr,
                                       field_length).result();
+}
+
+
+sql_mode_t Field_string::value_depends_on_sql_mode() const
+{
+  return has_charset() ? MODE_PAD_CHAR_TO_FULL_LENGTH : sql_mode_t(0);
+};
+
+
+sql_mode_t Field_string::can_handle_sql_mode_dependency_on_store() const
+{
+  return has_charset() ? MODE_PAD_CHAR_TO_FULL_LENGTH : sql_mode_t(0);
 }
 
 
@@ -8880,6 +8933,12 @@ bool Field_geom::load_data_set_null(THD *thd)
 ** This is a string which only can have a selection of different values.
 ** If one uses this string in a number context one gets the type number.
 ****************************************************************************/
+
+sql_mode_t Field_enum::can_handle_sql_mode_dependency_on_store() const
+{
+  return MODE_PAD_CHAR_TO_FULL_LENGTH;
+}
+
 
 enum ha_base_keytype Field_enum::key_type() const
 {
@@ -10994,13 +11053,17 @@ void Field::set_warning_truncated_wrong_value(const char *type_arg,
                                               const char *value)
 {
   THD *thd= get_thd();
-  const char *db_name= table->s->db.str;
-  const char *table_name= table->s->table_name.str;
+  const char *db_name;
+  const char *table_name;
+  /*
+    table has in the past been 0 in case of wrong calls when processing
+    statistics tables. Let's protect against that.
+  */
+  DBUG_ASSERT(table);
 
-  if (!db_name)
-    db_name= "";
-  if (!table_name)
-    table_name= "";
+  db_name= (table && table->s->db.str) ? table->s->db.str : "";
+  table_name= (table && table->s->table_name.str) ?
+              table->s->table_name.str : "";
 
   push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                       ER_TRUNCATED_WRONG_VALUE_FOR_FIELD,
@@ -11033,33 +11096,6 @@ key_map Field::get_possible_keys()
   DBUG_ASSERT(table->pos_in_table_list);
   return (table->pos_in_table_list->is_materialized_derived() ?
           part_of_key : key_start);
-}
-
-
-/**
-  Mark the field as having an explicit default value.
-
-  @param value  if available, the value that the field is being set to
-
-  @note
-    Fields that have an explicit default value should not be updated
-    automatically via the DEFAULT or ON UPDATE functions. The functions
-    that deal with data change functionality (INSERT/UPDATE/LOAD),
-    determine if there is an explicit value for each field before performing
-    the data change, and call this method to mark the field.
-
-    If the 'value' parameter is NULL, then the field is marked unconditionally
-    as having an explicit value. If 'value' is not NULL, then it can be further
-    analyzed to check if it really should count as a value.
-*/
-
-bool Field::set_explicit_default(Item *value)
-{
-  if (value->type() == Item::DEFAULT_VALUE_ITEM &&
-      !((Item_default_value*)value)->arg)
-    return false;
-  set_has_explicit_value();
-  return true;
 }
 
 

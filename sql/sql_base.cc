@@ -8068,12 +8068,16 @@ fill_record(THD *thd, TABLE *table_arg, List<Item> &fields, List<Item> &values,
       my_message(ER_UNKNOWN_ERROR, ER_THD(thd, ER_UNKNOWN_ERROR), MYF(0));
       goto err;
     }
-    rfield->set_explicit_default(value);
+    rfield->set_has_explicit_value();
   }
 
-  if (!update && table_arg->default_field &&
-      table_arg->update_default_fields(0, ignore_errors))
-    goto err;
+  if (update)
+    table_arg->evaluate_update_default_function();
+  else
+    if (table_arg->default_field &&
+        table_arg->update_default_fields(ignore_errors))
+      goto err;
+
   /* Update virtual fields */
   if (table_arg->vfield &&
       table_arg->update_virtual_fields(table_arg->file, VCOL_UPDATE_FOR_WRITE))
@@ -8261,7 +8265,6 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
 {
   List_iterator_fast<Item> v(values);
   List<TABLE> tbl_list;
-  bool all_fields_have_values= true;
   Item *value;
   Field *field;
   bool abort_on_warning_saved= thd->abort_on_warning;
@@ -8314,11 +8317,8 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
     else
       if (value->save_in_field(field, 0) < 0)
         goto err;
-    all_fields_have_values &= field->set_explicit_default(value);
+    field->set_has_explicit_value();
   }
-  if (!all_fields_have_values && table->default_field &&
-      table->update_default_fields(0, ignore_errors))
-    goto err;
   /* Update virtual fields */
   thd->abort_on_warning= FALSE;
   if (table->vfield &&
