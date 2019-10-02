@@ -2180,12 +2180,6 @@ int alloc_statistics_for_table(THD* thd, TABLE *table)
 static
 inline bool statistics_for_command_is_needed(THD *thd)
 {
-  if (thd->bootstrap || thd->variables.use_stat_tables == NEVER)
-    return FALSE;
-
-  if (thd->force_read_stats)
-    return TRUE;
-
   switch(thd->lex->sql_command) {
   case SQLCOM_SELECT:
   case SQLCOM_INSERT:
@@ -2254,9 +2248,6 @@ static int alloc_statistics_for_table_share(THD* thd, TABLE_SHARE *table_share)
 
   DEBUG_SYNC(thd, "statistics_mem_alloc_start1");
   DEBUG_SYNC(thd, "statistics_mem_alloc_start2");
-
-  if (!statistics_for_command_is_needed(thd))
-    DBUG_RETURN(1);
 
   mysql_mutex_lock(&table_share->LOCK_share);
 
@@ -3110,9 +3101,6 @@ bool statistics_for_tables_is_needed(THD *thd, TABLE_LIST *tables)
 {
   if (!tables)
     return FALSE;
-  
-  if (!statistics_for_command_is_needed(thd))
-    return FALSE;
 
   /* 
     Do not read statistics for any query that explicity involves
@@ -3245,10 +3233,20 @@ int read_histograms_for_table(THD *thd, TABLE *table, TABLE_LIST *stat_tables)
 
 int read_statistics_for_tables_if_needed(THD *thd, TABLE_LIST *tables)
 {
+  return statistics_for_command_is_needed(thd) ?
+         read_statistics_for_tables(thd, tables) : 0;
+}
+
+
+int read_statistics_for_tables(THD *thd, TABLE_LIST *tables)
+{
   TABLE_LIST stat_tables[STATISTICS_TABLES];
   Open_tables_backup open_tables_backup;
 
-  DBUG_ENTER("read_statistics_for_tables_if_needed");
+  DBUG_ENTER("read_statistics_for_tables");
+
+  if (thd->bootstrap || thd->variables.use_stat_tables == NEVER)
+    DBUG_RETURN(0);
 
   for (TABLE_LIST *tl= tables; tl; tl= tl->next_global)
   {
