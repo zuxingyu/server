@@ -204,6 +204,7 @@ my @DEFAULT_SUITES= qw(
     sys_vars-
     sql_sequence-
     type_inet-
+    type_uuid-
     unit-
     vcol-
     versioning-

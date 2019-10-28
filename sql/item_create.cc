@@ -2212,19 +2212,6 @@ protected:
 };
 
 
-class Create_func_uuid : public Create_func_arg0
-{
-public:
-  virtual Item *create_builder(THD *thd);
-
-  static Create_func_uuid s_singleton;
-
-protected:
-  Create_func_uuid() {}
-  virtual ~Create_func_uuid() {}
-};
-
-
 class Create_func_uuid_short : public Create_func_arg0
 {
 public:
@@ -5200,18 +5187,6 @@ Create_func_unix_timestamp::create_native(THD *thd, LEX_CSTRING *name,
 }
 
 
-Create_func_uuid Create_func_uuid::s_singleton;
-
-Item*
-Create_func_uuid::create_builder(THD *thd)
-{
-  DBUG_ENTER("Create_func_uuid::create");
-  thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION);
-  thd->lex->safe_to_cache_query= 0;
-  DBUG_RETURN(new (thd->mem_root) Item_func_uuid(thd));
-}
-
-
 Create_func_uuid_short Create_func_uuid_short::s_singleton;
 
 Item*
@@ -5564,7 +5539,6 @@ static Native_func_registry func_array[] =
   { { STRING_WITH_LEN("UNIX_TIMESTAMP") }, BUILDER(Create_func_unix_timestamp)},
   { { STRING_WITH_LEN("UPDATEXML") }, BUILDER(Create_func_xml_update)},
   { { STRING_WITH_LEN("UPPER") }, BUILDER(Create_func_ucase)},
-  { { STRING_WITH_LEN("UUID") }, BUILDER(Create_func_uuid)},
   { { STRING_WITH_LEN("UUID_SHORT") }, BUILDER(Create_func_uuid_short)},
   { { STRING_WITH_LEN("VERSION") }, BUILDER(Create_func_version)},
   { { STRING_WITH_LEN("WEEKDAY") }, BUILDER(Create_func_weekday)},

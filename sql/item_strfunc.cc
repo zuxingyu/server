@@ -4328,21 +4328,6 @@ err:
 #endif
 
 
-String *Item_func_uuid::val_str(String *str)
-{
-  DBUG_ASSERT(fixed == 1);
-  uchar guid[MY_UUID_SIZE];
-
-  str->alloc(MY_UUID_STRING_LENGTH+1);
-  str->length(MY_UUID_STRING_LENGTH);
-  str->set_charset(system_charset_info);
-  my_uuid(guid);
-  my_uuid2str(guid, (char *)str->ptr());
-
-  return str;
-}
-
-
 Item_func_dyncol_create::Item_func_dyncol_create(THD *thd, List<Item> &args,
                                                  DYNCALL_CREATE_DEF *dfs):
   Item_str_func(thd, args), defs(dfs), vals(0), keys_num(NULL), keys_str(NULL),
