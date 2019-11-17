@@ -5136,13 +5136,15 @@ int handler::calculate_checksum()
 */
 int ha_create_table(THD *thd, const char *path,
                     const char *db, const char *table_name,
-                    HA_CREATE_INFO *create_info, LEX_CUSTRING *frm)
+                    HA_CREATE_INFO *create_info, Alter_info *alter_info,
+                    LEX_CUSTRING *frm)
 {
   int error= 1;
   TABLE table;
   char name_buff[FN_REFLEN];
   const char *name;
   TABLE_SHARE share;
+  Table_ident_set ref_tables;
   bool temp_table __attribute__((unused)) =
     create_info->options & (HA_LEX_CREATE_TMP_TABLE | HA_CREATE_TMP_ALTER);
   DBUG_ENTER("ha_create_table");
@@ -5170,11 +5172,17 @@ int ha_create_table(THD *thd, const char *path,
       goto err;
   }
 
+  if (alter_info && share.update_foreign_keys(thd, alter_info, ref_tables))
+    goto err;
+
   share.m_psi= PSI_CALL_get_table_share(temp_table, &share);
 
   if (open_table_from_share(thd, &share, &empty_clex_str, 0, READ_ALL, 0,
                             &table, true))
+  {
+    share.revert_referenced_shares(thd, ref_tables);
     goto err;
+  }
 
   update_create_info_from_table(create_info, &table);
 
@@ -5184,6 +5192,7 @@ int ha_create_table(THD *thd, const char *path,
 
   if (unlikely(error))
   {
+    share.revert_referenced_shares(thd, ref_tables);
     if (!thd->is_error())
       my_error(ER_CANT_CREATE_TABLE, MYF(0), db, table_name, error);
     table.file->print_error(error, MYF(ME_WARNING));
@@ -7691,6 +7700,44 @@ static void require_trx_id_error(const char *field, const char *table)
 {
   my_error(ER_VERS_FIELD_WRONG_TYPE, MYF(0), field, "BIGINT(20) UNSIGNED",
            table);
+}
+
+bool FK_list::get(THD *thd, Table_ident_set &result, LEX_CSTRING &fk_name, bool foreign)
+{
+  List_iterator_fast<FOREIGN_KEY_INFO> it(*this);
+  List_iterator_fast<LEX_CSTRING> col_it;
+  while (FOREIGN_KEY_INFO *fk= it++)
+  {
+    if (foreign)
+      col_it.init(fk->foreign_fields);
+    else
+      col_it.init(fk->referenced_fields);
+    while (LEX_CSTRING* name= col_it++)
+    {
+      if (!my_strcasecmp(system_charset_info, name->str, fk_name.str))
+      {
+        if (foreign)
+          result.insert(Table_ident(*fk->referenced_db, *fk->referenced_table));
+        else
+          result.insert(Table_ident(*fk->foreign_db, *fk->foreign_table));
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+bool FK_list::get(THD *thd, Table_ident_set &result, bool foreign)
+{
+  List_iterator_fast<FOREIGN_KEY_INFO> it(*this);
+  while (FOREIGN_KEY_INFO *fk= it++)
+  {
+    if (foreign)
+      result.insert(Table_ident(*fk->foreign_db, *fk->foreign_table));
+    else
+      result.insert(Table_ident(*fk->referenced_db, *fk->referenced_table));
+  }
+  return false;
 }
 
 

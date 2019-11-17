@@ -41,13 +41,60 @@ class Lex_cstring : public LEX_CSTRING
     str= start;
     length= end - start;
   }
+  Lex_cstring(const LEX_CSTRING &src)
+  {
+    str= src.str;
+    length= src.length;
+  }
   void set(const char *_str, size_t _len)
   {
     str= _str;
     length= _len;
   }
+  Lex_cstring *strdup_root(MEM_ROOT &mem_root)
+  {
+    Lex_cstring *dst=
+        (Lex_cstring *) alloc_root(&mem_root, sizeof(Lex_cstring));
+    if (!dst)
+      return NULL;
+    if (!str)
+    {
+      dst->str= NULL;
+      dst->length= 0;
+      return dst;
+    }
+    dst->str= (const char *) memdup_root(&mem_root, str, length + 1);
+    if (!dst->str)
+      return NULL;
+    dst->length= length;
+    return dst;
+  }
+  int cmp(const Lex_cstring& rhs) const
+  {
+    if (length < rhs.length)
+      return -1;
+    if (length > rhs.length)
+      return 1;
+    return memcmp(str, rhs.str, length);
+  }
+  int cmp(const char* rhs) const
+  {
+    if (!str)
+      return -1;
+    if (!rhs)
+      return 1;
+    return strcmp(str, rhs);
+  }
 };
 
+struct Lex_cstring_lt
+{
+  bool operator() (const Lex_cstring &lhs, const Lex_cstring &rhs) const
+  {
+    return lhs.cmp(rhs) < 0;
+  }
+
+};
 
 class Lex_cstring_strlen: public Lex_cstring
 {
@@ -102,6 +149,38 @@ static inline bool lex_string_eq(const LEX_CSTRING *a, const char *b, size_t b_l
   if (a->length != b_length)
     return 0;                                   /* Different */
   return strcasecmp(a->str, b) == 0;
+}
+
+inline
+LEX_CSTRING *make_clex_string(MEM_ROOT *mem_root, const char* str, size_t length)
+{
+  LEX_CSTRING *lex_str;
+  char *tmp;
+  if (unlikely(!(lex_str= (LEX_CSTRING *)alloc_root(mem_root,
+                                                    sizeof(LEX_CSTRING) +
+                                                    (str ? (length + 1) : 0)))))
+    return 0;
+  if (str)
+  {
+    tmp= (char*) (lex_str+1);
+    lex_str->str= tmp;
+    memcpy(tmp, str, length);
+    tmp[length]= 0;
+    lex_str->length= length;
+  }
+  else
+  {
+    DBUG_ASSERT(!length);
+    lex_str->str= NULL;
+    lex_str->length= 0;
+  }
+  return lex_str;
+}
+
+inline
+LEX_CSTRING *make_clex_string(MEM_ROOT *mem_root, const LEX_CSTRING from)
+{
+  return make_clex_string(mem_root, from.str, from.length);
 }
 
 #endif /* LEX_STRING_INCLUDED */
