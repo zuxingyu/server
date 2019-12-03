@@ -22,6 +22,7 @@
 
 #include "mariadb.h"
 #include "client_priv.h"
+#include "sql_string.h"
 
 #define CONV_VERSION "1.0"
 
@@ -76,7 +77,7 @@ get_one_option(const struct my_option *opt,
 }
 
 
-class Conv
+class Conv: public String_copier
 {
   CHARSET_INFO *m_tocs;
   CHARSET_INFO *m_fromcs;
@@ -85,22 +86,25 @@ public:
   Conv(CHARSET_INFO *tocs, CHARSET_INFO *fromcs, bool opt_continue)
    :m_tocs(tocs), m_fromcs(fromcs), m_continue(opt_continue)
   { }
-  bool convert_file(FILE *infile) const;
-  bool convert_file_by_name(const char *filename) const;
+  bool convert_file(FILE *infile);
+  bool convert_file_by_name(const char *filename);
 };
 
 
-bool Conv::convert_file(FILE *infile) const
+bool Conv::convert_file(FILE *infile)
 {
   char from[FN_REFLEN + 1], to[FN_REFLEN + 2];
+  bool nl= false;
 
-  while (fgets(from, sizeof(from), infile) != NULL)
+  for (uint lineno= 0;
+       fgets(from, sizeof(from), infile) != NULL;
+       lineno+= nl)
   {
-    uint errors;
     size_t length= 0;
     for (char *s= from; s < from + sizeof(from); s++)
     {
-      if (*s == '\0' || *s == '\r' || *s == '\n')
+      nl= (*s == '\r' || *s == '\n');
+      if (*s == '\0' || nl)
       {
         *s= '\0';
         length= s - from;
@@ -114,12 +118,30 @@ bool Conv::convert_file(FILE *infile) const
       continue;
     }
 
-    length= my_convert(to, (uint32) (sizeof(to) - 1), m_tocs,
-                       from, (uint32) length, m_fromcs,
-                       &errors);
+    length= well_formed_copy(m_tocs, to, sizeof(to) - 1,
+                             m_fromcs, from, length);
+
     to[length]= '\0';
-    if (unlikely(!length || errors) && !m_continue)
+    if (unlikely(!length || most_important_error_pos()) && !m_continue)
+    {
+      if (well_formed_error_pos())
+      {
+        fflush(stdout);
+        fprintf(stderr,
+                "Illegal %s byte sequence at line %d position %d\n",
+                m_fromcs->csname,
+                (uint) lineno + 1, (uint) (well_formed_error_pos() - from));
+      }
+      else if (cannot_convert_error_pos())
+      {
+        fflush(stdout);
+        fprintf(stderr,
+                "Conversion from %s to %s failed at line %d position %d\n",
+                m_fromcs->csname, m_tocs->csname,
+                (uint) lineno + 1, (uint) (cannot_convert_error_pos() - from));
+      }
       return true;
+    }
     else
       puts(to);
   }
@@ -128,7 +150,7 @@ bool Conv::convert_file(FILE *infile) const
 } /* convert */
 
 
-bool Conv::convert_file_by_name(const char *filename) const
+bool Conv::convert_file_by_name(const char *filename)
 {
   FILE *fp;
   if ((fp= fopen(filename, "r")) == NULL)

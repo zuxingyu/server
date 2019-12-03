@@ -11,3 +11,15 @@ mariadb-conv: unknown option '-r'
 Character set unknown-cs is not supported
 # unknown "from" character set
 Character set unknown-cs is not supported
+# Conversion error
+aaa
+Conversion from utf8 to latin1 failed at line 2 position 3
+aaa
+xxx???xxx
+bbb
+# Bad input character
+aaa
+Illegal utf8 byte sequence at line 2 position 3
+aaa
+xxx???xxx
+bbb
