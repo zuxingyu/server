@@ -23,6 +23,8 @@
 
 Alter_info::Alter_info(const Alter_info &rhs, MEM_ROOT *mem_root)
   :drop_list(rhs.drop_list, mem_root),
+  tmp_drop_list(rhs.tmp_drop_list, mem_root),
+  tmp_old_fkeys(rhs.tmp_old_fkeys),
   alter_list(rhs.alter_list, mem_root),
   key_list(rhs.key_list, mem_root),
   create_list(rhs.create_list, mem_root),
@@ -44,6 +46,7 @@ Alter_info::Alter_info(const Alter_info &rhs, MEM_ROOT *mem_root)
     constants never change.
   */
   list_copy_and_replace_each_value(drop_list, mem_root);
+  list_copy_and_replace_each_value(tmp_drop_list, mem_root);
   list_copy_and_replace_each_value(alter_list, mem_root);
   list_copy_and_replace_each_value(key_list, mem_root);
   list_copy_and_replace_each_value(create_list, mem_root);
@@ -394,6 +397,7 @@ bool Sql_cmd_alter_table::execute(THD *thd)
   */
   HA_CREATE_INFO create_info(lex->create_info);
   Alter_info alter_info(lex->alter_info, thd->mem_root);
+  create_info.alter_info= &alter_info;
   ulong priv=0;
   ulong priv_needed= ALTER_ACL;
   bool result;

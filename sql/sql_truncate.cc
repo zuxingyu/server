@@ -88,7 +88,8 @@ static const char *fk_info_str(THD *thd, FOREIGN_KEY_INFO *fk_info)
   res|= str.append(" FOREIGN KEY (");
   res|= fk_info_append_fields(thd, &str, &fk_info->foreign_fields);
   res|= str.append(") REFERENCES ");
-  res|= append_identifier(thd, &str, &fk_info->referenced_db);
+  res|= append_identifier(thd, &str, fk_info->referenced_db.str ?
+                          &fk_info->referenced_db : &fk_info->foreign_db);
   res|= str.append(".");
   res|= append_identifier(thd, &str, &fk_info->referenced_table);
   res|= str.append(" (");
@@ -140,8 +141,7 @@ fk_truncate_illegal_if_parent(THD *thd, TABLE *table)
   /* Loop over the set of foreign keys for which this table is a parent. */
   while ((fk_info= it++))
   {
-    if (lex_string_cmp(system_charset_info, &fk_info->referenced_db,
-                       &table->s->db) ||
+    if (cmp_table(fk_info->ref_db(), table->s->db) ||
         lex_string_cmp(system_charset_info, &fk_info->referenced_table,
                        &table->s->table_name) ||
         lex_string_cmp(system_charset_info, &fk_info->foreign_db,

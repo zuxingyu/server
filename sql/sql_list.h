@@ -858,14 +858,20 @@ public:
 
 template <typename T>
 inline
-void
+bool
 list_copy_and_replace_each_value(List<T> &list, MEM_ROOT *mem_root)
 {
   /* Make a deep copy of each element */
   List_iterator<T> it(list);
   T *el;
   while ((el= it++))
-    it.replace(el->clone(mem_root));
+  {
+    T *el2= el->clone(mem_root);
+    if (!el2)
+      return true;
+    it.replace(el2);
+  }
+  return false;
 }
 
 void free_list(I_List <i_string_pair> *list);

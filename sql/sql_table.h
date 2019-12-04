@@ -20,11 +20,13 @@
 #include <my_sys.h>                             // pthread_mutex_t
 #include "m_string.h"                           // LEX_CUSTRING
 #include "mdl.h"                                // MDL_request_list
+#include "handler.h"
 
 class Alter_info;
 class Alter_table_ctx;
 class Column_definition;
 class Create_field;
+class FK_rename_vector;
 struct TABLE_LIST;
 class THD;
 struct TABLE;
@@ -201,22 +203,26 @@ int mysql_create_table_no_lock(THD *thd, const LEX_CSTRING *db,
 handler *mysql_create_frm_image(THD *thd,
                                 const LEX_CSTRING &db,
                                 const LEX_CSTRING &table_name,
+                                const LEX_CSTRING &new_db,
+                                const LEX_CSTRING &new_table_name,
                                 HA_CREATE_INFO *create_info,
                                 Alter_info *alter_info,
                                 int create_table_mode,
                                 KEY **key_info,
                                 uint *key_count,
+                                FK_list &foreign_keys,
+                                FK_list &referenced_keys,
                                 LEX_CUSTRING *frm);
 
 int mysql_discard_or_import_tablespace(THD *thd,
                                        TABLE_LIST *table_list,
                                        bool discard);
 
+class Share_acquire_vec;
 bool mysql_prepare_alter_table(THD *thd, TABLE *table,
                                HA_CREATE_INFO *create_info,
                                Alter_info *alter_info,
-                               Alter_table_ctx *alter_ctx,
-                               MDL_request_list *mdl_ref_tables= NULL);
+                               Alter_table_ctx *alter_ctx);
 bool mysql_trans_prepare_alter_copy_data(THD *thd);
 bool mysql_trans_commit_alter_copy_data(THD *thd);
 bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db, const LEX_CSTRING *new_name,
@@ -245,7 +251,7 @@ bool mysql_rm_table(THD *thd,TABLE_LIST *tables, bool if_exists,
                     bool drop_temporary, bool drop_sequence);
 int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
                             bool drop_temporary, bool drop_view,
-                            bool drop_sequence,
+                            bool drop_sequence, bool drop_db,
                             bool log_query, bool dont_free_locks);
 bool log_drop_table(THD *thd, const LEX_CSTRING *db_name,
                     const LEX_CSTRING *table_name, bool temporary_table);
@@ -271,6 +277,10 @@ bool sync_ddl_log();
 void release_ddl_log();
 void execute_ddl_log_recovery();
 bool execute_ddl_log_entry(THD *thd, uint first_entry);
+
+bool fk_handle_rename(THD *thd, TABLE_LIST *old_table, const LEX_CSTRING *new_db,
+                      const LEX_CSTRING *new_table_name,
+                      FK_rename_vector &fk_rename_backup);
 
 template<typename T> class List;
 void promote_first_timestamp_column(List<Create_field> *column_definitions);

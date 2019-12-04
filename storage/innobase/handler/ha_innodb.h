@@ -506,12 +506,6 @@ protected:
 
         /** If mysql has locked with external_lock() */
         bool                    m_mysql_has_locked;
-
-private:
-	void
-	build_foreign_list(FK_list& result_list,
-			   THD* thd, dict_foreign_set& foreign_set,
-			   bool& err) const;
 };
 
 

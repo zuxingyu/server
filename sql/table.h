@@ -50,6 +50,9 @@ struct TABLE_LIST;
 class ACL_internal_schema_access;
 class ACL_internal_table_access;
 class Field;
+class FK_create_vector;
+class Table_name;
+class Table_name_set;
 class Table_statistics;
 class With_element;
 struct TDC_element;
@@ -366,7 +369,6 @@ enum field_visibility_t {
   INVISIBLE_FULL
 };
 
-#define INVISIBLE_MAX_BITS              3
 #define HA_HASH_FIELD_LENGTH            8
 #define HA_HASH_KEY_LENGTH_WITHOUT_NULL 8
 #define HA_HASH_KEY_LENGTH_WITH_NULL    9
@@ -645,14 +647,18 @@ struct TABLE_SHARE
   KEY  *key_info;			/* data of keys in database */
   FK_list foreign_keys;
   FK_list referenced_keys;
-  bool update_foreign_keys(THD *thd, Alter_info *alter_info,
-                           Table_ident_set &ref_tables);
-  void revert_referenced_shares(THD *thd, Table_ident_set &ref_tables);
-  bool check_foreign_keys(THD *thd);
+  bool fk_handle_create(THD *thd, FK_create_vector &shares);
+  void fk_revert_create(THD *thd, Table_name_set &ref_tables);
+#ifndef DBUG_OFF
+  bool dbug_check_foreign_keys(THD *thd);
+#endif
   bool referenced_by_foreign_key() const
   {
     return !referenced_keys.is_empty();
   }
+  bool fk_write_shadow_frm();
+  bool fk_install_shadow_frm();
+  void fk_drop_shadow_frm();
 
   Virtual_column_info **check_constraints;
   uint	*blob_field;			/* Index to blobs in Field arrray*/
@@ -1111,8 +1117,6 @@ public:
   }
   bool is_truncated_value() { return truncated_value; }
 };
-
-bool release_ref_shares(THD *thd, TABLE_LIST *t);
 
 
 /* Information for one open table */
@@ -1692,20 +1696,21 @@ enum enum_schema_table_state
   PROCESSED_BY_JOIN_EXEC
 };
 
-enum enum_fk_option { FK_OPTION_UNDEF, FK_OPTION_RESTRICT, FK_OPTION_CASCADE,
+enum enum_fk_option { FK_OPTION_UNDEF= 0, FK_OPTION_RESTRICT, FK_OPTION_CASCADE,
                FK_OPTION_SET_NULL, FK_OPTION_NO_ACTION, FK_OPTION_SET_DEFAULT};
+class Foreign_key;
 
 class FK_info : public Sql_alloc
 {
 public:
   Lex_cstring foreign_id;
+  // TODO: use Table_name
   Lex_cstring foreign_db;
   Lex_cstring foreign_table;
   Lex_cstring referenced_db;
   Lex_cstring referenced_table;
   enum_fk_option update_method;
   enum_fk_option delete_method;
-  Lex_cstring referenced_key_name;
   List<Lex_cstring> foreign_fields;
   List<Lex_cstring> referenced_fields;
 
@@ -1713,10 +1718,14 @@ public:
   FK_info() :
     update_method(FK_OPTION_UNDEF),
     delete_method(FK_OPTION_UNDEF)
+  {}
+  Lex_cstring ref_db() const
   {
-    foreign_fields.empty();
-    referenced_fields.empty();
+    return referenced_db.str ? referenced_db : foreign_db;
   }
+  bool assign(Foreign_key &fk, Table_name table);
+  FK_info * clone(MEM_ROOT *mem_root) const;
+  void print(String &out);
 };
 
 typedef class FK_info FOREIGN_KEY_INFO;

@@ -18,6 +18,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 
+#include "table.h"
+
 struct Share_free_tables
 {
   typedef I_P_List <TABLE, TABLE_share> List;
@@ -110,6 +112,38 @@ public:
   {
     if (element)
       tdc_unlock_share(element);
+  }
+};
+
+
+class Share_acquire
+{
+public:
+  TABLE_SHARE *share;
+
+  Share_acquire() : share(NULL) {}
+  Share_acquire(THD *thd, TABLE_LIST &tl);
+  Share_acquire(const Share_acquire &src)= delete;
+
+  // NB: noexcept is required for STL containers
+  Share_acquire(Share_acquire &&src) noexcept :
+    share(src.share)
+  {
+    src.share= NULL;
+  }
+  ~Share_acquire()
+  {
+    if (share)
+      tdc_release_share(share);
+  }
+  bool is_error(THD *thd);
+  void release()
+  {
+    if (share)
+    {
+      tdc_release_share(share);
+      share= NULL;
+    }
   }
 };
 

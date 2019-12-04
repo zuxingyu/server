@@ -11194,7 +11194,7 @@ bool LEX::add_table_foreign_key(const LEX_CSTRING &name,
 }
 
 
-bool LEX::add_column_foreign_key(const LEX_CSTRING &name,
+bool LEX::add_column_foreign_key(const LEX_CSTRING &field_name,
                                  const LEX_CSTRING &constraint_name,
                                  Table_ident &ref_table_name,
                                  DDL_options ddl_options)
@@ -11204,11 +11204,14 @@ bool LEX::add_column_foreign_key(const LEX_CSTRING &name,
     thd->parse_error();
     return true;
   }
-  if (unlikely(add_table_foreign_key(constraint_name.str ? constraint_name : name,
-                                     constraint_name, ddl_options)))
+  /* TODO: we are not supplying field_name here like that
+    add_table_foreign_key(constraint_name.str ? constraint_name : field_name,
+    but we will after MDEV-21052 */
+  if (unlikely(add_table_foreign_key(constraint_name, constraint_name,
+                                     ddl_options)))
       return true;
-  DBUG_ASSERT(name.str);
-  Key_part_spec *key= new (thd->mem_root) Key_part_spec(&name, 0);
+  DBUG_ASSERT(field_name.str);
+  Key_part_spec *key= new (thd->mem_root) Key_part_spec(&field_name, 0);
   if (unlikely(key == NULL))
     return true;
   last_key->columns.push_back(key);

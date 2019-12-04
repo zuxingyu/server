@@ -19,6 +19,7 @@
 #define LEX_STRING_INCLUDED
 
 #include "sql_alloc.h"
+#include "mysqld.h"
 
 
 typedef struct st_mysql_const_lex_string LEX_CSTRING;
@@ -36,6 +37,11 @@ class Lex_cstring : public LEX_CSTRING, public Sql_alloc
   {
     str= _str;
     length= _len;
+  }
+  Lex_cstring(const char *_str)
+  {
+    str= _str;
+    length= strlen(str);
   }
   Lex_cstring(const char *start, const char *end)
   {
@@ -85,6 +91,10 @@ class Lex_cstring : public LEX_CSTRING, public Sql_alloc
     str= _str;
     length= _len;
   }
+  Lex_cstring print() const
+  {
+    return str ? *this : "(NULL)";
+  }
   int cmp(const Lex_cstring& rhs) const
   {
     if (length < rhs.length)
@@ -103,14 +113,6 @@ class Lex_cstring : public LEX_CSTRING, public Sql_alloc
   }
 };
 
-struct Lex_cstring_lt
-{
-  bool operator() (const Lex_cstring &lhs, const Lex_cstring &rhs) const
-  {
-    return lhs.cmp(rhs) < 0;
-  }
-
-};
 
 class Lex_cstring_strlen: public Lex_cstring
 {
@@ -120,6 +122,27 @@ public:
   { }
 };
 
+class Scope_malloc
+{
+  void * addr;
+
+public:
+  template <class PTR>
+  Scope_malloc(PTR alloced) : addr((void *)alloced)
+  {
+    DBUG_ASSERT(addr);
+  }
+  template <class PTR>
+  Scope_malloc(PTR &assign, size_t Size, myf MyFlags= 0)
+  {
+    addr= my_malloc(Size, MyFlags);
+    assign= (PTR) addr;
+  }
+  ~Scope_malloc()
+  {
+    my_free(addr);
+  }
+};
 
 /* Functions to compare if two lex strings are equal */
 
@@ -142,6 +165,22 @@ static inline bool cmp(const LEX_CSTRING a, const LEX_CSTRING b)
 {
   return a.length != b.length || memcmp(a.str, b.str, a.length);
 }
+static inline int cmp_ident(const LEX_CSTRING a, const LEX_CSTRING b)
+{
+  return my_strcasecmp(system_charset_info, a.str, b.str);
+}
+static inline int cmp_table(const LEX_CSTRING a, const LEX_CSTRING b)
+{
+  return my_strcasecmp(table_alias_charset, a.str, b.str);
+}
+struct Lex_ident_lt
+{
+  bool operator() (const Lex_cstring &lhs, const Lex_cstring &rhs) const
+  {
+    return cmp_ident(lhs, rhs) < 0;
+  }
+};
+
 
 /*
   Compare if two LEX_CSTRING are equal. Assumption is that

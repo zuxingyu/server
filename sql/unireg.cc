@@ -32,6 +32,8 @@
 #include "sql_class.h"                  // THD, Internal_error_handler
 #include "create_options.h"
 #include "discover.h"
+#include "datadict.h"
+#include "table_cache.h"                // Share_acquire
 #include <m_ctype.h>
 
 #define FCOMP			17		/* Bytes for a packed field */
@@ -50,66 +52,6 @@ static size_t packed_fields_length(List<Create_field> &);
 static bool make_empty_rec(THD *, uchar *, uint, List<Create_field> &, uint,
                            ulong);
 
-/*
-  write the length as
-  if (  0 < length <= 255)      one byte
-  if (256 < length <= 65535)    zero byte, then two bytes, low-endian
-*/
-static uchar *extra2_write_len(uchar *pos, size_t len)
-{
-  if (len <= 255)
-    *pos++= (uchar)len;
-  else
-  {
-    /*
-      At the moment we support options_len up to 64K.
-      We can easily extend it in the future, if the need arises.
-    */
-    DBUG_ASSERT(len <= 65535);
-    int2store(pos + 1, len);
-    pos+= 3;
-  }
-  return pos;
-}
-
-static uchar* extra2_write_str(uchar *pos, const LEX_CSTRING &str)
-{
-  pos= extra2_write_len(pos, str.length);
-  memcpy(pos, str.str, str.length);
-  return pos + str.length;
-}
-
-static uchar *extra2_write(uchar *pos, enum extra2_frm_value_type type,
-                           const LEX_CSTRING &str)
-{
-  *pos++ = type;
-  return extra2_write_str(pos, str);
-}
-
-static uchar *extra2_write(uchar *pos, enum extra2_frm_value_type type,
-                           const LEX_CUSTRING &str)
-{
-  return extra2_write(pos, type, *reinterpret_cast<const LEX_CSTRING*>(&str));
-}
-
-static uchar *extra2_write_field_properties(uchar *pos,
-                   List<Create_field> &create_fields)
-{
-  List_iterator<Create_field> it(create_fields);
-  *pos++= EXTRA2_FIELD_FLAGS;
-  /*
-   always first 2  for field visibility
-  */
-  pos= extra2_write_len(pos, create_fields.elements);
-  while (Create_field *cf= it++)
-  {
-    uchar flags= cf->invisible;
-    if (cf->flags & VERS_UPDATE_UNVERSIONED_FLAG)
-      flags|= VERS_OPTIMIZED_UPDATE;
-    *pos++= flags;
-  }
-  return pos;
-}
 
 static uint16
 get_fieldno_by_name(HA_CREATE_INFO *create_info, List<Create_field> &create_fields,
@@ -183,10 +125,6 @@ class Field_data_type_info_image: public BinaryStringBuffer<512>
     memcpy(pos, str.str, str.length);
     return pos + str.length;
   }
-  static uint store_length_required_length(ulonglong length)
-  {
-    return net_length_size(length);
-  }
 public:
   Field_data_type_info_image() { }
   bool append(uint fieldnr, const Column_definition &def)
@@ -198,8 +136,8 @@ public:
       return true; // Error
     if (!type_info.length())
       return false;
-    size_t need_length= store_length_required_length(fieldnr) +
-                        store_length_required_length(type_info.length()) +
+    size_t need_length= net_length_size(fieldnr) +
+                        net_length_size(type_info.length()) +
                         type_info.length();
     if (reserve(need_length))
       return true; // Error
@@ -242,9 +180,11 @@ public:
 */
 
 LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
-                              HA_CREATE_INFO *create_info,
-                              List<Create_field> &create_fields,
-                              uint keys, KEY *key_info, handler *db_file)
+                             HA_CREATE_INFO *create_info,
+                             List<Create_field> &create_fields,
+                             uint keys, KEY *key_info,  FK_list &foreign_keys,
+                             FK_list &referenced_keys,
+                             handler *db_file)
 {
   LEX_CSTRING str_db_type;
   uint reclength, key_info_length, i;
@@ -265,6 +205,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
   LEX_CUSTRING frm= {0,0};
   StringBuffer<MAX_FIELD_WIDTH> vcols;
   Field_data_type_info_image field_data_type_info_image;
+  Foreign_key_io foreign_key_io;
   DBUG_ENTER("build_frm_image");
 
  /* If fixed row records, we need one bit to check for deleted rows */
@@ -326,6 +267,33 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
                     MYF(0), table.str);
     DBUG_RETURN(frm);
   }
+  if (field_data_type_info_image.length() > 0xffff - FRM_HEADER_SIZE - 8)
+  {
+    my_printf_error(ER_CANT_CREATE_TABLE,
+                    "Cannot create table %`s: "
+                    "field data type info image is too large. "
+                    "Decrease the number of columns with "
+                    "extended data types.",
+                    MYF(0), table.str);
+    DBUG_RETURN(frm);
+  }
+  if (foreign_key_io.store(foreign_keys, referenced_keys))
+  {
+    my_printf_error(ER_CANT_CREATE_TABLE,
+                    "Cannot create table %`s: "
+                    "Building the foreign key info image failed.",
+                    MYF(0), table.str);
+    DBUG_RETURN(frm);
+  }
+  if (foreign_key_io.length() > 0xffff - FRM_HEADER_SIZE - 8)
+  {
+    my_printf_error(ER_CANT_CREATE_TABLE,
+                    "Cannot create table %`s: "
+                    "foreign key info image is too large.",
+                    MYF(0), table.str);
+    DBUG_RETURN(frm);
+  }
+
   DBUG_PRINT("info", ("Field data type info length: %u",
                       (uint) field_data_type_info_image.length()));
   DBUG_EXECUTE_IF("frm_data_type_info",
@@ -381,6 +349,9 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
 
   if (field_data_type_info_image.length())
     extra2_size+= 1 + extra2_str_size(field_data_type_info_image.length());
+
+  if (foreign_key_io.length())
+    extra2_size+= 1 + extra2_str_size(foreign_key_io.length());
 
   if (create_info->versioned())
   {
@@ -456,18 +427,26 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
 
   if (field_data_type_info_image.length())
   {
-    if (field_data_type_info_image.length() > 0xFFFF)
-    {
-      my_printf_error(ER_CANT_CREATE_TABLE,
-                      "Cannot create table %`s: "
-                      "field data type info image is too large. "
-                      "Decrease the number of columns with "
-                      "extended data types.",
-                      MYF(0), table.str);
-      goto err;
-    }
     *pos= EXTRA2_FIELD_DATA_TYPE_INFO;
     pos= extra2_write_str(pos + 1, field_data_type_info_image.lex_cstring());
+  }
+
+  if (foreign_key_io.length())
+  {
+    *pos= EXTRA2_FOREIGN_KEY_INFO;
+    pos= extra2_write_str(pos + 1, foreign_key_io.lex_cstring());
+  }
+
+  if (create_info->versioned())
+  {
+    *pos++= EXTRA2_PERIOD_FOR_SYSTEM_TIME;
+    *pos++= 2 * frm_fieldno_size;
+    store_frm_fieldno(pos, get_fieldno_by_name(create_info, create_fields,
+                                       create_info->vers_info.as_row.start));
+    pos+= frm_fieldno_size;
+    store_frm_fieldno(pos, get_fieldno_by_name(create_info, create_fields,
+                                       create_info->vers_info.as_row.end));
+    pos+= frm_fieldno_size;
   }
 
   // PERIOD
@@ -483,18 +462,6 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
     pos+= frm_fieldno_size;
     store_frm_fieldno(pos, get_fieldno_by_name(create_info, create_fields,
                                        create_info->period_info.period.end));
-    pos+= frm_fieldno_size;
-  }
-
-  if (create_info->versioned())
-  {
-    *pos++= EXTRA2_PERIOD_FOR_SYSTEM_TIME;
-    *pos++= 2 * frm_fieldno_size;
-    store_frm_fieldno(pos, get_fieldno_by_name(create_info, create_fields,
-                                       create_info->vers_info.as_row.start));
-    pos+= frm_fieldno_size;
-    store_frm_fieldno(pos, get_fieldno_by_name(create_info, create_fields,
-                                       create_info->vers_info.as_row.end));
     pos+= frm_fieldno_size;
   }
 
@@ -1185,3 +1152,252 @@ err:
   thd->count_cuted_fields= old_count_cuted_fields;
   DBUG_RETURN(error);
 } /* make_empty_rec */
+
+ulonglong Foreign_key_io::fk_size(FK_info &fk)
+{
+  ulonglong store_size= 0;
+  store_size+= string_size(fk.foreign_id);
+  store_size+= string_size(fk.referenced_db);
+  store_size+= string_size(fk.referenced_table);
+  store_size+= net_length_size(fk.update_method);
+  store_size+= net_length_size(fk.delete_method);
+  store_size+= net_length_size(fk.foreign_fields.elements);
+  DBUG_ASSERT(fk.foreign_fields.elements == fk.referenced_fields.elements);
+  List_iterator_fast<Lex_cstring> ref_it(fk.referenced_fields);
+  for (Lex_cstring &fcol: fk.foreign_fields)
+  {
+    store_size+= string_size(fcol);
+    Lex_cstring *ref_col= ref_it++;
+    store_size+= string_size(*ref_col);
+  }
+  return store_size;
+}
+
+ulonglong Foreign_key_io::hint_size(FK_info &rk)
+{
+  ulonglong store_size= 0;
+  DBUG_ASSERT(rk.foreign_db.str);
+  DBUG_ASSERT(rk.foreign_table.str);
+  store_size+= string_size(rk.foreign_db);
+  store_size+= string_size(rk.foreign_table);
+  return store_size;
+}
+
+void Foreign_key_io::store_fk(FK_info &fk, uchar *&pos)
+{
+#ifndef DBUG_OFF
+  uchar *old_pos= pos;
+#endif
+  pos= store_string(pos, fk.foreign_id);
+  pos= store_string(pos, fk.referenced_db, true);
+  pos= store_string(pos, fk.referenced_table);
+  pos= store_length(pos, fk.update_method);
+  pos= store_length(pos, fk.delete_method);
+  pos= store_length(pos, fk.foreign_fields.elements);
+  DBUG_ASSERT(fk.foreign_fields.elements == fk.referenced_fields.elements);
+  List_iterator_fast<Lex_cstring> ref_it(fk.referenced_fields);
+  for (Lex_cstring &fcol: fk.foreign_fields)
+  {
+    pos= store_string(pos, fcol);
+    Lex_cstring *ref_col= ref_it++;
+    pos= store_string(pos, *ref_col);
+  }
+  DBUG_ASSERT(pos - old_pos == (long int)fk_size(fk));
+}
+
+void Foreign_key_io::store_hint(FK_info &rk, uchar *&pos)
+{
+  pos= store_string(pos, rk.foreign_db);
+  pos= store_string(pos, rk.foreign_table);
+}
+
+bool Foreign_key_io::store(FK_list &foreign_keys, FK_list &referenced_keys)
+{
+  ulonglong fk_count= 0, rk_count= 0;
+
+  if (foreign_keys.is_empty() && referenced_keys.is_empty())
+    return false;
+
+  ulonglong store_size= net_length_size(fk_io_version);
+  for (FK_info &fk: foreign_keys)
+  {
+    fk_count++;
+    store_size+= fk_size(fk);
+  }
+  store_size+= net_length_size(fk_count);
+
+  for (FK_info &rk: referenced_keys)
+  {
+    rk_count++;
+    store_size+= hint_size(rk);
+  }
+  store_size+= net_length_size(rk_count);
+
+  if (reserve(store_size))
+  {
+    my_error(ER_OUT_OF_RESOURCES, MYF(0));
+    return true;
+  }
+  uchar *pos= (uchar *) end();
+  pos= store_length(pos, fk_io_version);
+
+  pos= store_length(pos, fk_count);
+  for (FK_info &fk: foreign_keys)
+    store_fk(fk, pos);
+
+  pos= store_length(pos, rk_count);
+  for (FK_info &rk: referenced_keys)
+    store_hint(rk, pos);
+
+  size_t new_length= (char *) pos - ptr();
+  DBUG_ASSERT(new_length < alloced_length());
+  length((uint32) new_length);
+  return false;
+}
+
+bool Foreign_key_io::parse(THD *thd, TABLE_SHARE *s, LEX_CUSTRING& image)
+{
+  Pos p(image);
+  size_t version, fk_count, rk_count;
+  Lex_cstring hint_db, hint_table;
+
+  if (read_length(version, p))
+  {
+    push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                        "Foreign_key_io failed to read binary data version");
+    return true;
+  }
+  if (read_length(fk_count, p))
+  {
+    push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                        "Foreign_key_io failed to read foreign key count");
+    return true;
+  }
+  if (version > fk_io_version)
+  {
+    push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                        "Foreign_key_io does not support %d version of binary data", version);
+    push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE, ER_UNKNOWN_ERROR,
+                        "Foreign_key_io max supported version is %d", fk_io_version);
+    return true;
+  }
+  for (uint i= 0; i < fk_count; ++i)
+  {
+    FK_info *dst= new (&s->mem_root) FK_info();
+    if (s->foreign_keys.push_back(dst, &s->mem_root))
+    {
+      my_error(ER_OUT_OF_RESOURCES, MYF(0));
+      return true;
+    }
+    if (read_string(dst->foreign_id, &s->mem_root, p))
+      return true;
+    dst->foreign_db= s->db;
+    dst->foreign_table= s->table_name;
+    if (read_string(dst->referenced_db, &s->mem_root, p))
+      return true;
+    if (!dst->referenced_db.length)
+      dst->referenced_db.strdup(&s->mem_root, s->db);
+    if (read_string(dst->referenced_table, &s->mem_root, p))
+      return true;
+    size_t update_method, delete_method;
+    if (read_length(update_method, p))
+      return true;
+    if (read_length(delete_method, p))
+      return true;
+    if (update_method > FK_OPTION_SET_DEFAULT || delete_method > FK_OPTION_SET_DEFAULT)
+      return true;
+    dst->update_method= (enum_fk_option) update_method;
+    dst->delete_method= (enum_fk_option) delete_method;
+    size_t col_count;
+    if (read_length(col_count, p))
+      return true;
+    for (uint j= 0; j < col_count; ++j)
+    {
+      Lex_cstring *field_name= new (&s->mem_root) Lex_cstring;
+      if (!field_name ||
+          dst->foreign_fields.push_back(field_name, &s->mem_root))
+      {
+        my_error(ER_OUT_OF_RESOURCES, MYF(0));
+        return true;
+      }
+      if (read_string(*field_name, &s->mem_root, p))
+        return true;
+      field_name= new (&s->mem_root) Lex_cstring;
+      if (!field_name ||
+          dst->referenced_fields.push_back(field_name, &s->mem_root))
+      {
+        my_error(ER_OUT_OF_RESOURCES, MYF(0));
+        return true;
+      }
+      if (read_string(*field_name, &s->mem_root, p))
+        return true;
+    }
+  }
+  if (read_length(rk_count, p))
+  {
+    push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                        "Foreign_key_io failed to read reference hints count");
+    return true;
+  }
+  if (s->tmp_table)
+    return false;
+  // Resolve hints to referenced keys for non-temporary shares
+  for (uint i= 0; i < rk_count; ++i)
+  {
+    if (read_string(hint_db, &s->mem_root, p))
+      return true;
+    if (read_string(hint_table, &s->mem_root, p))
+      return true;
+    TABLE_LIST tl;
+    tl.init_one_table(&hint_db, &hint_table, &hint_table, TL_IGNORE);
+    Share_acquire fs(thd, tl);
+    if (!fs.share)
+    {
+      DBUG_ASSERT(thd->is_error());
+      if (thd->get_stmt_da()->sql_errno() == ER_NO_SUCH_TABLE)
+      {
+        thd->clear_error();
+        push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                            "Reference hint to non-existent table `%s.%s` skipped",
+                            hint_db.str, hint_table.str);
+        continue;
+      }
+      return true;
+    }
+    size_t refs_was= s->referenced_keys.elements;
+    for (FK_info &fk: fs.share->foreign_keys)
+    {
+      if (cmp_table(fk.referenced_db, s->db) || cmp_table(fk.referenced_table, s->table_name))
+        continue;
+      for (Lex_cstring &fld: fk.referenced_fields)
+      {
+        uint i;
+        for (i= 0; i < s->fields ; i++)
+        {
+          if (0 == cmp_ident(s->field[i]->field_name, fld))
+            break;
+        }
+        if (i == s->fields)
+        {
+          push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                              "Missing field `%s` hint table `%s.%s` refers to",
+                              fld.str, hint_db.str, hint_table.str);
+          return true;
+        }
+      }
+      FK_info *dst= fk.clone(&s->mem_root);
+      if (s->referenced_keys.push_back(dst, &s->mem_root))
+      {
+        my_error(ER_OUT_OF_RESOURCES, MYF(0));
+        return true;
+      }
+    }
+    if (s->referenced_keys.elements == refs_was)
+    {
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, ER_UNKNOWN_ERROR,
+                          "Table `%s.%s` has no foreign keys to `%s.%s`",
+                          hint_db.str, hint_table.str, s->db.str, s->table_name.str);
+    }
+  }
+  return p.pos < p.end; // Error if some data is still left
+}

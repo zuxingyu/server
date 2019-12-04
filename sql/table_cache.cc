@@ -1279,3 +1279,26 @@ int tdc_iterate(THD *thd, my_hash_walk_action action, void *argument,
   }
   return res;
 }
+
+
+Share_acquire::Share_acquire(THD *thd, TABLE_LIST &tl)
+{
+  Diagnostics_area *da= thd->get_stmt_da();
+  Warning_info tmp_wi(thd->query_id, false, true);
+
+  da->push_warning_info(&tmp_wi);
+  share= tdc_acquire_share(thd, &tl, GTS_TABLE);
+  da->pop_warning_info();
+}
+
+
+bool Share_acquire::is_error(THD *thd)
+{
+  if (share)
+    return false;
+  if (thd->is_error() && thd->get_stmt_da()->sql_errno() == ER_WRONG_OBJECT)
+  {
+    thd->clear_error();
+  }
+  return true;
+}

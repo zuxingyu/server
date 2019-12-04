@@ -221,6 +221,11 @@ public:
     LEX_CSTRING skr = { ptr(), length() };
     return skr;
   }
+  LEX_CUSTRING lex_custring() const
+  {
+    LEX_CUSTRING str = { (const uchar *) ptr(), length() };
+    return str;
+  }
 
   bool has_8bit_bytes() const
   {
@@ -946,6 +951,16 @@ public:
   bool append(const LEX_CSTRING &s, CHARSET_INFO *cs)
   {
     return append(s.str, s.length, cs);
+  }
+
+  bool append(longlong num, bool unsigned_flag)
+  {
+    uint l= 20 * charset()->mbmaxlen + 1;
+    int base= unsigned_flag ? 10 : -10;
+    char buf[256];
+    DBUG_ASSERT(l < 256);
+    size_t len= (uint32) (charset()->cset->longlong10_to_str)(charset(), buf, l, base, num);
+    return append(buf, len);
   }
 
   void strip_sp();

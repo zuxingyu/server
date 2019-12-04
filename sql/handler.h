@@ -44,11 +44,9 @@
 #include <mysql/psi/mysql_table.h>
 #include "sql_sequence.h"
 #include "mem_root_array.h"
-#include <set>
-
-typedef std::set<Lex_cstring, Lex_cstring_lt> Lex_cstring_set;
 
 class Alter_info;
+class Alter_table_ctx;
 class Virtual_column_info;
 class sequence_definition;
 class Rowid_filter;
@@ -1043,14 +1041,10 @@ struct TABLE_SHARE;
 struct HA_CREATE_INFO;
 struct st_foreign_key_info;
 class FK_info;
-class Table_ident_set;
 class FK_list : public List<FK_info>
 {
 public:
-  /* Get all referenced tables for foreign key fk_name. */
-  bool get(THD *thd, Table_ident_set &result, LEX_CSTRING &fk_name, bool foreign);
-  /* Get all referenced or foreign tables. */
-  bool get(THD *thd, Table_ident_set &result, bool foreign);
+  bool assign(const FK_list &src, MEM_ROOT *mem_root);
 };
 typedef bool (stat_print_fn)(THD *thd, const char *type, size_t type_len,
                              const char *file, size_t file_len,
@@ -2212,10 +2206,14 @@ struct Table_scope_and_contents_source_st:
 struct HA_CREATE_INFO: public Table_scope_and_contents_source_st,
                        public Schema_specification_st
 {
+  /* TODO: remove after MDEV-20865 */
+  Alter_info *alter_info;
+
   void init()
   {
     Table_scope_and_contents_source_st::init();
     Schema_specification_st::init();
+    alter_info= NULL;
   }
   bool check_conflicting_charset_declarations(CHARSET_INFO *cs);
   bool add_table_option_default_charset(CHARSET_INFO *cs)
@@ -2346,6 +2344,7 @@ public:
           Field instance for old version of table.
   */
   Alter_info *alter_info;
+  Alter_table_ctx *alter_ctx;
 
   /**
     Array of KEYs for new version of table - including KEYs to be added.
@@ -2467,6 +2466,7 @@ public:
 
   Alter_inplace_info(HA_CREATE_INFO *create_info_arg,
                      Alter_info *alter_info_arg,
+                     Alter_table_ctx *alter_ctx_arg,
                      KEY *key_info_arg, uint key_count_arg,
                      partition_info *modified_part_info_arg,
                      bool ignore_arg);
@@ -4911,7 +4911,7 @@ void ha_commit_checkpoint_request(void *cookie, void (*pre_hook)(void *));
 int ha_create_table(THD *thd, const char *path,
                     const char *db, const char *table_name,
                     HA_CREATE_INFO *create_info, Alter_info *alter_info,
-                    LEX_CUSTRING *frm);
+                    LEX_CUSTRING *frm, bool fk_update_refs= false);
 int ha_delete_table(THD *thd, handlerton *db_type, const char *path,
                     const LEX_CSTRING *db, const LEX_CSTRING *alias, bool generate_warning);
 void ha_prepare_for_backup();

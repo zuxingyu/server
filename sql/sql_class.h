@@ -50,6 +50,9 @@
 #include "session_tracker.h"
 #include "backup.h"
 #include "xa.h"
+#include <vector>
+#include <set>
+#include <map>
 
 extern "C"
 void set_thd_stage_info(void *thd,
@@ -271,6 +274,183 @@ typedef struct st_copy_info {
 } COPY_INFO;
 
 
+/* Convert STL exceptions to my_error() */
+
+template <class Base>
+class exception_wrapper : public Base
+{
+public:
+  /*
+     NB: any methods from different classes can be added here,
+     as templates are instantiated on demand.
+     Both lvalue and rvalue types are covered by perfect forwarding.
+  */
+  template <class T>
+  typename Base::iterator insert(T&& value) noexcept
+  {
+    try
+    {
+      auto ret= Base::insert(std::forward<T>(value));
+      return ret.first;
+    }
+    catch (std::bad_alloc())
+    {
+      my_error(ER_OUT_OF_RESOURCES, MYF(0));
+      return Base::end();
+    }
+    catch (...)
+    {
+      my_error(ER_INTERNAL_ERROR, MYF(0), "Unexpected exception");
+      return Base::end();
+    }
+    return Base::end();
+  }
+  template <class T>
+  bool push_back(T&& value) noexcept
+  {
+    try
+    {
+      Base::push_back(std::forward<T>(value));
+    }
+    catch (std::bad_alloc())
+    {
+      my_error(ER_OUT_OF_RESOURCES, MYF(0));
+      return true;
+    }
+    catch (...)
+    {
+      my_error(ER_INTERNAL_ERROR, MYF(0), "Unexpected exception");
+      return true;
+    }
+    return false;
+  }
+};
+
+
+/* std::vector adapter for returning true instead of throwing exception */
+
+template <class T, class Allocator = std::allocator<T> >
+class vector :
+  public exception_wrapper<std::vector<T, Allocator> >
+{
+public:
+  bool push_back(const T& value)
+  {
+    return exception_wrapper<std::vector<T, Allocator> >::
+      push_back(value);
+  }
+  bool push_back(T&& value)
+  {
+    return exception_wrapper<std::vector<T, Allocator> >::
+      push_back(std::forward<T>(value));
+  }
+};
+
+
+/* std::set adapter for returning NULL instead of throwing exception */
+
+template <class Key, class Compare = std::less<Key>,
+  class Allocator = std::allocator<Key> >
+class set :
+  public exception_wrapper<std::set<Key, Compare, Allocator> >
+{
+public:
+  const Key* insert(const Key& value)
+  {
+    auto ret= exception_wrapper<std::set<Key, Compare, Allocator> >::
+      insert(value);
+    return &*ret;
+  }
+  const Key* insert(Key&& value)
+  {
+    auto ret= exception_wrapper<std::set<Key, Compare, Allocator> >::
+      insert(std::forward<Key>(value));
+    return &*ret;
+  }
+};
+
+
+/* std::map adapter for returning NULL instead of throwing exception */
+
+template<class Key, class T, class Compare = std::less<Key>,
+  class Allocator = std::allocator<std::pair<const Key, T> > >
+class map :
+  public exception_wrapper<std::map<Key, T, Compare, Allocator> >
+{
+public:
+  T* insert(const Key& key, const T& value)
+  {
+    auto ret= exception_wrapper<std::map<Key, T, Compare, Allocator> >::
+      insert(std::make_pair(key, value));
+    return &ret->second;
+  }
+  T* insert(const Key& key, T&& value)
+  {
+    auto ret= exception_wrapper<std::map<Key, T, Compare, Allocator> >::
+      insert(std::make_pair(key, std::forward<T>(value)));
+    return &ret->second;
+  }
+};
+
+
+/*
+   TODO: Table_ident is parser-oriented class that contains SELECT_LEX_UNIT and
+   depends on sql_lex.h, so it can't be declared in this place and is not declared
+   in many headers. Table_ident should be derived from Table_name.
+   Classes containing (db, table_name) pairs such as TABLE_LIST, TABLE_SHARE, etc.
+   should be reworked to contain Table_name instead.
+*/
+class Table_name
+{
+public:
+  // TODO: use Lex_table_name
+  Lex_cstring db;
+  Lex_cstring name;
+  Table_name() {}
+  Table_name(Lex_cstring _db, Lex_cstring _name)
+    : db(_db), name(_name) {}
+  int cmp(const Table_name &rhs) const
+  {
+    int db_cmp= cmp_table(db, rhs.db);
+    if (db_cmp < 0)
+      return -1;
+    if (db_cmp > 0)
+      return 1;
+    return cmp_table(name, rhs.name);
+  }
+};
+
+/*
+   NB: needed for std::set when we have recommendation to not have operator
+   overloading in important classes.
+*/
+struct Table_name_lt
+{
+  bool operator() (const Table_name &lhs, const Table_name &rhs) const
+  {
+    return lhs.cmp(rhs) < 0;
+  }
+};
+
+class Table_name_set: public set<Table_name, Table_name_lt>
+{
+public:
+  template <class T>
+  bool insert(T&& value)
+  {
+    return set<Table_name, Table_name_lt>::
+      insert(std::forward<T>(value));
+  }
+  bool insert(const Lex_cstring &db, const Lex_cstring &table)
+  {
+    return set<Table_name, Table_name_lt>::
+      insert({db, table});
+  }
+};
+typedef set<Lex_cstring, Lex_ident_lt> Lex_ident_set;
+
+
+
 class Key_part_spec :public Sql_alloc {
 public:
   LEX_CSTRING field_name;
@@ -408,6 +588,35 @@ public:
          ddl_options), constraint_name(*constraint_name_arg)
   {
     foreign= true;
+  }
+  Foreign_key(const FK_info &src, MEM_ROOT *mem_root)
+    : Key(MULTIPLE, &src.foreign_id, default_key_create_info.algorithm, true,
+          DDL_options()),
+    constraint_name(src.foreign_id),
+    ref_db(src.referenced_db),
+    ref_table(src.referenced_table),
+    delete_opt(src.delete_method),
+    update_opt(src.update_method)
+  {
+    for (const Lex_cstring &src_f: src.foreign_fields)
+    {
+      Key_part_spec *kp= new (mem_root) Key_part_spec(&src_f, 0);
+      if (!kp || columns.push_back(kp, mem_root))
+        return;
+    }
+
+    for (const Lex_cstring &src_f: src.referenced_fields)
+    {
+      Key_part_spec *kp= new (mem_root) Key_part_spec(&src_f, 0);
+      if (!kp || ref_columns.push_back(kp, mem_root))
+        return;
+    }
+
+    foreign= true; // false means failed initialization
+  }
+  bool failed() const
+  {
+    return !foreign;
   }
   void init(const LEX_CSTRING &_ref_db, const LEX_CSTRING &_ref_table,
             const LEX *lex);
@@ -592,6 +801,10 @@ typedef struct system_variables
   sql_mode_t sql_mode; ///< which non-standard SQL behaviour should be enabled
   sql_mode_t old_behavior; ///< which old SQL behaviour should be enabled
   ulonglong option_bits; ///< OPTION_xxx constants, e.g. OPTION_PROFILING
+  bool check_foreign()
+  {
+      return !((bool)(option_bits & OPTION_NO_FOREIGN_KEY_CHECKS));
+  }
   ulonglong join_buff_space_limit;
   ulonglong log_slow_filter; 
   ulonglong log_slow_verbosity; 
@@ -6286,6 +6499,7 @@ typedef struct st_sort_buffer {
   SORT_FIELD *sortorder;
 } SORT_BUFFER;
 
+
 /* Structure for db & table in sql_yacc */
 
 class Table_ident :public Sql_alloc
@@ -6354,16 +6568,6 @@ public:
     return false;
   }
 };
-
-struct Table_ident_lt
-{
-  bool operator() (const Table_ident &lhs, const Table_ident &rhs) const
-  {
-    return lhs.db.cmp(rhs.db) < 0 || lhs.table.cmp(rhs.table) < 0;
-  }
-};
-class Table_ident_set : public std::set<Table_ident, Table_ident_lt>
-{};
 
 
 class Qualified_column_ident: public Table_ident

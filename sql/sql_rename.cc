@@ -29,13 +29,11 @@
 #include "sql_trigger.h"
 #include "sql_base.h"   // tdc_remove_table, lock_table_names,
 #include "sql_handler.h"                        // mysql_ha_rm_tables
-#include "sql_statistics.h" 
+#include "sql_statistics.h"
 
 static TABLE_LIST *rename_tables(THD *thd, TABLE_LIST *table_list,
-				 bool skip_error);
-static bool do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
-                      const LEX_CSTRING *new_table_name, const LEX_CSTRING *new_table_alias,
-                      bool skip_error);
+                                 bool skip_error,
+                                 FK_rename_vector &fk_rename_backup);
 
 static TABLE_LIST *reverse_table_list(TABLE_LIST *table_list);
 
@@ -51,6 +49,7 @@ bool mysql_rename_tables(THD *thd, TABLE_LIST *table_list, bool silent)
   TABLE_LIST *ren_table= 0;
   int to_table;
   const char *rename_log_table[2]= {NULL, NULL};
+  FK_rename_vector fk_rename_backup;
   DBUG_ENTER("mysql_rename_tables");
 
   /*
@@ -151,7 +150,7 @@ bool mysql_rename_tables(THD *thd, TABLE_LIST *table_list, bool silent)
     An exclusive lock on table names is satisfactory to ensure
     no other thread accesses this table.
   */
-  if ((ren_table=rename_tables(thd,table_list,0)))
+  if ((ren_table= rename_tables(thd, table_list, 0, fk_rename_backup)))
   {
     /* Rename didn't succeed;  rename back the tables in reverse order */
     TABLE_LIST *table;
@@ -165,12 +164,24 @@ bool mysql_rename_tables(THD *thd, TABLE_LIST *table_list, bool silent)
 	 table= table->next_local->next_local) ;
     table= table->next_local->next_local;		// Skip error table
     /* Revert to old names */
-    rename_tables(thd, table, 1);
+    rename_tables(thd, table, 1, fk_rename_backup);
 
     /* Revert the table list (for prepared statements) */
     table_list= reverse_table_list(table_list);
 
+    for (FK_rename_backup &bak: fk_rename_backup)
+      bak.rollback();
+
     error= 1;
+  }
+  else
+  {
+    for (FK_rename_backup &bak: fk_rename_backup)
+    {
+      error= fk_install_shadow_frm(bak.old_name, bak.new_name);
+      if (error)
+        break;
+    }
   }
 
   if (likely(!silent && !error))
@@ -258,7 +269,7 @@ do_rename_temporary(THD *thd, TABLE_LIST *ren_table, TABLE_LIST *new_table,
 static bool
 do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
           const LEX_CSTRING *new_table_name, const LEX_CSTRING *new_table_alias,
-          bool skip_error)
+          bool skip_error, FK_rename_vector &fk_rename_backup)
 {
   int rc= 1;
   handlerton *hton;
@@ -286,7 +297,8 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
   if (ha_table_exists(thd, &ren_table->db, &old_alias, &hton) && hton)
   {
     DBUG_ASSERT(!thd->locked_tables_mode);
-    if (release_ref_shares(thd, ren_table))
+    if (!skip_error &&
+        fk_handle_rename(thd, ren_table, new_db, new_table_name, fk_rename_backup))
       DBUG_RETURN(1);
     tdc_remove_table(thd, TDC_RT_REMOVE_ALL,
                      ren_table->db.str, ren_table->table_name.str);
@@ -366,7 +378,8 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
 */
 
 static TABLE_LIST *
-rename_tables(THD *thd, TABLE_LIST *table_list, bool skip_error)
+rename_tables(THD *thd, TABLE_LIST *table_list, bool skip_error,
+              FK_rename_vector &fk_rename_backup)
 {
   TABLE_LIST *ren_table, *new_table;
 
@@ -379,8 +392,15 @@ rename_tables(THD *thd, TABLE_LIST *table_list, bool skip_error)
     if (is_temporary_table(ren_table) ?
           do_rename_temporary(thd, ren_table, new_table, skip_error) :
           do_rename(thd, ren_table, &new_table->db, &new_table->table_name,
-                    &new_table->alias, skip_error))
+                    &new_table->alias, skip_error, fk_rename_backup))
       DBUG_RETURN(ren_table);
   }
   DBUG_RETURN(0);
 }
+
+
+FK_rename_backup::FK_rename_backup(Share_acquire&& _sa) :
+  FK_ddl_backup(std::forward<Share_acquire>(_sa)),
+  old_name(sa.share->db, sa.share->table_name),
+  new_name(sa.share->db, sa.share->table_name)
+{}
