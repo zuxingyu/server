@@ -156,9 +156,6 @@ static bool append_string_json(String *buffer, const char *data, size_t len)
     case '\\':
       buffer->append("\\\\");
       break;
-    case '\'':
-      buffer->append("\\'");
-      break;
     case '\n':
       buffer->append("\\n");
       break;
@@ -306,7 +303,7 @@ static bool parse_mysql_scalar(String* buffer, size_t value_json_type,
         delete[] value_element;
         return true;
       }
-      if (append_string_json(buffer, value_element, value_length + 1))
+      if (append_string_json(buffer, value_element, value_length))
       {
         delete[] value_element;
         return true;
@@ -400,7 +397,7 @@ static bool parse_mysql_scalar(String* buffer, size_t value_json_type,
               {
                 if (buffer->append('"'))
                   return true;
-                if (buffer->append("base64:type") || buffer->append(':'))
+                if (buffer->append("base64:type") || buffer->append(": "))
                   return true;
 
                 size_t pos= buffer->length();
@@ -498,7 +495,7 @@ static bool parse_array_or_object(String *buffer, Field_mysql_json::enum_type t,
         delete[] key_element;
         return true;
       }
-      if (append_string_json(buffer, key_element, key_json_len + 1))
+      if (append_string_json(buffer, key_element, key_json_len))
       {
         delete[] key_element;
         return true;
@@ -507,7 +504,7 @@ static bool parse_array_or_object(String *buffer, Field_mysql_json::enum_type t,
       if (buffer->append('"'))
         return true;
 
-      if (buffer->append(':'))
+      if (buffer->append(": "))
         return true;
 
       value_type_offset= 2 * offset_size +
@@ -538,7 +535,7 @@ static bool parse_array_or_object(String *buffer, Field_mysql_json::enum_type t,
       }
       if (!(i == (element_count - 1)))
       {
-        buffer->append(',');
+        buffer->append(", ");
       }
     } // end object
 
@@ -571,7 +568,7 @@ static bool parse_array_or_object(String *buffer, Field_mysql_json::enum_type t,
 
       if(!(i==(element_count-1)))
       {
-        buffer->append(',');
+        buffer->append(", ");
       }
     } // end array
   } // end for
