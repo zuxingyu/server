@@ -18,11 +18,13 @@
 #ifndef LEX_STRING_INCLUDED
 #define LEX_STRING_INCLUDED
 
+#include "sql_alloc.h"
+
 
 typedef struct st_mysql_const_lex_string LEX_CSTRING;
 
 
-class Lex_cstring : public LEX_CSTRING
+class Lex_cstring : public LEX_CSTRING, public Sql_alloc
 {
   public:
   Lex_cstring()
@@ -46,28 +48,42 @@ class Lex_cstring : public LEX_CSTRING
     str= src.str;
     length= src.length;
   }
+  bool strdup(MEM_ROOT *mem_root, const char *_str, size_t _len)
+  {
+    if (!_str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    length= _len;
+    str= strmake_root(mem_root, _str, length);
+    return !str;
+  }
+  bool strdup(MEM_ROOT *mem_root, const char *_str)
+  {
+    if (!_str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    return strdup(mem_root, _str, strlen(_str));
+  }
+  bool strdup(MEM_ROOT *mem_root, const Lex_cstring &_str)
+  {
+    if (!_str.str)
+    {
+      str= NULL;
+      length= 0;
+      return false;
+    }
+    return strdup(mem_root, _str.str, _str.length);;
+  }
   void set(const char *_str, size_t _len)
   {
     str= _str;
     length= _len;
-  }
-  Lex_cstring *strdup_root(MEM_ROOT &mem_root)
-  {
-    Lex_cstring *dst=
-        (Lex_cstring *) alloc_root(&mem_root, sizeof(Lex_cstring));
-    if (!dst)
-      return NULL;
-    if (!str)
-    {
-      dst->str= NULL;
-      dst->length= 0;
-      return dst;
-    }
-    dst->str= (const char *) memdup_root(&mem_root, str, length + 1);
-    if (!dst->str)
-      return NULL;
-    dst->length= length;
-    return dst;
   }
   int cmp(const Lex_cstring& rhs) const
   {

@@ -4672,8 +4672,8 @@ handle_table(THD *thd, Query_tables_list *prelocking_ctx,
 
     if (table->s->referenced_by_foreign_key())
     {
-      List_iterator<FOREIGN_KEY_INFO> fk_list_it(table->s->referenced_keys);
-      FOREIGN_KEY_INFO *fk;
+      List_iterator<FK_info> fk_list_it(table->s->referenced_keys);
+      FK_info *fk;
       Query_arena *arena, backup;
 
       arena= thd->activate_stmt_arena_if_needed(&backup);
@@ -4692,13 +4692,13 @@ handle_table(THD *thd, Query_tables_list *prelocking_ctx,
           lock_type= TL_READ;
 
         if (table_already_fk_prelocked(prelocking_ctx->query_tables,
-                                       fk->foreign_db, fk->foreign_table,
+                                       &fk->foreign_db, &fk->foreign_table,
                                        lock_type))
           continue;
 
         TABLE_LIST *tl= (TABLE_LIST *) thd->alloc(sizeof(TABLE_LIST));
-        tl->init_one_table_for_prelocking(fk->foreign_db,
-                                          fk->foreign_table,
+        tl->init_one_table_for_prelocking(&fk->foreign_db,
+                                          &fk->foreign_table,
                                           NULL, lock_type,
                                           TABLE_LIST::PRELOCK_FK,
                                           table_list->belong_to_view, op,

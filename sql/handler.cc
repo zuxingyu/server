@@ -7704,22 +7704,22 @@ static void require_trx_id_error(const char *field, const char *table)
 
 bool FK_list::get(THD *thd, Table_ident_set &result, LEX_CSTRING &fk_name, bool foreign)
 {
-  List_iterator_fast<FOREIGN_KEY_INFO> it(*this);
-  List_iterator_fast<LEX_CSTRING> col_it;
-  while (FOREIGN_KEY_INFO *fk= it++)
+  List_iterator_fast<FK_info> it(*this);
+  List_iterator_fast<Lex_cstring> col_it;
+  while (FK_info *fk= it++)
   {
     if (foreign)
       col_it.init(fk->foreign_fields);
     else
       col_it.init(fk->referenced_fields);
-    while (LEX_CSTRING* name= col_it++)
+    while (Lex_cstring* name= col_it++)
     {
       if (!my_strcasecmp(system_charset_info, name->str, fk_name.str))
       {
         if (foreign)
-          result.insert(Table_ident(*fk->referenced_db, *fk->referenced_table));
+          result.insert(Table_ident(fk->referenced_db, fk->referenced_table));
         else
-          result.insert(Table_ident(*fk->foreign_db, *fk->foreign_table));
+          result.insert(Table_ident(fk->foreign_db, fk->foreign_table));
         break;
       }
     }
@@ -7729,13 +7729,13 @@ bool FK_list::get(THD *thd, Table_ident_set &result, LEX_CSTRING &fk_name, bool 
 
 bool FK_list::get(THD *thd, Table_ident_set &result, bool foreign)
 {
-  List_iterator_fast<FOREIGN_KEY_INFO> it(*this);
-  while (FOREIGN_KEY_INFO *fk= it++)
+  List_iterator_fast<FK_info> it(*this);
+  while (FK_info *fk= it++)
   {
     if (foreign)
-      result.insert(Table_ident(*fk->foreign_db, *fk->foreign_table));
+      result.insert(Table_ident(fk->foreign_db, fk->foreign_table));
     else
-      result.insert(Table_ident(*fk->referenced_db, *fk->referenced_table));
+      result.insert(Table_ident(fk->referenced_db, fk->referenced_table));
   }
   return false;
 }

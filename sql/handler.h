@@ -1042,9 +1042,9 @@ enum enum_schema_tables
 struct TABLE_SHARE;
 struct HA_CREATE_INFO;
 struct st_foreign_key_info;
-typedef struct st_foreign_key_info FOREIGN_KEY_INFO;
+class FK_info;
 class Table_ident_set;
-class FK_list : public List<FOREIGN_KEY_INFO>
+class FK_list : public List<FK_info>
 {
 public:
   /* Get all referenced tables for foreign key fk_name. */

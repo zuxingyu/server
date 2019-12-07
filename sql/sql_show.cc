@@ -6882,13 +6882,13 @@ static int get_schema_constraints_record(THD *thd, TABLE_LIST *tables,
 
     if (!show_table->s->foreign_keys.is_empty())
     {
-      FOREIGN_KEY_INFO *f_key_info;
-      List_iterator_fast<FOREIGN_KEY_INFO> it(show_table->s->foreign_keys);
+      FK_info *f_key_info;
+      List_iterator_fast<FK_info> it(show_table->s->foreign_keys);
       while ((f_key_info=it++))
       {
         if (store_constraints(thd, table, db_name, table_name,
-                              f_key_info->foreign_id->str,
-                              strlen(f_key_info->foreign_id->str),
+                              f_key_info->foreign_id.str,
+                              strlen(f_key_info->foreign_id.str),
                               "FOREIGN KEY", 11))
           DBUG_RETURN(1);
       }
@@ -7070,13 +7070,13 @@ static int get_schema_key_column_usage_record(THD *thd,
 
     if (!show_table->s->foreign_keys.is_empty())
     {
-      FOREIGN_KEY_INFO *f_key_info;
-      List_iterator_fast<FOREIGN_KEY_INFO> fkey_it(show_table->s->foreign_keys);
+      FK_info *f_key_info;
+      List_iterator_fast<FK_info> fkey_it(show_table->s->foreign_keys);
       while ((f_key_info= fkey_it++))
       {
         LEX_CSTRING *f_info;
         LEX_CSTRING *r_info;
-        List_iterator_fast<LEX_CSTRING> it(f_key_info->foreign_fields),
+        List_iterator_fast<Lex_cstring> it(f_key_info->foreign_fields),
           it1(f_key_info->referenced_fields);
         uint f_idx= 0;
         while ((f_info= it++))
@@ -7085,18 +7085,18 @@ static int get_schema_key_column_usage_record(THD *thd,
           f_idx++;
           restore_record(table, s->default_values);
           store_key_column_usage(table, db_name, table_name,
-                                f_key_info->foreign_id->str,
-                                f_key_info->foreign_id->length,
+                                f_key_info->foreign_id.str,
+                                f_key_info->foreign_id.length,
                                 f_info->str, f_info->length,
                                 (longlong) f_idx);
           table->field[8]->store((longlong) f_idx, TRUE);
           table->field[8]->set_notnull();
-          table->field[9]->store(f_key_info->referenced_db->str,
-                                f_key_info->referenced_db->length,
+          table->field[9]->store(f_key_info->referenced_db.str,
+                                f_key_info->referenced_db.length,
                                 system_charset_info);
           table->field[9]->set_notnull();
-          table->field[10]->store(f_key_info->referenced_table->str,
-                                  f_key_info->referenced_table->length,
+          table->field[10]->store(f_key_info->referenced_table.str,
+                                  f_key_info->referenced_table.length,
                                   system_charset_info);
           table->field[10]->set_notnull();
           table->field[11]->store(r_info->str, r_info->length,
@@ -7819,25 +7819,25 @@ get_referential_constraints_record(THD *thd, TABLE_LIST *tables,
                            HA_STATUS_NO_LOCK |
                            HA_STATUS_TIME);
 
-    FOREIGN_KEY_INFO *f_key_info;
-    List_iterator_fast<FOREIGN_KEY_INFO> it(show_table->s->foreign_keys);
+    FK_info *f_key_info;
+    List_iterator_fast<FK_info> it(show_table->s->foreign_keys);
     while ((f_key_info= it++))
     {
       restore_record(table, s->default_values);
       table->field[0]->store(STRING_WITH_LEN("def"), cs);
       table->field[1]->store(db_name->str, db_name->length, cs);
       table->field[9]->store(table_name->str, table_name->length, cs);
-      table->field[2]->store(f_key_info->foreign_id->str,
-                             f_key_info->foreign_id->length, cs);
+      table->field[2]->store(f_key_info->foreign_id.str,
+                             f_key_info->foreign_id.length, cs);
       table->field[3]->store(STRING_WITH_LEN("def"), cs);
-      table->field[4]->store(f_key_info->referenced_db->str, 
-                             f_key_info->referenced_db->length, cs);
-      table->field[10]->store(f_key_info->referenced_table->str,
-                             f_key_info->referenced_table->length, cs);
-      if (f_key_info->referenced_key_name)
+      table->field[4]->store(f_key_info->referenced_db.str,
+                             f_key_info->referenced_db.length, cs);
+      table->field[10]->store(f_key_info->referenced_table.str,
+                             f_key_info->referenced_table.length, cs);
+      if (f_key_info->referenced_key_name.str)
       {
-        table->field[5]->store(f_key_info->referenced_key_name->str,
-                               f_key_info->referenced_key_name->length, cs);
+        table->field[5]->store(f_key_info->referenced_key_name.str,
+                               f_key_info->referenced_key_name.length, cs);
         table->field[5]->set_notnull();
       }
       else

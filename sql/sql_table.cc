@@ -6262,11 +6262,11 @@ drop_create_field:
         }
         else if (!table->s->foreign_keys.is_empty())
         {
-          FOREIGN_KEY_INFO *f_key;
-          List_iterator<FOREIGN_KEY_INFO> fk_key_it(table->s->foreign_keys);
+          FK_info *f_key;
+          List_iterator<FK_info> fk_key_it(table->s->foreign_keys);
           while ((f_key= fk_key_it++))
           {
-            if (my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+            if (my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                   drop->name) == 0)
             {
               remove_drop= FALSE;
@@ -6367,7 +6367,7 @@ drop_create_field:
         List_iterator<FOREIGN_KEY_INFO> fk_key_it(table->s->foreign_keys);
         while ((f_key= fk_key_it++))
         {
-          if (my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+          if (my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                 keyname) == 0)
             goto remove_key;
         }
@@ -8737,8 +8737,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
         if (!check->name.length || check->automatic_name)
           continue;
 
-        if (check->name.length == f_key->foreign_id->length &&
-            my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+        if (check->name.length == f_key->foreign_id.length &&
+            my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                           check->name.str) == 0)
         {
           my_error(ER_DUP_CONSTRAINT_NAME, MYF(0), "CHECK", check->name.str);
@@ -8895,11 +8895,11 @@ enum fk_column_change_type
 
 static enum fk_column_change_type
 fk_check_column_changes(THD *thd, Alter_info *alter_info,
-                        List<LEX_CSTRING> &fk_columns,
+                        List<Lex_cstring> &fk_columns,
                         const char **bad_column_name)
 {
-  List_iterator_fast<LEX_CSTRING> column_it(fk_columns);
-  LEX_CSTRING *column;
+  List_iterator_fast<Lex_cstring> column_it(fk_columns);
+  Lex_cstring *column;
 
   *bad_column_name= NULL;
 
@@ -9017,11 +9017,11 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
           l_c_t_n > 0 modes case-insensitive comparison is used.
         */
         if ((drop->type == Alter_drop::FOREIGN_KEY) &&
-            (my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+            (my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                           drop->name) == 0) &&
-            (lex_string_cmp(table_alias_charset, f_key->foreign_db,
+            (lex_string_cmp(table_alias_charset, &f_key->foreign_db,
                             &table->s->db) == 0) &&
-            (lex_string_cmp(table_alias_charset, f_key->foreign_table,
+            (lex_string_cmp(table_alias_charset, &f_key->foreign_table,
                             &table->s->table_name) == 0))
           fk_parent_key_it.remove();
       }
@@ -9055,10 +9055,10 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
       case FK_COLUMN_DATA_CHANGE:
       {
         char buff[NAME_LEN*2+2];
-        strxnmov(buff, sizeof(buff)-1, f_key->foreign_db->str, ".",
-                f_key->foreign_table->str, NullS);
+        strxnmov(buff, sizeof(buff)-1, f_key->foreign_db.str, ".",
+                f_key->foreign_table.str, NullS);
         my_error(ER_FK_COLUMN_CANNOT_CHANGE_CHILD, MYF(0), bad_column_name,
-                f_key->foreign_id->str, buff);
+                f_key->foreign_id.str, buff);
         DBUG_RETURN(true);
       }
       case FK_COLUMN_RENAMED:
@@ -9070,13 +9070,13 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
       case FK_COLUMN_DROPPED:
       {
         StringBuffer<NAME_LEN*2+2> buff(system_charset_info);
-        LEX_CSTRING *db= f_key->foreign_db, *tbl= f_key->foreign_table;
+        LEX_CSTRING *db= &f_key->foreign_db, *tbl= &f_key->foreign_table;
 
         append_identifier(thd, &buff, db);
         buff.append('.');
         append_identifier(thd, &buff, tbl);
         my_error(ER_FK_COLUMN_CANNOT_DROP_CHILD, MYF(0), bad_column_name,
-                f_key->foreign_id->str, buff.c_ptr());
+                f_key->foreign_id.str, buff.c_ptr());
         DBUG_RETURN(true);
       }
       default:
@@ -9102,7 +9102,7 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
       {
         /* Names of foreign keys in InnoDB are case-insensitive. */
         if ((drop->type == Alter_drop::FOREIGN_KEY) &&
-            (my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+            (my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                           drop->name) == 0))
           fk_key_it.remove();
       }
@@ -9125,7 +9125,7 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
         break;
       case FK_COLUMN_DATA_CHANGE:
         my_error(ER_FK_COLUMN_CANNOT_CHANGE, MYF(0), bad_column_name,
-                f_key->foreign_id->str);
+                f_key->foreign_id.str);
         DBUG_RETURN(true);
       case FK_COLUMN_RENAMED:
         my_error(ER_ALTER_OPERATION_NOT_SUPPORTED_REASON, MYF(0),
@@ -9135,7 +9135,7 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
         DBUG_RETURN(true);
       case FK_COLUMN_DROPPED:
         my_error(ER_FK_COLUMN_CANNOT_DROP, MYF(0), bad_column_name,
-                f_key->foreign_id->str);
+                f_key->foreign_id.str);
         DBUG_RETURN(true);
       default:
         DBUG_ASSERT(0);
@@ -9754,7 +9754,7 @@ bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db,
 
           while ((f_key= fk_key_it++))
           {
-            if (my_strcasecmp(system_charset_info, f_key->foreign_id->str,
+            if (my_strcasecmp(system_charset_info, f_key->foreign_id.str,
                   drop->name) == 0)
             {
               drop->type= Alter_drop::FOREIGN_KEY;
