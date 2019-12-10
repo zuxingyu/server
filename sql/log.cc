@@ -1774,7 +1774,8 @@ binlog_flush_cache(THD *thd, binlog_cache_mngr *cache_mngr,
   DBUG_PRINT("enter", ("end_ev: %p", end_ev));
 
   if ((using_stmt && !cache_mngr->stmt_cache.empty()) ||
-      (using_trx && !cache_mngr->trx_cache.empty()))
+      (using_trx && !cache_mngr->trx_cache.empty())   ||
+      thd->transaction.xid_state.is_explicit_XA())
   {
     if (using_stmt && thd->binlog_flush_pending_rows_event(TRUE, FALSE))
       DBUG_RETURN(1);
@@ -1846,6 +1847,17 @@ binlog_commit_flush_stmt_cache(THD *thd, bool all,
   DBUG_RETURN(binlog_flush_cache(thd, cache_mngr, &end_evt, all, TRUE, FALSE));
 }
 
+
+inline size_t serialize_with_xid(XID *xid, char *buf,
+                                 const char *query, size_t q_len)
+{
+  memcpy(buf, query, q_len);
+
+  return
+    q_len + strlen(static_cast<event_xid_t*>(xid)->serialize(buf + q_len));
+}
+
+
 /**
   This function flushes the trx-cache upon commit.
 
@@ -1859,10 +1871,26 @@ static inline int
 binlog_commit_flush_trx_cache(THD *thd, bool all, binlog_cache_mngr *cache_mngr)
 {
   DBUG_ENTER("binlog_commit_flush_trx_cache");
-  Query_log_event end_evt(thd, STRING_WITH_LEN("COMMIT"),
-                          TRUE, TRUE, TRUE, 0);
+
+  const char query[]= "XA COMMIT ";
+  const size_t q_len= sizeof(query) - 1; // do not count trailing 0
+  char buf[q_len + ser_buf_size]= "COMMIT";
+  size_t buflen= sizeof("COMMIT") - 1;
+
+  if (thd->lex->sql_command == SQLCOM_XA_COMMIT)
+  {
+    DBUG_ASSERT(thd->transaction.xid_state.is_explicit_XA());
+    DBUG_ASSERT(thd->transaction.xid_state.xid_cache_element->xa_state ==
+                XA_PREPARED);
+
+    buflen= serialize_with_xid(thd->transaction.xid_state.get_xid(),
+                               buf, query, q_len);
+  }
+  Query_log_event end_evt(thd, buf, buflen, TRUE, TRUE, TRUE, 0);
+
   DBUG_RETURN(binlog_flush_cache(thd, cache_mngr, &end_evt, all, FALSE, TRUE));
 }
+
 
 /**
   This function flushes the trx-cache upon rollback.
@@ -1877,8 +1905,24 @@ static inline int
 binlog_rollback_flush_trx_cache(THD *thd, bool all,
                                 binlog_cache_mngr *cache_mngr)
 {
-  Query_log_event end_evt(thd, STRING_WITH_LEN("ROLLBACK"),
-                          TRUE, TRUE, TRUE, 0);
+  const char query[]= "XA ROLLBACK ";
+  const size_t q_len= sizeof(query) - 1; // do not count trailing 0
+  char buf[q_len + ser_buf_size]= "ROLLBACK";
+  size_t buflen= sizeof("ROLLBACK") - 1;
+
+  if (thd->lex->sql_command == SQLCOM_XA_ROLLBACK)
+  {
+    DBUG_ASSERT(thd->transaction.xid_state.is_explicit_XA());
+    DBUG_ASSERT(thd->transaction.xid_state.xid_cache_element->xa_state ==
+                XA_PREPARED ||
+                thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE);
+    /* not prepared use plain ROLLBACK */
+    if (thd->transaction.xid_state.xid_cache_element->xa_state == XA_PREPARED)
+      buflen= serialize_with_xid(thd->transaction.xid_state.get_xid(),
+                                 buf, query, q_len);
+  }
+  Query_log_event end_evt(thd, buf, buflen, TRUE, TRUE, TRUE, 0);
+
   return (binlog_flush_cache(thd, cache_mngr, &end_evt, all, FALSE, TRUE));
 }
 
@@ -1989,10 +2033,7 @@ inline int binlog_write_by_xid(THD *thd, XID *xid, char *buf,
   if ((WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open()) &&
       thd->transaction.xid_state.is_binlogged())
   {
-    size_t buflen;
-
-    memcpy(buf, query, q_len);
-    buflen= q_len + strlen(static_cast<event_xid_t*>(xid)->serialize(buf+q_len));
+    size_t buflen= serialize_with_xid(xid, buf, query, q_len);
     res= thd->binlog_query(THD::THD::STMT_QUERY_TYPE, buf, buflen,
                            FALSE, TRUE, TRUE, 0);
 
@@ -2005,26 +2046,29 @@ inline int binlog_write_by_xid(THD *thd, XID *xid, char *buf,
 static int binlog_commit_by_xid(handlerton *hton, XID *xid)
 {
   THD *thd= current_thd;
-  const char query[]= "XA COMMIT ";
-  const size_t q_len= sizeof(query) - 1; // do not count trailing 0
-  char buf[q_len + ser_buf_size];
+  // const char query[]= "XA COMMIT ";
+  // const size_t q_len= sizeof(query) - 1; // do not count trailing 0
+  // char buf[q_len + ser_buf_size];
+   (void) thd->binlog_setup_trx_data();
 
   DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_COMMIT);
-
-  return binlog_write_by_xid(thd, xid, buf, query, q_len);
+  //return binlog_write_by_xid(thd, xid, buf, query, q_len);
+  return binlog_commit(hton, thd, TRUE);
 }
 
 
 static int binlog_rollback_by_xid(handlerton *hton, XID *xid)
 {
   THD *thd= current_thd;
-  const char query[]= "XA ROLLBACK ";
-  const size_t q_len= sizeof(query) - 1; // do not count trailing 0
-  char buf[q_len + ser_buf_size];
+  // const char query[]= "XA ROLLBACK ";
+  // const size_t q_len= sizeof(query) - 1; // do not count trailing 0
+  // char buf[q_len + ser_buf_size];
+  (void) thd->binlog_setup_trx_data();
 
   DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_ROLLBACK);
 
-  return binlog_write_by_xid(thd, xid, buf, query, q_len);
+  //return binlog_write_by_xid(thd, xid, buf, query, q_len);
+  return binlog_rollback(hton, thd, TRUE);
 }
 
 
@@ -2050,7 +2094,71 @@ static bool trans_cannot_safely_rollback(THD *thd, bool all)
            thd->wsrep_binlog_format() == BINLOG_FORMAT_MIXED) ||
           (trans_has_updated_non_trans_table(thd) &&
            ending_single_stmt_trans(thd,all) &&
-           thd->wsrep_binlog_format() == BINLOG_FORMAT_MIXED));
+           thd->wsrep_binlog_format() == BINLOG_FORMAT_MIXED) ||
+          thd->transaction.xid_state.is_explicit_XA());
+}
+
+
+inline bool is_preparing_xa(THD *thd)
+{
+  return thd->transaction.xid_state.is_explicit_XA() &&
+    thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE;
+}
+
+
+inline bool is_prepared_xa(THD *thd)
+{
+  return thd->transaction.xid_state.is_explicit_XA() &&
+    thd->transaction.xid_state.xid_cache_element->xa_state == XA_PREPARED;
+}
+
+
+/**
+  Specific log flusher invoked through log_xa_prepare().
+*/
+static int binlog_commit_flush_xa_prepare(THD *thd, bool all,
+                                          binlog_cache_mngr *cache_mngr)
+{
+  XID *xid= &thd->transaction.xid_state.xid_cache_element->xid;
+  {
+    // todo assert wsrep_simulate || is_open()
+
+    /*
+      Log the XA END event first.
+      We don't do that in trans_xa_end() as XA COMMIT ONE PHASE
+      is logged as simple BEGIN/COMMIT so the XA END should
+      not get to the log.
+    */
+    const char query[]= "XA END ";
+    const size_t q_len= sizeof(query) - 1; // do not count trailing 0
+    char buf[q_len + ser_buf_size];
+    size_t buflen;
+    binlog_cache_data *cache_data;
+    IO_CACHE *file;
+
+    // TODO binlog_query
+
+    memcpy(buf, query, q_len);
+    buflen= q_len +
+      strlen(static_cast<event_xid_t*>(xid)->serialize(buf + q_len));
+    cache_data= cache_mngr->get_binlog_cache_data(true);
+    file= &cache_data->cache_log;
+    thd->lex->sql_command= SQLCOM_XA_END;
+    Query_log_event xa_end(thd, buf, buflen, true, false, true, 0);
+    if (mysql_bin_log.write_event(&xa_end, cache_data, file))
+      return 1;
+    thd->lex->sql_command= SQLCOM_XA_PREPARE;
+  }
+
+  cache_mngr->using_xa= FALSE;
+  XA_prepare_log_event end_evt(thd, xid, FALSE);
+  /*
+    Avoids an integrity issue in
+    sql_log_bin OFF (at XA prepare) -> ON (at XA commit)
+  */
+  if (thd->variables.option_bits & OPTION_BIN_LOG)
+    thd->transaction.xid_state.set_binlogged();
+  return (binlog_flush_cache(thd, cache_mngr, &end_evt, all, TRUE, TRUE));
 }
 
 
@@ -2077,7 +2185,7 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
 
   if (!cache_mngr)
   {
-    DBUG_ASSERT(WSREP(thd));
+    DBUG_ASSERT(WSREP(thd) || thd->transaction.xid_state.is_explicit_XA());
     DBUG_RETURN(0);
   }
 
@@ -2096,7 +2204,8 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
     error= binlog_commit_flush_stmt_cache(thd, all, cache_mngr);
   }
 
-  if (cache_mngr->trx_cache.empty())
+  if (cache_mngr->trx_cache.empty() &&
+      !thd->transaction.xid_state.is_binlogged())
   {
     /*
       we're here because cache_log was flushed in MYSQL_BIN_LOG::log_xid()
@@ -2113,8 +2222,11 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
     Otherwise, we accumulate the changes.
   */
   if (likely(!error) && ending_trans(thd, all))
-    error= binlog_commit_flush_trx_cache(thd, all, cache_mngr);
-
+  {
+    error= !is_preparing_xa(thd) ?
+      binlog_commit_flush_trx_cache (thd, all, cache_mngr) :
+      binlog_commit_flush_xa_prepare(thd, all, cache_mngr);
+  }
   /*
     This is part of the stmt rollback.
   */
@@ -2124,6 +2236,7 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
   THD_STAGE_INFO(thd, org_stage);
   DBUG_RETURN(error);
 }
+
 
 /**
   This function is called when a transaction or a statement is rolled back.
@@ -2138,7 +2251,7 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
 static int binlog_rollback(handlerton *hton, THD *thd, bool all)
 {
   DBUG_ENTER("binlog_rollback");
-  int error= 0;
+  int error= !thd->transaction.xid_state.is_explicit_XA() ? 0: thd->is_error();
   binlog_cache_mngr *const cache_mngr=
     (binlog_cache_mngr*) thd_get_ha_data(thd, binlog_hton);
 
@@ -2167,7 +2280,8 @@ static int binlog_rollback(handlerton *hton, THD *thd, bool all)
     error= binlog_commit_flush_stmt_cache(thd, all, cache_mngr);
   }
 
-  if (cache_mngr->trx_cache.empty())
+  if (cache_mngr->trx_cache.empty() &&
+      !thd->transaction.xid_state.is_binlogged())
   {
     /*
       we're here because cache_log was flushed in MYSQL_BIN_LOG::log_xid()
@@ -8035,7 +8149,9 @@ MYSQL_BIN_LOG::trx_group_commit_leader(group_commit_entry *leader)
         We already checked before that at least one cache is non-empty; if both
         are empty we would have skipped calling into here.
       */
-      DBUG_ASSERT(!cache_mngr->stmt_cache.empty() || !cache_mngr->trx_cache.empty());
+      DBUG_ASSERT(!cache_mngr->stmt_cache.empty() ||
+                  !cache_mngr->trx_cache.empty()  ||
+                  current->thd->transaction.xid_state.is_explicit_XA());
 
       if (unlikely((current->error= write_transaction_or_stmt(current,
                                                               commit_id))))
@@ -8279,7 +8395,8 @@ MYSQL_BIN_LOG::write_transaction_or_stmt(group_commit_entry *entry,
   binlog_cache_mngr *mngr= entry->cache_mngr;
   DBUG_ENTER("MYSQL_BIN_LOG::write_transaction_or_stmt");
 
-  if (write_gtid_event(entry->thd, false, entry->using_trx_cache, commit_id))
+  if (write_gtid_event(entry->thd, is_prepared_xa(entry->thd),
+                       entry->using_trx_cache, commit_id))
     DBUG_RETURN(ER_ERROR_ON_WRITE);
 
   if (entry->using_stmt_cache && !mngr->stmt_cache.empty() &&
@@ -9985,43 +10102,10 @@ int TC_LOG_BINLOG::unlog(ulong cookie, my_xid xid)
 
 int TC_LOG_BINLOG::log_xa_prepare(THD *thd, bool all)
 {
-  binlog_cache_mngr *cache_mngr= thd->binlog_setup_trx_data();
-  XID *xid= &thd->transaction.xid_state.xid_cache_element->xid;
-  {
-    // todo assert wsrep_simulate || is_open()
+  DBUG_ASSERT(is_preparing_xa(thd));
 
-    /*
-      Log the XA END event first.
-      We don't do that in trans_xa_end() as XA COMMIT ONE PHASE
-      is logged as simple BEGIN/COMMIT so the XA END should
-      not get to the log.
-    */
-    const char query[]= "XA END ";
-    const size_t q_len= sizeof(query) - 1; // do not count trailing 0
-    char buf[q_len + ser_buf_size];
-    size_t buflen;
-    binlog_cache_data *cache_data;
-    IO_CACHE *file;
-
-    // TODO binlog_query
-
-    memcpy(buf, query, q_len);
-    buflen= q_len +
-      strlen(static_cast<event_xid_t*>(xid)->serialize(buf + q_len));
-    cache_data= cache_mngr->get_binlog_cache_data(true);
-    file= &cache_data->cache_log;
-    thd->lex->sql_command= SQLCOM_XA_END;
-    Query_log_event xa_end(thd, buf, buflen, true, false, true, 0);
-    if (write_event(&xa_end, cache_data, file))
-      return 1;
-    thd->lex->sql_command= SQLCOM_XA_PREPARE;
-  }
-
-  cache_mngr->using_xa= FALSE;
-  XA_prepare_log_event end_evt(thd, xid, FALSE);
-  if (thd->variables.option_bits & OPTION_BIN_LOG)
-    thd->transaction.xid_state.set_binlogged();
-  return (binlog_flush_cache(thd, cache_mngr, &end_evt, all, TRUE, TRUE));
+  return
+    binlog_commit(NULL, thd, all);
 }
 
 

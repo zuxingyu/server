@@ -3591,6 +3591,8 @@ public:
   static const uchar FL_DDL= 32;
   /* FL_PREPARED_XA is set for XA transaction. */
   static const uchar FL_PREPARED_XA= 64;
+  /* FL_"COMMITTED or ROLLED-BACK"_XA is set for XA transaction. */
+  static const uchar FL_COMPLETED_XA= 128;
 
 #ifdef MYSQL_SERVER
   Gtid_log_event(THD *thd_arg, uint64 seq_no, uint32 domain_id, bool standalone,

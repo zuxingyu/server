@@ -1307,12 +1307,11 @@ int ha_prepare(THD *thd)
       }
     }
 
-    uint rw_ha_count=
-      ha_check_and_coalesce_trx_read_only(thd,trans->ha_list, all);
-    bool rw_trans=
-      (rw_ha_count > (thd->is_current_stmt_binlog_disabled()?0U:1U));
-
-    if (rw_trans && tc_log->log_xa_prepare(thd, all))
+    /*
+      Read-only prepared XA may be logged, e.g with ineffective
+      update semantic DML in STATEMENT format.
+    */
+    if (tc_log->log_xa_prepare(thd, all))
     {
       ha_rollback_trans(thd, all);
       error=1;
@@ -1866,7 +1865,7 @@ int ha_rollback_trans(THD *thd, bool all)
       rollback without signalling following transactions. And in release
       builds, we explicitly do the signalling before rolling back.
     */
-    DBUG_ASSERT(!(thd->rgi_slave && thd->rgi_slave->did_mark_start_commit));
+    DBUG_ASSERT(!(thd->rgi_slave && thd->rgi_slave->did_mark_start_commit) || thd->transaction.xid_state.is_explicit_XA());
     if (thd->rgi_slave && thd->rgi_slave->did_mark_start_commit)
       thd->rgi_slave->unmark_start_commit();
   }

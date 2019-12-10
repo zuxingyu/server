@@ -5397,7 +5397,6 @@ pthread_handler_t handle_slave_sql(void *arg)
     But the master timestamp is reset by RESET SLAVE & CHANGE MASTER.
   */
   rli->clear_error();
-  rli->parallel.reset();
 
   //tell the I/O thread to take relay_log_space_limit into account from now on
   rli->ignore_log_space_limit= 0;
@@ -5564,7 +5563,9 @@ pthread_handler_t handle_slave_sql(void *arg)
   }
 #endif /* WITH_WSREP */
   /* Read queries from the IO/THREAD until this thread is killed */
-
+  if (rli->parallel.reset(mi->using_parallel()))
+    rli->report(ERROR_LEVEL, ER_SLAVE_FATAL_ERROR, NULL,
+                "Error initializing parallel mode");
   thd->set_command(COM_SLAVE_SQL);
   while (!sql_slave_killed(serial_rgi))
   {
@@ -5626,7 +5627,7 @@ pthread_handler_t handle_slave_sql(void *arg)
 
  err:
   if (mi->using_parallel())
-    rli->parallel.wait_for_done(thd, rli);
+    rli->parallel.leave(thd, rli);
 
   /* Thread stopped. Print the current replication position to the log */
   {

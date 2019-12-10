@@ -2093,21 +2093,51 @@ rpl_parallel_thread_pool::release_thread(rpl_parallel_thread *rpt)
 */
 rpl_parallel_thread *
 rpl_parallel_entry::choose_thread(rpl_group_info *rgi, bool *did_enter_cond,
-                                  PSI_stage_info *old_stage, bool reuse)
+                                  PSI_stage_info *old_stage,
+                                  Gtid_log_event *gtid_ev)
 {
   uint32 idx;
   Relay_log_info *rli= rgi->rli;
   rpl_parallel_thread *thr;
+  bool reuse= gtid_ev == NULL;
 
   idx= rpl_thread_idx;
+
   if (!reuse)
   {
+    /* TODO: in both XAP and XAC search for xid, check in new XAP *or*
+       out old XAP (finally do that by Worker).
+       TODO: init|deinit the xid hash by Driver
+    */
+    if (gtid_ev->flags2 & Gtid_log_event::FL_COMPLETED_XA)
+    {
+      // if (!xid_item= search) warning; thr will be any
+      // else thr delete xid_item and "reuse" xid_item->thr
+      //          *unless* choose_thr won't find it as below
+      XID_cache_element_para* el= rli->parallel.xid_cache_search(&gtid_ev->xid);
+
+      if (el)
+      {
+        uint32 idx_xid= el->worker_idx;
+        if (rli->parallel.xid_cache_delete(el))
+          return NULL; // TODO error
+        else
+          idx= idx_xid;
+        goto past_idx_done;
+      }
+      else
+      {
+        // TODO: warning unless it's prepared on slave
+      }
+    }
     ++idx;
     if (idx >= rpl_thread_max)
       idx= 0;
     rpl_thread_idx= idx;
   }
+past_idx_done:
   thr= rpl_threads[idx];
+
   if (thr)
   {
     *did_enter_cond= false;
@@ -2177,6 +2207,16 @@ rpl_parallel_entry::choose_thread(rpl_group_info *rgi, bool *did_enter_cond,
     rpl_threads[idx]= thr= global_rpl_thread_pool.get_thread(&rpl_threads[idx],
                                                              this);
 
+  if (thr && gtid_ev && (gtid_ev->flags2 & Gtid_log_event::FL_PREPARED_XA))
+  {
+    if (rli->parallel.xid_cache_insert(&gtid_ev->xid, idx))
+    {
+      /* There has already existed the same xid prepared-only Xid */
+      my_error(ER_OUT_OF_RESOURCES, MYF(MY_WME)); /* TODO: new error code */
+      return NULL;
+    }
+  }
+
   return thr;
 }
 
@@ -2205,12 +2245,19 @@ rpl_parallel::rpl_parallel() :
 }
 
 
-void
-rpl_parallel::reset()
+bool
+rpl_parallel::reset(bool is_parallel)
 {
   my_hash_reset(&domain_hash);
   current= NULL;
   sql_thread_stopping= false;
+  if (is_parallel)
+  {
+    xid_cache_init();
+    if (!(pins= lf_hash_get_pins(&xid_cache_para)))
+      return true;
+  }
+  return false;
 }
 
 
@@ -2473,6 +2520,69 @@ rpl_parallel::wait_for_workers_idle(THD *thd)
 }
 
 
+void rpl_parallel::xid_cache_init()
+{
+  DBUG_ASSERT(!xid_cache_inited);
+
+  xid_cache_inited= true;
+  lf_hash_init(&xid_cache_para, sizeof(XID_cache_element_para), LF_HASH_UNIQUE, 0, 0,
+               (my_hash_get_key) XID_cache_element::key, &my_charset_bin);
+  xid_cache_para.alloc.constructor= XID_cache_element::lf_alloc_constructor;
+  xid_cache_para.alloc.destructor= XID_cache_element::lf_alloc_destructor;
+  xid_cache_para.initializer=
+    (lf_hash_initializer) XID_cache_element::lf_hash_initializer;
+}
+
+
+void rpl_parallel::xid_cache_free()
+{
+  DBUG_ASSERT(xid_cache_inited);
+
+  lf_hash_destroy(&xid_cache_para);
+  xid_cache_inited= false;
+}
+
+
+XID_cache_element_para* rpl_parallel::xid_cache_search(XID *xid)
+{
+  return (XID_cache_element_para*) lf_hash_search(&xid_cache_para, pins,
+                                                  xid->key(),
+                                                  xid->key_length());
+}
+
+
+bool rpl_parallel::xid_cache_insert(XID *xid, uint32 idx)
+{
+  XID_cache_insert_element new_element(XA_PREPARED, xid);
+
+  int res= lf_hash_insert(&xid_cache_para, pins, &new_element);
+  if (!res)
+    static_cast<XID_cache_element_para*>(new_element.xid_cache_element)->
+      worker_idx= idx;
+
+  return res;
+}
+
+
+bool rpl_parallel::xid_cache_delete(XID_cache_element_para* el)
+{
+  return lf_hash_delete(&xid_cache_para, pins,
+                        el->xid.key(), el->xid.key_length());
+}
+
+// rpl_parallel_thread* rpl_parallel::xid_cache_search_and_delete(XID *xid)
+// {
+//   XID_cache_element_para* el= xid_cache_search(xid);
+//   rpl_parallel_thread *rc= (rpl_parallel_thread*) el->data;
+
+//   if (!el)
+//     rc= NULL; // TODO warning
+//   else if (xid_cache_delete(el))
+//     rc= NULL; // TODO error
+
+//   return rc;
+// }
+
 /*
   Handle seeing a GTID during slave restart in GTID mode. If we stopped with
   different replication domains having reached different positions in the relay
@@ -2673,10 +2783,11 @@ rpl_parallel::do_event(rpl_group_info *serial_rgi, Log_event *ev,
     }
   }
 
+  Gtid_log_event *gtid_ev= NULL;
   if (typ == GTID_EVENT)
   {
     rpl_gtid gtid;
-    Gtid_log_event *gtid_ev= static_cast<Gtid_log_event *>(ev);
+    gtid_ev= static_cast<Gtid_log_event *>(ev);
     uint32 domain_id= (rli->mi->using_gtid == Master_info::USE_GTID_NO ||
                        rli->mi->parallel_mode <= SLAVE_PARALLEL_MINIMAL ?
                        0 : gtid_ev->domain_id);
@@ -2715,8 +2826,7 @@ rpl_parallel::do_event(rpl_group_info *serial_rgi, Log_event *ev,
     instead re-use a thread that we queued for previously.
   */
   cur_thread=
-    e->choose_thread(serial_rgi, &did_enter_cond, &old_stage,
-                     typ != GTID_EVENT);
+    e->choose_thread(serial_rgi, &did_enter_cond, &old_stage, gtid_ev /*TODO*/);
   if (!cur_thread)
   {
     /* This means we were killed. The error is already signalled. */
@@ -2734,7 +2844,7 @@ rpl_parallel::do_event(rpl_group_info *serial_rgi, Log_event *ev,
 
   if (typ == GTID_EVENT)
   {
-    Gtid_log_event *gtid_ev= static_cast<Gtid_log_event *>(ev);
+    //Gtid_log_event *gtid_ev= static_cast<Gtid_log_event *>(ev);
     bool new_gco;
     enum_slave_parallel_mode mode= rli->mi->parallel_mode;
     uchar gtid_flags= gtid_ev->flags2;

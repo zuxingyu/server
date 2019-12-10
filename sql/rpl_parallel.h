@@ -2,7 +2,7 @@
 #define RPL_PARALLEL_H
 
 #include "log_event.h"
-
+#include "lf.h"
 
 struct rpl_parallel;
 struct rpl_parallel_entry;
@@ -345,7 +345,8 @@ struct rpl_parallel_entry {
   group_commit_orderer *current_gco;
 
   rpl_parallel_thread * choose_thread(rpl_group_info *rgi, bool *did_enter_cond,
-                                      PSI_stage_info *old_stage, bool reuse);
+                                      PSI_stage_info *old_stage,
+                                      Gtid_log_event *gtid_ev);
   int queue_master_restart(rpl_group_info *rgi,
                            Format_description_log_event *fdev);
 };
@@ -356,13 +357,32 @@ struct rpl_parallel {
 
   rpl_parallel();
   ~rpl_parallel();
-  void reset();
+  bool reset(bool);
   rpl_parallel_entry *find(uint32 domain_id);
   void wait_for_done(THD *thd, Relay_log_info *rli);
   void stop_during_until();
   bool workers_idle();
   int wait_for_workers_idle(THD *thd);
   int do_event(rpl_group_info *serial_rgi, Log_event *ev, ulonglong event_size);
+  void leave(THD *thd, Relay_log_info *rli)
+  {
+    wait_for_done(thd, rli);
+
+    DBUG_ASSERT(xid_cache_inited);
+
+    lf_hash_put_pins(pins);
+    xid_cache_free();
+  };
+  // XA related. API follows xa.h naming.
+  LF_HASH xid_cache_para;
+  LF_PINS *pins;
+
+  bool xid_cache_inited;
+  void xid_cache_init();
+  void xid_cache_free();
+  bool xid_cache_insert(XID *xid, uint32 idx);
+  bool xid_cache_delete(XID_cache_element_para *el);
+  XID_cache_element_para *xid_cache_search(XID *xid);
 };
 
 

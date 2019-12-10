@@ -7963,7 +7963,7 @@ Gtid_log_event::Gtid_log_event(const char *buf, uint event_len,
     commit_id= uint8korr(buf);
     buf+= 8;
   }
-  if (flags2 & FL_PREPARED_XA)
+  if (flags2 & (FL_PREPARED_XA | FL_COMPLETED_XA))
   {
     xid.formatID= (long) buf[0];
     xid.gtrid_length= (long) buf[1];
@@ -8012,14 +8012,15 @@ Gtid_log_event::Gtid_log_event(THD *thd_arg, uint64 seq_no_arg,
     the transaction GTID and event group.
   */
   if (is_transactional &&
-      thd->transaction.xid_state.xid_cache_element &&
+      thd->transaction.xid_state.is_explicit_XA() &&
       thd->lex->xa_opt != XA_ONE_PHASE)
   {
     DBUG_ASSERT(thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE ||
                 (thd->transaction.xid_state.is_binlogged() &&
                  thd->transaction.xid_state.xid_cache_element->xa_state == XA_PREPARED));
 
-    flags2|= FL_PREPARED_XA;
+    flags2|= thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE ?
+      FL_PREPARED_XA : FL_COMPLETED_XA;
 
     // No array assignment: xid.data= thd->transaction.xid_state.xid_cache_element->xid.data;
     //xid= * static_cast<event_xid_t*>
@@ -8090,7 +8091,7 @@ Gtid_log_event::write()
   else
     write_len= 13;
 
-  if (flags2 & FL_PREPARED_XA)
+  if (flags2 & (FL_PREPARED_XA | FL_COMPLETED_XA))
   {
     buf[write_len]= (uchar) ((char) xid.formatID);
     buf[write_len+1]= (uchar) xid.gtrid_length;
@@ -9036,11 +9037,13 @@ int Xid_apply_log_event::do_apply_event(rpl_group_info *rgi)
 
   /*
     An instance of this class such as XID_EVENT works like a COMMIT
-    statement. As well as XA_PREPARE_LOG_EVENT it also updates
-    mysql.gtid_slave_pos table with the GTID of the current transaction.
-
+    statement. It updates mysql.gtid_slave_pos with the GTID of the
+    current transaction.
     Therefore, it acts much like a normal SQL statement, so we need to do
     THD::reset_for_next_command() as if starting a new statement.
+
+    XA_PREPARE_LOG_EVENT also updates the gtid table *but* the update gets
+    committed as separate "autocommit" transaction.
   */
   thd->reset_for_next_command();
   /*
@@ -9123,7 +9126,6 @@ Xid_apply_log_event::do_shall_skip(rpl_group_info *rgi)
   DBUG_RETURN(Log_event::do_shall_skip(rgi));
 }
 #endif /* !MYSQL_CLIENT */
-
 
 /**************************************************************************
   Xid_log_event methods

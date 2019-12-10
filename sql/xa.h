@@ -150,11 +150,19 @@ public:
   }
 };
 
+class XID_cache_element_para : public XID_cache_element
+{
+public:
+  uint32 worker_idx;
+};
+
 
 struct XID_STATE {
   XID_cache_element *xid_cache_element;
+
+  bool is_explicit_XA() const { return xid_cache_element != 0; }
   /*
-    Binary logging status.
+    Binary logging status of explicit "user" XA.
     It is set to TRUE at XA PREPARE if the transaction was written
     to the binlog.
     Naturally FALSE means the transaction was not written to
@@ -166,11 +174,10 @@ struct XID_STATE {
   */
   bool is_binlogged()
   {
-    return xid_cache_element && xid_cache_element->binlogged;
+    return is_explicit_XA() && xid_cache_element->binlogged;
   }
 
   bool check_has_uncommitted_xa() const;
-  bool is_explicit_XA() const { return xid_cache_element != 0; }
   void set_error(uint error);
   void er_xaer_rmfail() const;
   XID *get_xid() const;

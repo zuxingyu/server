@@ -481,6 +481,10 @@ bool trans_xa_commit(THD *thd)
         }
         DBUG_ASSERT(!xid_state.xid_cache_element);
 
+        DEBUG_SYNC(thd, "trans_xa_commit");
+        if ((res= thd->wait_for_prior_commit()))
+          DBUG_RETURN(res);
+
         xid_state.xid_cache_element= xs;
         ha_commit_or_rollback_by_xid(thd->lex->xid, !res);
         xid_state.xid_cache_element= 0;
@@ -536,6 +540,7 @@ bool trans_xa_commit(THD *thd)
     {
       DEBUG_SYNC(thd, "trans_xa_commit_after_acquire_commit_lock");
 
+#if 0
       if((WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open()) &&
          xid_state.is_binlogged())
       {
@@ -545,8 +550,10 @@ bool trans_xa_commit(THD *thd)
       }
       else
         res= 0;
-
-      if (res || (res= MY_TEST(ha_commit_one_phase(thd, 1))))
+//#endif
+      res= binlog_commit_by_xid(NULL, xid_state.get_xid());
+#endif
+      if ((res= MY_TEST(ha_commit_one_phase(thd, 1))))
         my_error(ER_XAER_RMERR, MYF(0));
     }
   }
@@ -613,6 +620,10 @@ bool trans_xa_rollback(THD *thd)
       xa_trans_rolled_back(xs);
       DBUG_ASSERT(!xid_state.xid_cache_element);
 
+      DEBUG_SYNC(thd, "trans_xa_rollback");
+      if ((res= thd->wait_for_prior_commit()))
+        DBUG_RETURN(res);
+
       xid_state.xid_cache_element= xs;
       ha_commit_or_rollback_by_xid(thd->lex->xid, 0);
       xid_state.xid_cache_element= 0;
@@ -644,14 +655,21 @@ bool trans_xa_rollback(THD *thd)
     DBUG_RETURN(true);
   }
 
-  if (xid_state.xid_cache_element->xa_state == XA_PREPARED &&
-      xid_state.is_binlogged() &&
+#if 0
+  if (xid_state.xid_cache_element->xa_state == XA_PREPARED)
+//#if 0
+  if (xid_state.is_binlogged() &&
       (WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open()))
   {
     res= thd->binlog_query(THD::THD::STMT_QUERY_TYPE,
                            thd->query(), thd->query_length(),
                            FALSE, TRUE, TRUE, 0);
   }
+//#endif
+  {
+    res= binlog_rollback_by_xid(NULL, xid_state.get_xid());
+  }
+#endif
   DBUG_RETURN(res != 0 || xa_trans_force_rollback(thd));
 }
 
