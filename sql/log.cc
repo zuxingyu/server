@@ -2049,7 +2049,8 @@ static int binlog_commit_by_xid(handlerton *hton, XID *xid)
   // const char query[]= "XA COMMIT ";
   // const size_t q_len= sizeof(query) - 1; // do not count trailing 0
   // char buf[q_len + ser_buf_size];
-   (void) thd->binlog_setup_trx_data();
+  if (thd->transaction.xid_state.is_binlogged())
+    (void) thd->binlog_setup_trx_data();
 
   DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_COMMIT);
   //return binlog_write_by_xid(thd, xid, buf, query, q_len);
@@ -2063,7 +2064,8 @@ static int binlog_rollback_by_xid(handlerton *hton, XID *xid)
   // const char query[]= "XA ROLLBACK ";
   // const size_t q_len= sizeof(query) - 1; // do not count trailing 0
   // char buf[q_len + ser_buf_size];
-  (void) thd->binlog_setup_trx_data();
+  if (thd->transaction.xid_state.is_binlogged())
+    (void) thd->binlog_setup_trx_data();
 
   DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_ROLLBACK);
 
@@ -2185,7 +2187,9 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
 
   if (!cache_mngr)
   {
-    DBUG_ASSERT(WSREP(thd) || thd->transaction.xid_state.is_explicit_XA());
+    DBUG_ASSERT(WSREP(thd) ||
+                (thd->transaction.xid_state.is_explicit_XA() &&
+                 !thd->transaction.xid_state.is_binlogged()));
     DBUG_RETURN(0);
   }
 
@@ -2257,7 +2261,9 @@ static int binlog_rollback(handlerton *hton, THD *thd, bool all)
 
   if (!cache_mngr)
   {
-    DBUG_ASSERT(WSREP(thd));
+    DBUG_ASSERT(WSREP(thd) ||
+                (is_prepared_xa(thd) &&
+                 !thd->transaction.xid_state.is_binlogged()));
     DBUG_RETURN(0);
   }
 

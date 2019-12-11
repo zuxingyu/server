@@ -9079,7 +9079,7 @@ int Xid_apply_log_event::do_apply_event(rpl_group_info *rgi)
   thd->variables.option_bits&= ~OPTION_GTID_BEGIN;
   res= do_commit();
 
-  if (rgi->gtid_pending)
+  if (!res && rgi->gtid_pending)
   {
     DBUG_ASSERT(!thd->transaction.xid_state.is_explicit_XA());
 
@@ -9333,6 +9333,9 @@ int XA_prepare_log_event::do_commit()
   thd->lex->xid= &xid;
   if (!one_phase)
   {
+    if ((res= thd->wait_for_prior_commit()))
+      return res;
+
     thd->lex->sql_command= SQLCOM_XA_PREPARE;
     res= trans_xa_prepare(thd);
   }

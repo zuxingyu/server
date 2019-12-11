@@ -1282,7 +1282,7 @@ int ha_prepare(THD *thd)
   THD_TRANS *trans=all ? &thd->transaction.all : &thd->transaction.stmt;
   Ha_trx_info *ha_info= trans->ha_list;
   DBUG_ENTER("ha_prepare");
-
+// TODO/FIXME-742: assert dropped OPTION_GTID_BEGIN
   if (ha_info)
   {
     for (; ha_info; ha_info= ha_info->next())
