@@ -3682,8 +3682,6 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
   bool primary_key=0,unique_key=0;
   Key *key, *key2;
   uint tmp, key_number;
-  /* special marker for keys to be ignored */
-  static char ignore_key[1];
 
   /* Calculate number of key segements */
   *key_count= 0;
@@ -3692,7 +3690,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
   {
     DBUG_PRINT("info", ("key name: '%s'  type: %d", key->name.str ? key->name.str :
                         "(none)" , key->type));
-    if (key->type == Key::FOREIGN_KEY)
+    if (key->foreign)
     {
       fk_key_count++;
       Foreign_key *fk_key= (Foreign_key*) key;
@@ -3707,7 +3705,6 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
                  ER_THD(thd, ER_KEY_REF_DO_NOT_MATCH_TABLE_REF));
 	DBUG_RETURN(TRUE);
       }
-      continue;
     }
     (*key_count)++;
     tmp=file->max_key_parts();
@@ -3719,36 +3716,30 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     if (check_ident_length(&key->name))
       DBUG_RETURN(TRUE);
     key_iterator2.rewind ();
-    if (key->type != Key::FOREIGN_KEY)
+    while ((key2 = key_iterator2++) != key)
     {
-      while ((key2 = key_iterator2++) != key)
+      /*
+        foreign_key_prefix(key, key2) returns 0 if key or key2, or both, is
+        'generated', and a generated key is a prefix of the other key.
+        Then we do not need the generated shorter key.
+      */
+      if ((!key2->ignore && !foreign_key_prefix(key, key2)))
       {
-	/*
-          foreign_key_prefix(key, key2) returns 0 if key or key2, or both, is
-          'generated', and a generated key is a prefix of the other key.
-          Then we do not need the generated shorter key.
-        */
-        if ((key2->type != Key::FOREIGN_KEY &&
-             key2->name.str != ignore_key &&
-             !foreign_key_prefix(key, key2)))
+        /* TODO: issue warning message */
+        /* mark that the generated key should be ignored */
+        if (!key2->generated ||
+            (key->generated && key->columns.elements < key2->columns.elements))
+          key->ignore= true;
+        else
         {
-          /* TODO: issue warning message */
-          /* mark that the generated key should be ignored */
-          if (!key2->generated ||
-              (key->generated && key->columns.elements <
-               key2->columns.elements))
-            key->name.str= ignore_key;
-          else
-          {
-            key2->name.str= ignore_key;
-            key_parts-= key2->columns.elements;
-            (*key_count)--;
-          }
-          break;
+          key2->ignore= true;
+          key_parts-= key2->columns.elements;
+          (*key_count)--;
         }
+        break;
       }
     }
-    if (key->name.str != ignore_key)
+    if (!key->ignore)
       key_parts+=key->columns.elements;
     else
       (*key_count)--;
@@ -3777,7 +3768,8 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     DBUG_RETURN(TRUE);
   }
 
-  (*key_info_buffer)= key_info= (KEY*) thd->calloc(sizeof(KEY) * (*key_count));
+  (*key_info_buffer)= key_info= (KEY*) thd->calloc(sizeof(KEY) *
+                                                   (*key_count + fk_key_count));
   key_part_info=(KEY_PART_INFO*) thd->calloc(sizeof(KEY_PART_INFO)*key_parts);
   if (!*key_info_buffer || ! key_part_info)
     DBUG_RETURN(TRUE);				// Out of memory
@@ -3790,12 +3782,12 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     Key_part_spec *column;
 
     is_hash_field_needed= false;
-    if (key->name.str == ignore_key)
+    if (key->ignore)
     {
       /* ignore redundant keys */
       do
 	key=key_iterator++;
-      while (key && key->name.str == ignore_key);
+      while (key && key->ignore);
       if (!key)
 	break;
     }
@@ -3820,9 +3812,6 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
                  sym_group_geom.name, sym_group_geom.needed_define);
 	DBUG_RETURN(TRUE);
 #endif
-    case Key::FOREIGN_KEY:
-      key_number--;				// Skip this key
-      continue;
     default:
       key_info->flags = HA_NOSAME;
       break;
@@ -4003,15 +3992,16 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
         break;
 
       case Key::MULTIPLE:
-        if (sql_field->type_handler()->Key_part_spec_init_multiple(column,
-                                                                   *sql_field,
-                                                                   file) ||
-            sql_field->check_vcol_for_key(thd) ||
-            key_add_part_check_null(file, key_info, sql_field, column))
-          DBUG_RETURN(TRUE);
-        break;
-
-      case Key::FOREIGN_KEY:
+        if (!key->foreign)
+        {
+          if (sql_field->type_handler()->Key_part_spec_init_multiple(column,
+                                                                    *sql_field,
+                                                                    file) ||
+              sql_field->check_vcol_for_key(thd) ||
+              key_add_part_check_null(file, key_info, sql_field, column))
+            DBUG_RETURN(TRUE);
+          break;
+        }
         if (sql_field->type_handler()->Key_part_spec_init_foreign(column,
                                                                   *sql_field,
                                                                   file) ||
@@ -4344,7 +4334,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
           Noly Primary Key UNIQUE and Foreign keys.
         */
         if (key->type != Key::PRIMARY && key->type != Key::UNIQUE &&
-            key->type != Key::FOREIGN_KEY)
+            !key->foreign)
           continue;
 
         if (check->name.length == key->name.length &&
@@ -4798,7 +4788,7 @@ handler *mysql_create_frm_image(THD *thd, const LEX_CSTRING &db,
     Key *key;
     while ((key= key_iterator++))
     {
-      if (key->type == Key::FOREIGN_KEY)
+      if (key->foreign)
       {
         my_error(ER_FOREIGN_KEY_ON_PARTITIONED, MYF(0));
         goto err;
@@ -6350,7 +6340,7 @@ drop_create_field:
             continue;
         }
       }
-      if (key->type != Key::FOREIGN_KEY)
+      if (!key->foreign)
       {
         for (n_key=0; n_key < table->s->keys; n_key++)
         {
@@ -6402,18 +6392,13 @@ remove_key:
                             ER_DUP_KEYNAME, ER_THD(thd, dup_primary_key
                             ? ER_MULTIPLE_PRI_KEY : ER_DUP_KEYNAME), keyname);
         key_it.remove();
-        if (key->type == Key::FOREIGN_KEY)
-        {
-          /* ADD FOREIGN KEY appends two items. */
-          key_it.remove();
-        }
         if (alter_info->key_list.is_empty())
           alter_info->flags&= ~(ALTER_ADD_INDEX | ALTER_ADD_FOREIGN_KEY);
       }
       else
       {
         DBUG_ASSERT(key->or_replace());
-        Alter_drop::drop_type type= (key->type == Key::FOREIGN_KEY) ?
+        Alter_drop::drop_type type= key->foreign ?
           Alter_drop::FOREIGN_KEY : Alter_drop::KEY;
         Alter_drop *ad= new Alter_drop(type, key->name.str, FALSE);
         if (ad != NULL)
@@ -8593,7 +8578,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     Key *key;
     while ((key=key_it++))			// Add new keys
     {
-      if (key->type == Key::FOREIGN_KEY)
+      if (key->foreign)
       {
         Foreign_key *fk= static_cast<Foreign_key*>(key);
         if (fk->validate(new_create_list))
@@ -9159,7 +9144,7 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
 
     while (Key *key= fk_list_it++)
     {
-      if (key->type != Key::FOREIGN_KEY)
+      if (!key->foreign)
         continue;
 
       Foreign_key *fk= static_cast<Foreign_key*>(key);

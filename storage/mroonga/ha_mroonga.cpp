@@ -3635,7 +3635,7 @@ bool ha_mroonga::storage_create_foreign_key(TABLE *table,
   char ref_db_buff[NAME_LEN + 1], ref_table_buff[NAME_LEN + 1];
   while ((key = key_iterator++))
   {
-    if (key->type != MRN_KEYTYPE_FOREIGN)
+    if (!key->foreign)
     {
       continue;
     }

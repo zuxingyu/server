@@ -9340,7 +9340,7 @@ bool TABLE_SHARE::update_foreign_keys(THD *thd, Alter_info *alter_info,
   List_iterator_fast<Key> key_it(alter_info->key_list);
   while (Key* key= key_it++)
   {
-    if (key->type != Key::FOREIGN_KEY)
+    if (!key->foreign)
       continue;
 
     Foreign_key *src= static_cast<Foreign_key*>(key);
@@ -9441,7 +9441,7 @@ bool TABLE_SHARE::update_foreign_keys(THD *thd, Alter_info *alter_info,
       key_it.rewind();
       while (Key* key= key_it++)
       {
-        if (key->type != Key::FOREIGN_KEY)
+        if (!key->foreign)
           continue;
         Foreign_key *src= static_cast<Foreign_key*>(key);
         LEX_CSTRING &src_db= src->ref_db.str ? src->ref_db : db;
