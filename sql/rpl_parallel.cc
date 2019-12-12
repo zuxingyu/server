@@ -2123,19 +2123,19 @@ rpl_parallel_entry::choose_thread(rpl_group_info *rgi, bool *did_enter_cond,
           return NULL; // TODO error
         else
           idx= idx_xid;
-        goto past_idx_done;
       }
       else
       {
         // TODO: warning unless it's prepared on slave
       }
+    } else
+    {
+      ++idx;
+      if (idx >= rpl_thread_max)
+        idx= 0;
     }
-    ++idx;
-    if (idx >= rpl_thread_max)
-      idx= 0;
     rpl_thread_idx= idx;
   }
-past_idx_done:
   thr= rpl_threads[idx];
 
   if (thr)

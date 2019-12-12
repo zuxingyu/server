@@ -9078,7 +9078,7 @@ int Xid_apply_log_event::do_apply_event(rpl_group_info *rgi)
                     "COMMIT /* implicit, from Xid_log_event */");
   thd->variables.option_bits&= ~OPTION_GTID_BEGIN;
   res= do_commit();
-
+  // TODO: signal to followers (log-bin OFF)
   if (!res && rgi->gtid_pending)
   {
     DBUG_ASSERT(!thd->transaction.xid_state.is_explicit_XA());
