@@ -1808,7 +1808,7 @@ binlog_flush_cache(THD *thd, binlog_cache_mngr *cache_mngr,
       So there is no work to do. Therefore, we will not increment any XID
       count, so we must not decrement any XID count in unlog().
     */
-    cache_mngr->need_unlog= 0;
+    cache_mngr->need_unlog= 0; // TODO/FIXME: HOW does apply to XA too
   }
   cache_mngr->reset(using_stmt, using_trx);
 
@@ -1940,13 +1940,7 @@ static inline int
 binlog_commit_flush_xid_caches(THD *thd, binlog_cache_mngr *cache_mngr,
                                bool all, my_xid xid)
 {
-  /* Mask XA COMMIT ... ONE PHASE as plain BEGIN ... COMMIT */
-  if (!xid)
-  {
-    DBUG_ASSERT(thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE &&
-                thd->lex->xa_opt == XA_ONE_PHASE);
-    xid= thd->query_id;
-  }
+  DBUG_ASSERT(xid); // replaced former treatment of ONE-PHASE XA
 
   Xid_log_event end_evt(thd, xid, TRUE);
   return (binlog_flush_cache(thd, cache_mngr, &end_evt, all, TRUE, TRUE));
@@ -2005,15 +1999,21 @@ binlog_truncate_trx_cache(THD *thd, binlog_cache_mngr *cache_mngr, bool all)
   DBUG_RETURN(error);
 }
 
+
+inline bool is_preparing_xa(THD *thd)
+{
+  return thd->transaction.xid_state.is_explicit_XA() &&
+    thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE;
+}
+
+
 static int binlog_prepare(handlerton *hton, THD *thd, bool all)
 {
   /*
-    do nothing.
-    just pretend we can do 2pc, so that MySQL won't
-    switch to 1pc.
-    real work is done in MYSQL_BIN_LOG::log_xa_prepare()
+    Do nothing unless the transaction is a user XA.
   */
-  return 0;
+  return
+    !is_preparing_xa(thd) ? 0 : binlog_commit(NULL, thd, all);
 }
 
 
@@ -2098,13 +2098,6 @@ static bool trans_cannot_safely_rollback(THD *thd, bool all)
            ending_single_stmt_trans(thd,all) &&
            thd->wsrep_binlog_format() == BINLOG_FORMAT_MIXED) ||
           thd->transaction.xid_state.is_explicit_XA());
-}
-
-
-inline bool is_preparing_xa(THD *thd)
-{
-  return thd->transaction.xid_state.is_explicit_XA() &&
-    thd->transaction.xid_state.xid_cache_element->xa_state == XA_IDLE;
 }
 
 
@@ -7579,10 +7572,10 @@ MYSQL_BIN_LOG::write_transaction_to_binlog(THD *thd,
   entry.all= all;
   entry.using_stmt_cache= using_stmt_cache;
   entry.using_trx_cache= using_trx_cache;
-  entry.need_unlog= false;
+  entry.need_unlog= is_preparing_xa(thd);
   ha_info= all ? thd->transaction.all.ha_list : thd->transaction.stmt.ha_list;
 
-  for (; ha_info; ha_info= ha_info->next())
+  for (; !entry.need_unlog && ha_info; ha_info= ha_info->next())
   {
     if (ha_info->is_started() && ha_info->ht() != binlog_hton &&
         !ha_info->ht()->commit_checkpoint_request)
@@ -8166,7 +8159,7 @@ MYSQL_BIN_LOG::trx_group_commit_leader(group_commit_entry *leader)
       strmake_buf(cache_mngr->last_commit_pos_file, log_file_name);
       commit_offset= my_b_write_tell(&log_file);
       cache_mngr->last_commit_pos_offset= commit_offset;
-      if (cache_mngr->using_xa && cache_mngr->xa_xid)
+      if ((cache_mngr->using_xa && cache_mngr->xa_xid) || current->need_unlog)
       {
         /*
           If all storage engines support commit_checkpoint_request(), then we
@@ -10106,12 +10099,20 @@ int TC_LOG_BINLOG::unlog(ulong cookie, my_xid xid)
 }
 
 
-int TC_LOG_BINLOG::log_xa_prepare(THD *thd, bool all)
+int TC_LOG_BINLOG::unlog_xa_prepare(THD *thd, bool all)
 {
   DBUG_ASSERT(is_preparing_xa(thd));
 
-  return
-    binlog_commit(NULL, thd, all);
+  binlog_cache_mngr *cache_mngr= thd->binlog_setup_trx_data();
+  int cookie= 0;
+
+  if (!cache_mngr || !cache_mngr->need_unlog)
+    return 0;
+  else
+    cookie= BINLOG_COOKIE_MAKE(cache_mngr->binlog_id, cache_mngr->delayed_error);
+  cache_mngr->need_unlog= false;
+
+  return unlog(cookie, 1);
 }
 
 

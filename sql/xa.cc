@@ -180,7 +180,11 @@ static void xid_cache_delete(THD *thd, XID_cache_element *&element)
 
 void xid_cache_delete(THD *thd, XID_STATE *xid_state)
 {
-  DBUG_ASSERT(xid_state->is_explicit_XA());
+  DBUG_ASSERT(xid_state->is_explicit_XA() || thd->lex->xa_opt == XA_ONE_PHASE);
+
+  if (!xid_state->is_explicit_XA())
+    return;
+
   xid_cache_delete(thd, xid_state->xid_cache_element);
   xid_state->xid_cache_element= 0;
 }
@@ -506,6 +510,7 @@ bool trans_xa_commit(THD *thd)
   else if (xid_state.xid_cache_element->xa_state == XA_IDLE &&
            thd->lex->xa_opt == XA_ONE_PHASE)
   {
+    xid_cache_delete(thd, &xid_state);
     int r= ha_commit_trans(thd, TRUE);
     if ((res= MY_TEST(r)))
       my_error(r == 1 ? ER_XA_RBROLLBACK : ER_XAER_RMERR, MYF(0));

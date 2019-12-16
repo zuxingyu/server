@@ -159,8 +159,9 @@ while($i > 0)
   --source include/wait_condition.inc
 
   --disable_query_log
-  --let $term = COMMIT
-  if (`SELECT ($i+$k) % 2`)
+  --let $decision = `SELECT ($i+$k) % 2`
+  --let $term     = COMMIT
+  if ($decision == 1)
   {
   --let $term = ROLLBACK
   }

@@ -1307,11 +1307,8 @@ int ha_prepare(THD *thd)
       }
     }
 
-    /*
-      Read-only prepared XA may be logged, e.g with ineffective
-      update semantic DML in STATEMENT format.
-    */
-    if (tc_log->log_xa_prepare(thd, all))
+    DEBUG_SYNC(thd, "at_unlog_xa_prepare");
+    if (tc_log->unlog_xa_prepare(thd, all))
     {
       ha_rollback_trans(thd, all);
       error=1;
