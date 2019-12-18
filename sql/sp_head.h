@@ -302,12 +302,6 @@ public:
   */
   SQL_I_List<Item_trigger_field> m_trg_table_fields;
 
-  static void *
-  operator new(size_t size) throw ();
-
-  static void
-  operator delete(void *ptr, size_t size) throw ();
-
   sp_head();
 
   /// Initialize after we have reset mem_root

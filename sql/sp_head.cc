@@ -556,43 +556,6 @@ check_routine_name(LEX_STRING *ident)
  *
  */
 
-void *
-sp_head::operator new(size_t size) throw()
-{
-  DBUG_ENTER("sp_head::operator new");
-  MEM_ROOT own_root;
-  sp_head *sp;
-
-  init_sql_alloc(&own_root, MEM_ROOT_BLOCK_SIZE, MEM_ROOT_PREALLOC, MYF(0));
-  sp= (sp_head *) alloc_root(&own_root, size);
-  if (sp == NULL)
-    DBUG_RETURN(NULL);
-  sp->main_mem_root= own_root;
-  DBUG_PRINT("info", ("mem_root 0x%lx", (ulong) &sp->mem_root));
-  DBUG_RETURN(sp);
-}
-
-void
-sp_head::operator delete(void *ptr, size_t size) throw()
-{
-  DBUG_ENTER("sp_head::operator delete");
-  MEM_ROOT own_root;
-
-  if (ptr == NULL)
-    DBUG_VOID_RETURN;
-
-  sp_head *sp= (sp_head *) ptr;
-
-  /* Make a copy of main_mem_root as free_root will free the sp */
-  own_root= sp->main_mem_root;
-  DBUG_PRINT("info", ("mem_root 0x%lx moved to 0x%lx",
-                      (ulong) &sp->mem_root, (ulong) &own_root));
-  free_root(&own_root, MYF(0));
-
-  DBUG_VOID_RETURN;
-}
-
-
 sp_head::sp_head()
   :Query_arena(&main_mem_root, STMT_INITIALIZED_FOR_SP),
    m_flags(0),
@@ -603,6 +566,9 @@ sp_head::sp_head()
    m_next_cached_sp(0),
    m_cont_level(0)
 {
+  init_sql_alloc(&main_mem_root, /*"sp_head", */ MEM_ROOT_BLOCK_SIZE,
+                 MEM_ROOT_PREALLOC, MYF(0));
+
   m_first_instance= this;
   m_first_free_instance= this;
   m_last_cached_sp= this;
@@ -850,6 +816,7 @@ sp_head::~sp_head()
 
   delete m_next_cached_sp;
 
+  free_root(&main_mem_root, MYF(0));
   DBUG_VOID_RETURN;
 }
 

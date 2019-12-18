@@ -927,6 +927,10 @@ public:
     STATEMENT, PREPARED_STATEMENT, STORED_PROCEDURE
   };
 
+  /*
+    Note: class sp_head calls this with mem_root_arg pointing to a
+    not-yet-valid MEM_ROOT object
+  */
   Query_arena(MEM_ROOT *mem_root_arg, enum enum_state state_arg) :
     free_list(0), mem_root(mem_root_arg), state(state_arg)
   { INIT_ARENA_DBUG_INFO; }
