@@ -3121,6 +3121,10 @@ protected:
     s_tx_list.erase(this);
     RDB_MUTEX_UNLOCK_CHECK(s_tx_list_mutex);
   }
+  virtual bool is_prepared() { return false; };
+  virtual void reset_reuse_tx(void **ptr_store) {};
+  virtual void detach_prepared_tx()             {};
+  virtual void attach_tx_for_reuse(rocksdb::Transaction* tx) {};
 };
 
 /*
@@ -3157,7 +3161,29 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
   virtual bool is_writebatch_trx() const override { return false; }
 
- private:
+  bool is_prepared() {
+    return m_rocksdb_tx && rocksdb::Transaction::PREPARED == m_rocksdb_tx->GetState();
+  }
+
+  void reset_reuse_tx(void **ptr_store) {
+    DBUG_ASSERT(ptr_store);
+    if (ptr_store)
+      *ptr_store = m_rocksdb_reuse_tx;
+    m_rocksdb_reuse_tx = nullptr;
+  }
+
+  void detach_prepared_tx() {
+    DBUG_ASSERT(rocksdb::Transaction::PREPARED == m_rocksdb_tx->GetState());
+    m_rocksdb_tx = nullptr;
+  }
+
+  virtual void attach_tx_for_reuse(rocksdb::Transaction *tx) {
+    m_rocksdb_reuse_tx = tx;
+    m_rocksdb_tx = nullptr; // todo: assert PREPARED state
+
+  }
+
+private:
   void release_tx(void) {
     // We are done with the current active transaction object.  Preserve it
     // for later reuse.
@@ -3798,10 +3824,93 @@ static int rocksdb_close_connection(handlerton *const hton, THD *const thd) {
           "disconnecting",
           rc);
     }
+    if (tx->is_prepared())
+      tx->detach_prepared_tx();
 
     delete tx;
   }
   return HA_EXIT_SUCCESS;
+}
+
+#if 0
+/** Transaction object that is currently associated with THD is
+replaced with that of the 2nd argument. The previous value is
+returned through the 3rd argument's buffer, unless it's NULL. When
+the buffer is not provided the caller intents to
+restore in place previously saved association so the current object has to be
+additionally freed from all association with MYSQL.
+
+@param[in,out] thd             MySQL thread handle
+@param[in]     new_trx_arg     replacement transaction pointer
+@param[in,out] ptr_trx_arg     buffer pointer to memorize the old transaction
+*/
+static
+void
+innodb_replace_trx_in_thd(
+       THD*    thd,
+       void*   new_trx_arg,
+       void**  ptr_trx_arg)
+{
+       trx_t*& trx = thd_to_trx(thd);
+
+       ut_ad(new_trx_arg == NULL
+             || (((trx_t*) new_trx_arg)->mysql_thd == thd
+                 && !((trx_t*) new_trx_arg)->is_recovered));
+
+       if (ptr_trx_arg) {
+               *ptr_trx_arg = trx;
+
+               ut_ad(trx == NULL
+                     || (trx->mysql_thd == thd && !trx->is_recovered));
+
+       } else if (trx->state == TRX_STATE_NOT_STARTED) {
+               ut_ad(thd == trx->mysql_thd);
+               trx->read_view.close();
+       } else {
+               ut_ad(thd == trx->mysql_thd);
+               ut_ad(trx_state_eq(trx, TRX_STATE_PREPARED));
+               trx_disconnect_prepared(trx);
+       }
+       trx = static_cast<trx_t*>(new_trx_arg);
+}
+#endif
+
+/** Transaction object that is currently associated with THD is
+replaced with that of the 2nd argument. The previous value is
+returned through the 3rd argument's buffer, unless it's NULL. When
+the buffer is not provided the caller intents to
+restore in place previously saved association so the current object has to be
+additionally freed from all association with MYSQL.
+
+@param[in,out] thd             MySQL thread handle
+@param[in]     new_trx_arg     replacement transaction pointer
+@param[in,out] ptr_trx_arg     buffer pointer to memorize the old transaction in
+*/
+
+static void rocksdb_replace_trx_in_thd(THD *const thd,
+                                      void*   new_tx_arg,
+                                      void**  ptr_tx_arg) {
+  Rdb_transaction *&tx = get_tx_from_thd(thd);
+
+  DBUG_ASSERT(new_tx_arg == NULL || 1 /* todo: the replacement tx has been indeed assoc with the arg thd */);
+  // TODO: is it really needed?
+  if (tx != nullptr) {
+    int rc = tx->finish_bulk_load(false);
+    if (rc != 0) {
+      // NO_LINT_DEBUG
+      sql_print_error("RocksDB: Error %d finalizing last SST file while "
+                      "disconnecting",
+                      rc);
+    }
+  }
+  if (tx && ptr_tx_arg)
+    tx->reset_reuse_tx(ptr_tx_arg); // todo: asssert state != STARTED
+  if (new_tx_arg || !ptr_tx_arg)
+  {
+    DBUG_ASSERT(tx);
+    tx->attach_tx_for_reuse(static_cast<rocksdb::Transaction*>(new_tx_arg)); // todo: assert state == PREPARED
+    tx->rollback(); // TODO: improve
+  }
 }
 
 /*
@@ -5302,7 +5411,8 @@ static int rocksdb_init_func(void *const p) {
 #ifdef MARIAROCKS_NOT_YET
   rocksdb_hton->update_table_stats = rocksdb_update_table_stats;
 #endif // MARIAROCKS_NOT_YET
-  
+  rocksdb_hton->replace_native_transaction_in_thd = rocksdb_replace_trx_in_thd;
+
   /*
   Not needed in MariaDB:
   rocksdb_hton->flush_logs = rocksdb_flush_wal;
