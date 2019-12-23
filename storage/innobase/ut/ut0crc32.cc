@@ -2,7 +2,7 @@
 
 Copyright (c) 2009, 2010 Facebook, Inc. All Rights Reserved.
 Copyright (c) 2011, 2015, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2016, 2018, MariaDB Corporation.
+Copyright (c) 2016, 2019, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -203,11 +203,7 @@ ut_crc32_8_hw(
 #ifdef _MSC_VER
 	*crc = _mm_crc32_u8(*crc, (*data)[0]);
 #else
-	asm("crc32b %1, %0"
-	    /* output operands */
-	    : "+r" (*crc)
-	    /* input operands */
-	    : "rm" ((*data)[0]));
+	*crc = __builtin_ia32_crc32qi(*crc, (*data)[0]);
 #endif
 
 	(*data)++;
@@ -224,8 +220,8 @@ ut_crc32_64_low_hw(
 	uint32_t	crc,
 	uint64_t	data)
 {
-	uint64_t	crc_64bit = crc;
 #ifdef _MSC_VER
+	uint64_t	crc_64bit = crc;
 #ifdef _M_X64
 	crc_64bit = _mm_crc32_u64(crc_64bit, data);
 #elif defined(_M_IX86)
@@ -234,15 +230,10 @@ ut_crc32_64_low_hw(
 #else
 #error Not Supported processors type.
 #endif
-#else
-	asm("crc32q %1, %0"
-	    /* output operands */
-	    : "+r" (crc_64bit)
-	    /* input operands */
-	    : "rm" (data));
-#endif
-
 	return(static_cast<uint32_t>(crc_64bit));
+#else
+	return static_cast<uint32_t>(__builtin_ia32_crc32di(crc, data));
+#endif
 }
 
 /** Calculate CRC32 over 64-bit byte string using a hardware/CPU instruction.
