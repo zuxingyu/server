@@ -924,11 +924,11 @@ bool applier_reset_xa_trans(THD *thd)
   thd->transaction.xid_state.xid_cache_element= 0;
 
   attach_native_trx(thd);
-  thd->transaction.cleanup();
+  thd->transaction.cleanup(); thd->transaction.all.reset(); // trans_commit() TODO: arrange order
   //TODO: thd->transaction.xid_state.xid_cache_element->xa_state= XA_NOTR;
-  thd->mdl_context.release_transactional_locks();
-
-  return thd->is_error();
+  //TODO/FIXME (redundant) thd->mdl_context.release_transactional_locks();
+  thd->has_waiter= false; // TODO: motivate
+  return thd->is_error(); // TODO: ? MYSQL_COMMIT_TRANSACTION(thd->m_transaction_psi); thd->m_transaction_psi= NULL;
 #ifdef p7974
   Transaction_ctx *trn_ctx= thd->get_transaction();
   XID_STATE *xid_state= trn_ctx->xid_state();

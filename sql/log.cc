@@ -2074,6 +2074,13 @@ static int binlog_rollback_by_xid(handlerton *hton, XID *xid)
 }
 
 
+inline bool is_prepared_xa(THD *thd)
+{
+  return thd->transaction.xid_state.is_explicit_XA() &&
+    thd->transaction.xid_state.xid_cache_element->xa_state == XA_PREPARED;
+}
+
+
 /*
   We flush the cache wrapped in a beging/rollback if:
     . aborting a single or multi-statement transaction and;
@@ -2097,14 +2104,7 @@ static bool trans_cannot_safely_rollback(THD *thd, bool all)
           (trans_has_updated_non_trans_table(thd) &&
            ending_single_stmt_trans(thd,all) &&
            thd->wsrep_binlog_format() == BINLOG_FORMAT_MIXED) ||
-          thd->transaction.xid_state.is_explicit_XA());
-}
-
-
-inline bool is_prepared_xa(THD *thd)
-{
-  return thd->transaction.xid_state.is_explicit_XA() &&
-    thd->transaction.xid_state.xid_cache_element->xa_state == XA_PREPARED;
+          is_prepared_xa(thd));
 }
 
 
