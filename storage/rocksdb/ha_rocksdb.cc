@@ -3890,17 +3890,20 @@ additionally freed from all association with MYSQL.
 static void rocksdb_replace_trx_in_thd(THD *const thd,
                                       void*   new_tx_arg,
                                       void**  ptr_tx_arg) {
-  Rdb_transaction *&tx = get_tx_from_thd(thd);
+  Rdb_transaction *tx = get_tx_from_thd(thd);
 
   DBUG_ASSERT(new_tx_arg == NULL || 1 /* todo: the replacement tx has been indeed assoc with the arg thd */);
+  // Fixme: sim to close connection
   // TODO: is it really needed?
   if (tx != nullptr) {
-    int rc = tx->finish_bulk_load(false);
-    if (rc != 0) {
+    bool is_critical_error;
+    int rc = tx->finish_bulk_load(&is_critical_error, false);
+    if (rc != 0 && is_critical_error) {
       // NO_LINT_DEBUG
-      sql_print_error("RocksDB: Error %d finalizing last SST file while "
-                      "disconnecting",
-                      rc);
+      sql_print_error(
+          "RocksDB: Error %d finalizing last SST file while "
+          "disconnecting",
+          rc);
     }
   }
   if (tx && ptr_tx_arg)

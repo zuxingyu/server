@@ -1824,7 +1824,7 @@ thd_innodb_tmpdir(
 /** Obtain the InnoDB transaction of a MySQL thread.
 @param[in,out]	thd	thread handle
 @return reference to transaction pointer */
-static trx_t*& thd_to_trx(THD* thd)
+static trx_t* thd_to_trx(THD* thd)
 {
 	return reinterpret_cast<trx_t*>(thd_get_ha_data(thd, innodb_hton_ptr));
 }
@@ -3645,7 +3645,7 @@ innodb_replace_trx_in_thd(
        void*   new_trx_arg,
        void**  ptr_trx_arg)
 {
-       trx_t*& trx = thd_to_trx(thd);
+       trx_t* trx = thd_to_trx(thd);
 
        ut_ad(new_trx_arg == NULL
              || (((trx_t*) new_trx_arg)->mysql_thd == thd
@@ -3665,7 +3665,9 @@ innodb_replace_trx_in_thd(
                ut_ad(trx_state_eq(trx, TRX_STATE_PREPARED));
                trx_disconnect_prepared(trx);
        }
-       trx = static_cast<trx_t*>(new_trx_arg);
+       //trx = static_cast<trx_t*>(new_trx_arg);
+       *reinterpret_cast<trx_t**>(thd_ha_data(thd, innodb_hton_ptr)) =
+         static_cast<trx_t*>(new_trx_arg);
 }
 
 /** Initialize and normalize innodb_buffer_pool_size. */
