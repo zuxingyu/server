@@ -3825,8 +3825,11 @@ static int rocksdb_close_connection(handlerton *const hton, THD *const thd) {
           rc);
     }
     if (tx->is_prepared())
-      tx->detach_prepared_tx();
-
+      tx->detach_prepared_tx(); // TODO: restore backup then
+//    else if (*thd_ha_data_backup(thd, hton)) {
+//      DBUG_ASSERT(1 /* XA started */);
+      // TODO: restore backup for anything to do with it in delete
+    //}
     delete tx;
   }
   return HA_EXIT_SUCCESS;

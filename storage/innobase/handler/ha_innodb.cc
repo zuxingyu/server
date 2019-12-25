@@ -1829,6 +1829,16 @@ static trx_t* thd_to_trx(THD* thd)
 	return reinterpret_cast<trx_t*>(thd_get_ha_data(thd, innodb_hton_ptr));
 }
 
+void *thd_get_ha_data_backup(const MYSQL_THD thd, const struct handlerton *hton);
+/** Obtain a InnoDB transaction previously stored by the MySQL thread (thd).
+@param[in,out]	thd	thread handle
+@return transaction pointer */
+static trx_t* thd_to_trx_backup(THD* thd)
+{
+	return reinterpret_cast<trx_t*>
+          (thd_get_ha_data_backup(thd, innodb_hton_ptr));
+}
+
 #ifdef WITH_WSREP
 /********************************************************************//**
 Obtain the InnoDB transaction id of a MySQL thread.
@@ -5165,6 +5175,14 @@ rollback_and_free:
 			trx_free(trx);
 		}
 	}
+
+        trx_t*	backup_trx = thd_to_trx_backup(thd);
+        if (backup_trx)
+        {
+          ut_ad(!trx_is_started(backup_trx));
+          innobase_rollback_trx(backup_trx);
+          trx_free(backup_trx);
+        }
 
 	DBUG_RETURN(0);
 }

@@ -442,6 +442,16 @@ void *thd_get_ha_data(const THD *thd, const struct handlerton *hton)
 
 
 /**
+  Provide a handler data getter to simplify coding
+*/
+//extern "C"
+void *thd_get_ha_data_backup(const THD *thd, const struct handlerton *hton)
+{
+  return *thd_ha_data_backup(thd, hton);
+}
+
+
+/**
   Provide a handler data setter to simplify coding
   @see thd_set_ha_data() definition in plugin.h
 */
@@ -458,6 +468,8 @@ void thd_set_ha_data(THD *thd, const struct handlerton *hton,
     *lock= NULL;
   }
   *thd_ha_data(thd, hton)= (void*) ha_data;
+  if (!ha_data)
+    *thd_ha_data_backup(thd, hton)= NULL;
 }
 
 

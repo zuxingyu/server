@@ -6568,6 +6568,8 @@ inline void **thd_ha_data_backup(const THD *thd, const struct handlerton *hton)
   return (void **) &thd->ha_data[hton->slot].ha_ptr_backup;
 }
 
+void *thd_get_ha_data_backup(const THD *thd, const struct handlerton *hton);
+
 inline Item *and_conds(THD *thd, Item *a, Item *b)
 {
   if (!b) return a;
