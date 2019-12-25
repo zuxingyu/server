@@ -1408,14 +1408,11 @@ trx_commit_in_memory(
 			trx->release_locks();
 		}
 
-		DEBUG_SYNC_C("after_trx_committed_in_memory");
-#if 0  /* Todo: sort out with Marko the block from upstream bug covergate */
-		ut_ad(trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY));
 #ifndef DBUG_OFF
                 const bool debug_sync = trx->mysql_thd &&
                                         trx->has_logged_persistent();
 		/* In case of this function is called from a stack executing
-		    THD::release_resources -> ...
+		    THD::free_connection -> ...
 		   innobase_connection_close() ->
 		   trx_rollback_for_mysql... -> .
 		 mysql's thd does not seem to have
@@ -1426,8 +1423,6 @@ trx_commit_in_memory(
 		   DEBUG_SYNC_C("after_trx_committed_in_memory");
 		 }
 #endif
-#endif // 0
-
 		if (trx->read_only || !trx->rsegs.m_redo.rseg) {
 			MONITOR_INC(MONITOR_TRX_RO_COMMIT);
 		} else {
