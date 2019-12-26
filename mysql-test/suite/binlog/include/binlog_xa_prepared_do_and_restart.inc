@@ -54,13 +54,13 @@
 --let $sql_init1 = SET @@sql_log_bin = OFF
 --let $sql_init2 = CREATE TEMPORARY TABLE tmp$index (a int) ENGINE=innodb
 --let $sql_doit  = INSERT INTO tmp$index SET a=$index
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 2
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 3
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 --let $conn3_id=`SELECT connection_id()`
 
 #
@@ -82,7 +82,7 @@
 # Two to terminate, one to leave out.
 --let $terminate_with = XA COMMIT
 --let $num_trx_prepared = $index
---source include/binlog_xa_prepare_disconnect.inc
+--source suite/binlog/include/binlog_xa_prepare_disconnect.inc
 
 #
 # B. "Read-only" (select) prepared XA recovers only formally to
@@ -93,19 +93,19 @@
 --let $sql_init1 =
 --let $sql_init2 =
 --let $sql_doit  = SELECT * from t ORDER BY a
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 2
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 3
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 --let $conn3_id=`SELECT connection_id()`
 
 --let $terminate_with = XA ROLLBACK
 # two three above section prepared transaction were terminated.
 --inc $num_trx_prepared
---source include/binlog_xa_prepare_disconnect.inc
+--source suite/binlog/include/binlog_xa_prepare_disconnect.inc
 
 #
 # C. Empty prepared XA recovers only formally to
@@ -116,18 +116,18 @@
 --let $sql_init1 =
 --let $sql_init2 =
 --let $sql_doit  =
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 2
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 
 --let $index = 3
---source include/binlog_xa_prepare_connection.inc
+--source suite/binlog/include/binlog_xa_prepare_connection.inc
 --let $conn3_id=`SELECT connection_id()`
 
 --let $terminate_with = XA COMMIT
 --inc $num_trx_prepared
---source include/binlog_xa_prepare_disconnect.inc
+--source suite/binlog/include/binlog_xa_prepare_disconnect.inc
 
 #
 # D. Not prepared XA disconnects to be cleared out,

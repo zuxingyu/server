@@ -287,6 +287,7 @@ XA COMMIT 'trx_6';
 XA COMMIT 'trx_7';
 XA COMMIT 'trx_8';
 XA COMMIT 'trx_9';
+# restart
 connect  conn_restart_$k, 127.0.0.1,root,,test,$MASTER_MYPORT,;
 XA START   'new_trx_0';
 INSERT INTO t SET a=0;

@@ -60,10 +60,10 @@ CREATE TABLE t (a INT) ENGINE=innodb;
 # reflect number of loops done in correctness computation.
 --let $restart_number = 0
 --let $how_to_restart=restart_mysqld.inc
---source include/binlog_xa_prepared_do_and_restart.inc
+--source suite/binlog/include/binlog_xa_prepared_do_and_restart.inc
 
 --let $how_to_restart=kill_and_restart_mysqld.inc
---source include/binlog_xa_prepared_do_and_restart.inc
+--source suite/binlog/include/binlog_xa_prepared_do_and_restart.inc
 
 --connection default
 
