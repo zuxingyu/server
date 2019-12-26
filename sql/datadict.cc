@@ -202,3 +202,107 @@ bool dd_recreate_table(THD *thd, const char *db, const char *table_name)
   DBUG_RETURN(ha_create_table(thd, path_buf, db, table_name, &create_info, NULL, 0));
 }
 
+size_t dd_extra2_len(const uchar **pos, const uchar *end)
+{
+  size_t length= *(*pos)++;
+  if (length)
+    return length;
+
+  if ((*pos) + 2 >= end)
+    return 0;
+  length= uint2korr(*pos);
+  (*pos)+= 2;
+  if (length < 256 || *pos + length > end)
+    return 0;
+  return length;
+}
+
+
+bool Extra2_info::read(const uchar *frm_image, size_t extra2_length)
+{
+  const uchar *pos= frm_image + 64;
+
+  DBUG_ENTER("read_extra2");
+
+  reset();
+
+  if (*pos != '/')   // old frm had '/' there
+  {
+    const uchar *e2end= pos + extra2_length;
+    while (pos + 3 <= e2end)
+    {
+      extra2_frm_value_type type= (extra2_frm_value_type)*pos++;
+      size_t length= dd_extra2_len(&pos, e2end);
+      if (!length)
+        DBUG_RETURN(true);
+      switch (type) {
+        case EXTRA2_TABLEDEF_VERSION:
+          if (version.str) // see init_from_sql_statement_string()
+          {
+            if (length != version.length)
+              DBUG_RETURN(true);
+          }
+          else
+          {
+            version.str= pos;
+            version.length= length;
+          }
+          break;
+        case EXTRA2_ENGINE_TABLEOPTS:
+          if (options.str)
+            DBUG_RETURN(true);
+          options.str= pos;
+          options.length= length;
+          break;
+        case EXTRA2_DEFAULT_PART_ENGINE:
+          engine.set((const char*)pos, length);
+          break;
+        case EXTRA2_GIS:
+          if (gis.str)
+            DBUG_RETURN(true);
+          gis.str= pos;
+          gis.length= length;
+          break;
+        case EXTRA2_PERIOD_FOR_SYSTEM_TIME:
+          if (system_period.str || length != 2 * frm_fieldno_size)
+            DBUG_RETURN(true);
+          system_period.str = pos;
+          system_period.length= length;
+          break;
+        case EXTRA2_FIELD_FLAGS:
+          if (field_flags.str)
+            DBUG_RETURN(true);
+          field_flags.str= pos;
+          field_flags.length= length;
+          break;
+        case EXTRA2_APPLICATION_TIME_PERIOD:
+          if (application_period.str)
+            DBUG_RETURN(true);
+          application_period.str= pos;
+          application_period.length= length;
+          break;
+        case EXTRA2_FIELD_DATA_TYPE_INFO:
+          if (field_data_type_info.str)
+            DBUG_RETURN(true);
+          field_data_type_info.str= pos;
+          field_data_type_info.length= length;
+          break;
+        case EXTRA2_FOREIGN_KEY_INFO:
+          if (foreign_key_info.str)
+            DBUG_RETURN(true);
+          foreign_key_info.str= pos;
+          foreign_key_info.length= length;
+          break;
+        default:
+          /* abort frm parsing if it's an unknown but important extra2 value */
+          if (type >= EXTRA2_ENGINE_IMPORTANT)
+            DBUG_RETURN(true);
+      }
+      pos+= length;
+    }
+    if (pos != e2end)
+      DBUG_RETURN(true);
+  }
+  DBUG_RETURN(false);
+}
+

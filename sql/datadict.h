@@ -30,6 +30,35 @@ enum Table_type
   TABLE_TYPE_VIEW
 };
 
+struct Extra2_info
+{
+  LEX_CUSTRING version;
+  LEX_CUSTRING options;
+  Lex_ident engine;
+  LEX_CUSTRING gis;
+  LEX_CUSTRING field_flags;
+  LEX_CUSTRING system_period;
+  LEX_CUSTRING application_period;
+  LEX_CUSTRING field_data_type_info;
+  LEX_CUSTRING foreign_key_info;
+  void reset()
+  { bzero((void*)this, sizeof(*this)); }
+  size_t length() const
+  {
+    return
+      version.length +
+      options.length +
+      engine.length +
+      gis.length +
+      field_flags.length +
+      system_period.length +
+      application_period.length +
+      field_data_type_info.length +
+      foreign_key_info.length;
+  }
+  bool read(const uchar* frm_image, size_t extra2_length);
+};
+
 /*
   Take extra care when using dd_frm_type() - it only checks the .frm file,
   and it won't work for any engine that supports discovery.
@@ -48,5 +77,5 @@ static inline bool dd_frm_is_view(THD *thd, char *path)
 }
 
 bool dd_recreate_table(THD *thd, const char *db, const char *table_name);
-
+size_t dd_extra2_len(const uchar** pos, const uchar* end);
 #endif // DATADICT_INCLUDED

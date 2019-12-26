@@ -50,20 +50,6 @@
 #define MYSQL57_GENERATED_FIELD 128
 #define MYSQL57_GCOL_HEADER_SIZE 4
 
-struct extra2_fields
-{
-  LEX_CUSTRING version;
-  LEX_CUSTRING options;
-  Lex_ident engine;
-  LEX_CUSTRING gis;
-  LEX_CUSTRING field_flags;
-  LEX_CUSTRING system_period;
-  LEX_CUSTRING application_period;
-  LEX_CUSTRING field_data_type_info;
-  void reset()
-  { bzero((void*)this, sizeof(*this)); }
-};
-
 static Virtual_column_info * unpack_vcol_info_from_frm(THD *, MEM_ROOT *,
               TABLE *, String *, Virtual_column_info **, bool *);
 static bool check_vcol_forward_refs(Field *, Virtual_column_info *,
@@ -1493,106 +1479,6 @@ bool TABLE_SHARE::init_period_from_extra2(period_info_t *period,
 }
 
 
-static size_t extra2_read_len(const uchar **extra2, const uchar *extra2_end)
-{
-  size_t length= *(*extra2)++;
-  if (length)
-    return length;
-
-  if ((*extra2) + 2 >= extra2_end)
-    return 0;
-  length= uint2korr(*extra2);
-  (*extra2)+= 2;
-  if (length < 256 || *extra2 + length > extra2_end)
-    return 0;
-  return length;
-}
-
-
-static
-bool read_extra2(const uchar *frm_image, size_t len, extra2_fields *fields)
-{
-  const uchar *extra2= frm_image + 64;
-
-  DBUG_ENTER("read_extra2");
-
-  fields->reset();
-
-  if (*extra2 != '/')   // old frm had '/' there
-  {
-    const uchar *e2end= extra2 + len;
-    while (extra2 + 3 <= e2end)
-    {
-      extra2_frm_value_type type= (extra2_frm_value_type)*extra2++;
-      size_t length= extra2_read_len(&extra2, e2end);
-      if (!length)
-        DBUG_RETURN(true);
-      switch (type) {
-        case EXTRA2_TABLEDEF_VERSION:
-          if (fields->version.str) // see init_from_sql_statement_string()
-          {
-            if (length != fields->version.length)
-              DBUG_RETURN(true);
-          }
-          else
-          {
-            fields->version.str= extra2;
-            fields->version.length= length;
-          }
-          break;
-        case EXTRA2_ENGINE_TABLEOPTS:
-          if (fields->options.str)
-            DBUG_RETURN(true);
-          fields->options.str= extra2;
-          fields->options.length= length;
-          break;
-        case EXTRA2_DEFAULT_PART_ENGINE:
-          fields->engine.set((const char*)extra2, length);
-          break;
-        case EXTRA2_GIS:
-          if (fields->gis.str)
-            DBUG_RETURN(true);
-          fields->gis.str= extra2;
-          fields->gis.length= length;
-          break;
-        case EXTRA2_PERIOD_FOR_SYSTEM_TIME:
-          if (fields->system_period.str || length != 2 * frm_fieldno_size)
-            DBUG_RETURN(true);
-          fields->system_period.str = extra2;
-          fields->system_period.length= length;
-          break;
-        case EXTRA2_FIELD_FLAGS:
-          if (fields->field_flags.str)
-            DBUG_RETURN(true);
-          fields->field_flags.str= extra2;
-          fields->field_flags.length= length;
-          break;
-        case EXTRA2_APPLICATION_TIME_PERIOD:
-          if (fields->application_period.str)
-            DBUG_RETURN(true);
-          fields->application_period.str= extra2;
-          fields->application_period.length= length;
-          break;
-        case EXTRA2_FIELD_DATA_TYPE_INFO:
-          if (fields->field_data_type_info.str)
-            DBUG_RETURN(true);
-          fields->field_data_type_info.str= extra2;
-          fields->field_data_type_info.length= length;
-          break;
-        default:
-          /* abort frm parsing if it's an unknown but important extra2 value */
-          if (type >= EXTRA2_ENGINE_IMPORTANT)
-            DBUG_RETURN(true);
-      }
-      extra2+= length;
-    }
-    if (extra2 != e2end)
-      DBUG_RETURN(true);
-  }
-  DBUG_RETURN(false);
-}
-
-
 class Field_data_type_info_array
 {
 public:
@@ -1727,7 +1613,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
   MEM_ROOT *old_root= thd->mem_root;
   Virtual_column_info **table_check_constraints;
-  extra2_fields extra2;
+  Extra2_info extra2;
 
   DBUG_ENTER("TABLE_SHARE::init_from_binary_frm_image");
 
@@ -1757,7 +1643,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   /* Length of the MariaDB extra2 segment in the form file. */
   len = uint2korr(frm_image+4);
 
-  if (read_extra2(frm_image, len, &extra2))
+  if (extra2.read(frm_image, len))
     goto err;
 
   tabledef_version.length= extra2.version.length;
@@ -2249,11 +2135,11 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   {
     const uchar *pos= extra2.application_period.str;
     const uchar *end= pos + extra2.application_period.length;
-    period.name.length= extra2_read_len(&pos, end);
+    period.name.length= dd_extra2_len(&pos, end);
     period.name.str= strmake_root(&mem_root, (char*)pos, period.name.length);
     pos+= period.name.length;
 
-    period.constr_name.length= extra2_read_len(&pos, end);
+    period.constr_name.length= dd_extra2_len(&pos, end);
     period.constr_name.str= strmake_root(&mem_root, (char*)pos,
                                          period.constr_name.length);
     pos+= period.constr_name.length;

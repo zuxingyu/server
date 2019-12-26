@@ -249,7 +249,6 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
   LEX_CSTRING str_db_type;
   uint reclength, key_info_length, i;
   ulong key_buff_length;
-  size_t filepos;
   ulong data_offset;
   uint options_len;
   uint gis_extra2_len= 0;
@@ -413,7 +412,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
   frm.length+= reclength;                       // row with default values
   frm.length+= create_info->extra_size;
 
-  filepos= frm.length;
+  const size_t forminfo_pos= frm.length;
   frm.length+= FRM_FORMINFO_SIZE;               // forminfo
   frm.length+= packed_fields_length(create_fields);
   frm.length+= create_info->expression_length;
@@ -431,7 +430,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
     DBUG_RETURN(frm);
 
   /* write the extra2 segment */
-  pos = frm_ptr + 64;
+  pos = frm_ptr + FRM_HEADER_SIZE;
   compile_time_assert(EXTRA2_TABLEDEF_VERSION != '/');
   pos= extra2_write(pos, EXTRA2_TABLEDEF_VERSION,
                     create_info->tabledef_version);
@@ -502,7 +501,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
   if (has_extra2_field_flags_)
     pos= extra2_write_field_properties(pos, create_fields);
 
-  int4store(pos, filepos); // end of the extra2 segment
+  int4store(pos, forminfo_pos); // end of the extra2 segment
   pos+= 4;
 
   DBUG_ASSERT(pos == frm_ptr + uint2korr(fileinfo+6));
@@ -516,7 +515,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
     goto err;
   }
 
-  int2store(forminfo+2, frm.length - filepos);
+  int2store(forminfo+2, frm.length - forminfo_pos);
   int4store(fileinfo+10, frm.length);
   fileinfo[26]= (uchar) MY_TEST((create_info->max_rows == 1) &&
                                 (create_info->min_rows == 1) && (keys == 0));
@@ -576,8 +575,8 @@ LEX_CUSTRING build_frm_image(THD *thd, const LEX_CSTRING &table,
     pos+= create_info->comment.length;
   }
 
-  memcpy(frm_ptr + filepos, forminfo, 288);
-  pos= frm_ptr + filepos + 288;
+  memcpy(frm_ptr + forminfo_pos, forminfo, FRM_FORMINFO_SIZE);
+  pos= frm_ptr + forminfo_pos + FRM_FORMINFO_SIZE;
   if (pack_fields(&pos, create_fields, create_info, data_offset))
     goto err;
 
