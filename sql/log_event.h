@@ -3062,7 +3062,7 @@ public:
 
 #ifdef MYSQL_SERVER
   Xid_log_event(THD* thd_arg, my_xid x, bool direct):
-   Xid_apply_log_event(thd_arg)
+   Xid_apply_log_event(thd_arg), xid(x)
    {
      if (direct)
        cache_type= Log_event::EVENT_NO_CACHE;
