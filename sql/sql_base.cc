@@ -4686,7 +4686,9 @@ handle_table(THD *thd, Query_tables_list *prelocking_ctx,
         thr_lock_type lock_type;
 
         if ((op & (1 << TRG_EVENT_DELETE) && fk_modifies_child(fk->delete_method))
-         || (op & (1 << TRG_EVENT_UPDATE) && fk_modifies_child(fk->update_method)))
+         || (op & (1 << TRG_EVENT_UPDATE) && fk_modifies_child(fk->update_method))
+         || (table->s->table_category == TABLE_CATEGORY_SYSTEM &&
+             table_list->lock_type >= TL_WRITE_ALLOW_WRITE))
           lock_type= TL_WRITE_ALLOW_WRITE;
         else
           lock_type= TL_READ;
