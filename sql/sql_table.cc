@@ -1754,18 +1754,19 @@ void release_ddl_log()
     
    @param[out] buff      buffer to receive the constructed name
    @param      bufflen   size of buff
-   @param      lpt       alter table data structure
+   @param      db
+   @param      table_name
 
    @retval     path length
 */
 
-uint build_table_shadow_filename(char *buff, size_t bufflen, 
-                                 ALTER_PARTITION_PARAM_TYPE *lpt)
+uint build_table_shadow_filename(char *buff, size_t bufflen,
+                                 LEX_CSTRING &db, LEX_CSTRING &table_name)
 {
   char tmp_name[FN_REFLEN];
   my_snprintf(tmp_name, sizeof (tmp_name), "%s-%s", tmp_file_prefix,
-              lpt->table_name.str);
-  return build_table_filename(buff, bufflen, lpt->db.str, tmp_name, "",
+              table_name.str);
+  return build_table_filename(buff, bufflen, db.str, tmp_name, "",
                               FN_IS_TMP);
 }
 
@@ -1818,7 +1819,8 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
   /*
     Build shadow frm file name
   */
-  build_table_shadow_filename(shadow_path, sizeof(shadow_path) - 1, lpt);
+  build_table_shadow_filename(shadow_path, sizeof(shadow_path) - 1,
+                              lpt->db, lpt->table_name);
   strxmov(shadow_frm_name, shadow_path, reg_ext, NullS);
   if (flags & WFRM_WRITE_SHADOW)
   {
