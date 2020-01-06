@@ -2182,6 +2182,88 @@ struct THD_count
   ~THD_count() { thread_count--; }
 };
 
+struct thd_async_state
+{
+  enum class enum_async_state
+  {
+    NONE,
+    SUSPEND,
+    RESUME
+  };
+  enum_async_state m_state;
+  enum enum_server_command m_command;
+  LEX_STRING m_packet;
+  mysql_mutex_t m_mtx;
+  mysql_cond_t m_cond;
+  int m_pending_ops;
+  thd_async_state() :m_state(enum_async_state::NONE),m_pending_ops()
+  {
+    mysql_mutex_init(0,&m_mtx,0);
+    mysql_cond_init(0,&m_cond,0);
+  }
+  bool try_suspend()
+  {
+    bool ret = true;
+    mysql_mutex_lock(&m_mtx);
+    DBUG_ASSERT(m_state == enum_async_state::NONE);
+    if (m_pending_ops == 0)
+    {
+      ret = false;
+    }
+    else
+    {
+      m_state = enum_async_state::SUSPEND;
+    }
+    mysql_mutex_unlock(&m_mtx);
+    return ret;
+  }
+  ~thd_async_state()
+  {
+    mysql_mutex_destroy(&m_mtx);
+    mysql_cond_destroy(&m_cond);
+  }
+  void inc_pending_ops()
+  {
+    mysql_mutex_lock(&m_mtx);
+    m_pending_ops++;
+    mysql_mutex_unlock(&m_mtx);
+  }
+  int dec_pending_ops()
+  {
+    mysql_mutex_lock(&m_mtx);
+    m_pending_ops--;
+    if (!m_pending_ops)
+     mysql_cond_signal(&m_cond);
+    mysql_mutex_unlock(&m_mtx);
+    return m_pending_ops;
+  }
+  int pending_ops()
+  {
+    return m_pending_ops;
+  }
+  void wait_for_pending_ops_to_finish()
+  {
+    /*
+      It is fine to dirty read m_pending_ops and compare it with 0.
+      It is only incremented by the current thread, and may be decremented
+      by another one, so dirty read can be off and  show positive number
+      when it is really 0
+    */
+    if (!m_pending_ops)
+      return;
+    mysql_mutex_lock(&m_mtx);
+    while(m_pending_ops)
+      mysql_cond_wait(&m_cond, &m_mtx);
+    mysql_mutex_unlock(&m_mtx);
+  }
+
+};
+
+extern "C" void* thd_increment_pending_ops(void);
+
+
+extern "C" void thd_decrement_pending_ops(void *);
+
 
 /**
   @class THD
@@ -4820,6 +4902,7 @@ private:
   }
 
 public:
+  thd_async_state async_state;
 #ifdef HAVE_REPLICATION
   /*
     If we do a purge of binary logs, log index info of the threads

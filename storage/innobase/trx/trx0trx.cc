@@ -1220,7 +1220,7 @@ trx_flush_log_if_needed_low(
 		/* fall through */
 	case 1:
 		/* Write the log and optionally flush it to disk */
-		log_write_up_to(lsn, flush);
+		log_write_up_to(lsn, flush, false, true);
 		return;
 	case 0:
 		/* Do nothing */

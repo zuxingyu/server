@@ -926,6 +926,39 @@ log_buffer_switch()
 	log_sys.buf_next_to_write = log_sys.buf_free;
 }
 
+
+extern "C" void* thd_increment_pending_ops(void);
+extern "C" void thd_decrement_pending_ops(void*);
+struct lsn_notify
+{
+	void *m_arg;
+	lsn_t m_lsn;
+};
+
+struct lsn_notification_queue
+{
+  std::vector<lsn_notify> m_queue;
+  std::mutex m_mtx;
+  void add(lsn_notify n)
+  {
+    std::unique_lock<std::mutex> lk(m_mtx);
+    m_queue.push_back(n);
+  }
+  void notify(lsn_t lsn)
+  {
+    std::unique_lock<std::mutex> lk(m_mtx);
+    for(auto &e: m_queue)
+    {
+     if(e.m_lsn <= lsn)
+       thd_decrement_pending_ops(e.m_arg);
+    }
+    m_queue.erase(std::remove_if(m_queue.begin(),m_queue.end(),[lsn](const lsn_notify& n){ return n.m_lsn <= lsn; }),
+    m_queue.end());
+  }
+};
+
+lsn_notification_queue flush_notification_queue;
+
 /** Ensure that the log has been written to the log file up to a given
 log entry (such as that of a transaction commit). Start a new write, or
 wait and check if an already running write is covering the request.
@@ -934,7 +967,7 @@ included in the redo log file write
 @param[in]	flush_to_disk	whether the written log should also
 be flushed to the file system
 @param[in]	rotate_key	whether to rotate the encryption key */
-void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key)
+void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key, bool async_wait)
 {
 #ifdef UNIV_DEBUG
 	ulint		loop_count	= 0;
@@ -991,6 +1024,13 @@ loop:
 		bool work_done = log_sys.current_flush_lsn >= lsn;
 
 		log_write_mutex_exit();
+		if (!work_done && async_wait) {
+		  void *arg = thd_increment_pending_ops();
+		  if (arg) {
+		    flush_notification_queue.add({arg,lsn});
+			return;
+		  }
+		}
 
 		os_event_wait(log_sys.flush_event);
 
@@ -1119,6 +1159,7 @@ loop:
 		log_mutex_exit();
 
 		innobase_mysql_log_notify(flush_lsn);
+		flush_notification_queue.notify(flush_lsn);
 	}
 }
 
@@ -1130,7 +1171,7 @@ log_buffer_flush_to_disk(
 	bool sync)
 {
 	ut_ad(!srv_read_only_mode);
-	log_write_up_to(log_get_lsn(), sync);
+	log_write_up_to(log_get_lsn(), sync, false, true);
 }
 
 /****************************************************************//**

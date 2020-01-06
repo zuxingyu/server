@@ -171,7 +171,7 @@ included in the redo log file write
 @param[in]	flush_to_disk	whether the written log should also
 be flushed to the file system
 @param[in]	rotate_key	whether to rotate the encryption key */
-void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key = false);
+void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key = false, bool async_wait=false);
 
 /** write to the log file up to the last log entry.
 @param[in]	sync	whether we want the written log

@@ -966,7 +966,7 @@ void execute_init_command(THD *thd, LEX_STRING *init_command,
   save_vio= thd->net.vio;
   thd->net.vio= 0;
   thd->clear_error(1);
-  dispatch_command(COM_QUERY, thd, buf, (uint)len, FALSE, FALSE);
+  dispatch_command(COM_QUERY, thd, buf, (uint)len);
   thd->client_capabilities= save_client_capabilities;
   thd->net.vio= save_vio;
 
@@ -1176,25 +1176,42 @@ static bool wsrep_tables_accessible_when_detached(const TABLE_LIST *tables)
 
 /**
   Read one command from connection and execute it (query or simple command).
-  This function is called in loop from thread function.
+  This function is to be used by different schedulers (one-thread-per-connection,
+  pool-of-threads)
 
   For profiling to work, it must never be called recursively.
 
+  @param thd - client connection context
+
+  @param blocking - wait for command to finish.
+  if true, will wait for outstanding operations (e.g group commit) to finish,
+  before returning. otherwise, it might return DISPATCH_COMMAND_WOULDBLOCK,
+  in this case another do_command() needs to be executed to finish the current
+  command.
+
   @retval
-    0  success
+    DISPATCH_COMMAND_SUCCESS(0) - success
   @retval
-    1  request of thread shutdown (see dispatch_command() description)
+    DISPATCH_COMMAND_ERROR  request of THD shutdown (see dispatch_command() description)
+  @retval
+    DISPATCH_COMMAND_WOULDBLOCK - need to wait for commit notification
 */
 
-bool do_command(THD *thd)
+dispatch_command_return do_command(THD *thd, bool blocking)
 {
-  bool return_value;
+  dispatch_command_return return_value;
   char *packet= 0;
   ulong packet_length;
   NET *net= &thd->net;
   enum enum_server_command command;
   DBUG_ENTER("do_command");
-
+  if (thd->async_state.m_state == thd_async_state::enum_async_state::RESUME)
+  {
+    command = thd->async_state.m_command;
+    packet = thd->async_state.m_packet.str;
+    packet_length = (ulong)thd->async_state.m_packet.length;
+    goto resume;
+  }
   /*
     indicator of uninitialized lex => normal flow of errors handling
     (see my_message_sql)
@@ -1261,12 +1278,12 @@ bool do_command(THD *thd)
 
     if (net->error != 3)
     {
-      return_value= TRUE;                       // We have to close it.
+      return_value= DISPATCH_COMMAND_ERROR;     // We have to close it.
       goto out;
     }
 
     net->error= 0;
-    return_value= FALSE;
+    return_value= DISPATCH_COMMAND_SUCCESS;
     goto out;
   }
 
@@ -1323,7 +1340,7 @@ bool do_command(THD *thd)
       MYSQL_END_STATEMENT(thd->m_statement_psi, thd->get_stmt_da());
       thd->m_statement_psi= NULL;
       thd->m_digest= NULL;
-      return_value= FALSE;
+      return_value= DISPATCH_COMMAND_SUCCESS;
 
       wsrep_after_command_before_result(thd);
       goto out;
@@ -1349,7 +1366,7 @@ bool do_command(THD *thd)
       thd->m_statement_psi= NULL;
       thd->m_digest= NULL;
 
-      return_value= FALSE;
+      return_value= DISPATCH_COMMAND_SUCCESS;
       wsrep_after_command_before_result(thd);
       goto out;
     }
@@ -1360,8 +1377,10 @@ bool do_command(THD *thd)
 
   DBUG_ASSERT(packet_length);
   DBUG_ASSERT(!thd->apc_target.is_enabled());
+
+resume:
   return_value= dispatch_command(command, thd, packet+1,
-                                 (uint) (packet_length-1), FALSE, FALSE);
+                                 (uint) (packet_length-1), blocking);
   DBUG_ASSERT(!thd->apc_target.is_enabled());
 
 out:
@@ -1536,8 +1555,8 @@ uint maria_multi_check(THD *thd, char *packet, size_t packet_length)
     1   request of thread shutdown, i. e. if command is
         COM_QUIT/COM_SHUTDOWN
 */
-bool dispatch_command(enum enum_server_command command, THD *thd,
-		      char* packet, uint packet_length, bool is_com_multi,
+dispatch_command_return dispatch_command(enum enum_server_command command, THD *thd,
+		      char* packet, uint packet_length, bool blocking, bool is_com_multi,
                       bool is_next_command)
 {
   NET *net= &thd->net;
@@ -1549,6 +1568,12 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
                        command_name[command].str :
                        "<?>")));
   bool drop_more_results= 0;
+
+  if (thd->async_state.m_state == thd_async_state::enum_async_state::RESUME)
+  {
+    thd->async_state.m_state = thd_async_state::enum_async_state::NONE;
+    goto resume;
+  }
 
   /* keep it withing 1 byte */
   compile_time_assert(COM_END == 255);
@@ -2347,7 +2372,7 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
         }
 
         if (dispatch_command(subcommand, thd, packet + (1 + length_length),
-                             (uint)(subpacket_length - (1 + length_length)), TRUE,
+                             (uint)(subpacket_length - (1 + length_length)), true, true,
                              (current_com != counter)))
         {
           DBUG_ASSERT(thd->is_error());
@@ -2383,6 +2408,15 @@ com_multi_end:
   }
 
 dispatch_end:
+  if (!blocking && !error && thd->async_state.pending_ops())
+  {
+    thd->async_state.m_command = command;
+    thd->async_state.m_packet={packet,packet_length};
+    DBUG_RETURN(DISPATCH_COMMAND_WOULDBLOCK);
+  }
+
+resume:
+
 #ifdef WITH_WSREP
   /*
     BF aborted before sending response back to client
@@ -2493,7 +2527,7 @@ dispatch_end:
   /* Check that some variables are reset properly */
   DBUG_ASSERT(thd->abort_on_warning == 0);
   thd->lex->restore_set_statement_var();
-  DBUG_RETURN(error);
+  DBUG_RETURN(error?DISPATCH_COMMAND_ERROR: DISPATCH_COMMAND_SUCCESS);
 }
 
 static bool slow_filter_masked(THD *thd, ulonglong mask)

@@ -125,6 +125,10 @@ void TP_pool_win::add(TP_connection *c)
   }
 }
 
+void TP_pool_win::resume(TP_connection* c)
+{
+  SubmitThreadpoolWork(((TP_connection_win*)c)->work);
+}
 
 TP_connection_win::TP_connection_win(CONNECT *c) :
   TP_connection(c),
@@ -480,3 +484,5 @@ TP_connection *TP_pool_win::new_connection(CONNECT *connect)
   }
   return c;
 }
+
+

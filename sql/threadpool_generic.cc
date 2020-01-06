@@ -1291,7 +1291,10 @@ void TP_pool_generic::add(TP_connection *c)
   DBUG_VOID_RETURN;
 }
 
-
+void TP_pool_generic::resume(TP_connection* c)
+{
+  add(c);
+}
 
 /**
   MySQL scheduler callback: wait begin
@@ -1351,6 +1354,7 @@ TP_connection_generic::TP_connection_generic(CONNECT *c):
   DBUG_ASSERT(c->vio_type != VIO_CLOSED);
 
 #ifdef _WIN32
+  vio_type = connect->vio_type;
   fd= (c->vio_type == VIO_TYPE_NAMEDPIPE) ?
     c->pipe: (TP_file_handle) mysql_socket_getfd(c->sock);
 #else

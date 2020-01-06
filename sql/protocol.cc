@@ -585,6 +585,7 @@ void Protocol::end_statement()
   DBUG_ENTER("Protocol::end_statement");
   DBUG_ASSERT(! thd->get_stmt_da()->is_sent());
   bool error= FALSE;
+  thd->async_state.wait_for_pending_ops_to_finish();
 
   /* Can not be true, but do not take chances in production. */
   if (thd->get_stmt_da()->is_sent())
