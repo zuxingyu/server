@@ -136,7 +136,7 @@ ut_crc32_power8(
 }
 #endif
 
-#if (defined(__GNUC__) && defined(__x86_64__)) || defined(_MSC_VER)
+#ifdef HAVE_SSE42
 /********************************************************************//**
 Fetches CPU info */
 static
@@ -187,6 +187,8 @@ ut_cpuid(
 	}
 }
 
+#include <nmmintrin.h>
+
 /** Calculate CRC32 over 8-bit data using a hardware/CPU instruction.
 @param[in,out]	crc	crc32 checksum so far when this function is called,
 when the function ends it will contain the new checksum
@@ -200,11 +202,7 @@ ut_crc32_8_hw(
 	const byte**	data,
 	ulint*		len)
 {
-#ifdef _MSC_VER
 	*crc = _mm_crc32_u8(*crc, (*data)[0]);
-#else
-	*crc = __builtin_ia32_crc32qi(*crc, (*data)[0]);
-#endif
 
 	(*data)++;
 	(*len)--;
@@ -220,19 +218,11 @@ ut_crc32_64_low_hw(
 	uint32_t	crc,
 	uint64_t	data)
 {
-#ifdef _MSC_VER
-	uint64_t	crc_64bit = crc;
-#ifdef _M_X64
-	crc_64bit = _mm_crc32_u64(crc_64bit, data);
-#elif defined(_M_IX86)
+#if SIZEOF_VOIDP == 8
+	return static_cast<uint32_t>(_mm_crc32_u64(crc, data));
+#else
 	crc = _mm_crc32_u32(crc, static_cast<uint32_t>(data));
-	crc_64bit = _mm_crc32_u32(crc, static_cast<uint32_t>(data >> 32));
-#else
-#error Not Supported processors type.
-#endif
-	return(static_cast<uint32_t>(crc_64bit));
-#else
-	return static_cast<uint32_t>(__builtin_ia32_crc32di(crc, data));
+	return _mm_crc32_u32(crc, static_cast<uint32_t>(data >> 32));
 #endif
 }
 
@@ -438,7 +428,7 @@ ut_crc32_legacy_big_endian_hw(
 	return(~crc);
 }
 # endif /* INNODB_BUG_ENDIAN_CRC32 */
-#endif /* defined(__GNUC__) && defined(__x86_64__) || (_WIN64) */
+#endif
 
 /* CRC32 software implementation. */
 
@@ -696,7 +686,7 @@ ut_crc32_init()
 #endif /* INNODB_BUG_ENDIAN_CRC32 */
 	ut_crc32_implementation = "Using generic crc32 instructions";
 
-#if (defined(__GNUC__) && defined(__x86_64__)) || defined(_MSC_VER)
+#ifdef HAVE_SSE42
 	uint32_t	vend[3];
 	uint32_t	model;
 	uint32_t	family;
