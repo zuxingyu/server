@@ -1,22 +1,22 @@
-#
-# MDEV-7912
-#
-# multitable delete with wrongly set sort_buffer_size crashes in merge_buffers
+--echo #
+--echo # MDEV-7912
+--echo #
+--echo # multitable delete with wrongly set sort_buffer_size crashes in merge_buffers
+--echo #
 
 --source include/have_innodb.inc
---source include/have_debug.inc
---source include/windows.inc
 
 call mtr.add_suppression("Out of memory");
 
-set sql_mode="";
---disable_warnings
-drop table if exists t1,t2;
 create table `t1` (`a` datetime not null) engine=InnoDB;
-create table `t2` (`a` int not null) engine=innodb;
+create table `t2` (`a` int not null) engine=InnoDB;
+--disable_warnings
 replace into t1 values (),();
 insert into t2 values(0);
-set session sort_buffer_size = 1024*1024*1024*1024;
+--echo #
+--echo # sort_buffer_size must exceed 4GB to test the crash.
+--echo #
+set session sort_buffer_size = 1024*1024*1024*5;
 #Either fail with EE_OUTOFMEMORY, or succeed
 --error 0 , 5
 delete d2 from t2 as d1, t1 as d2 where d1.a <=> d2.a;
