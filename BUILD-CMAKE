@@ -55,11 +55,15 @@ shell>make
 
 Note: by default, cmake build is less verbose than automake build. Use 
 "make VERBOSE=1" if you want to see add command lines for each compiled source.
+- Visual Studio 2019 cmake generator will use host architecture by default, that is,
+cmake will build x64 binaries on x64 machine.
 
-- Windows, using "Visual Studio 9 2008" generator
-shell>cmake . -G "Visual Studio 9 2008" 
-shell>devenv MySQL.sln /build /relwithdebinfo
-(alternatively, open MySQL.sln and build using the IDE)
+- Visual Studio 2017 cmake generator will create 32 bit projects by default.
+For 64 bit, you must pass CMake the "generator" parameter using -G in the configuration step,
+shell>cmake . -G "Visual Studio 15 2017 Win64"
+- With Visual Studio 2019, pass -A Win32 parameter for CMake, like this
+shell>cmake . -A Win32
+- For a complete list of available generators, call "cmake" without any parameters.
 
 - Windows, using "NMake Makefiles" generator
 shell>cmake . -G "NMake Makefiles" 
@@ -115,7 +119,7 @@ shell> cmake .  -DWITH_ARCHIVE_STORAGE_ENGINE=1
 
 This can be done during the initial configuration or any time later.
 
-Note, that parameters are "sticky", that is they are remebered in the CMake 
+Note, that parameters are "sticky", that is they are remembered in the CMake 
 cache (CMakeCache.txt file in the build directory)
 
 2) Configuration using cmake-gui (Windows, OSX, or Linux with cmake-gui 
@@ -187,22 +191,25 @@ shell> cpack -G TGZ --config CPackConfig.cmake
 -- Source distribution --
 "make dist" target is provided. 
 
-ADDITIONAL MAKE TARGETS: "make install" AND "make test"
-----------------------------------------------------------------
+ADDITIONAL MAKE TARGETS: "make install", "make uninstall" AND "make test"
+-------------------------------------------------------------------------
 install target also provided for Makefile based generators. Installation 
 directory can be controlled using configure-time parameter 
-CMAKE_INSTALL_PREFIX (default is /usr/local. It is also possible to install to
+CMAKE_INSTALL_PREFIX (default is /usr/local). It is also possible to install to
 non-configured directory, using
 
 shell> make install DESTDIR="/some/absolute/path"
 
 "make test" runs unit tests (uses CTest for it)
 "make test-force" runs mysql-test-run.pl tests with --test-force parameter
+"make uninstall" is uninstalling the target (default /usr/local). It is possible to
+uninstall non-configured directory using 
+shell> make uninstall DESTDIR="/some/absolute/path"
 
 FOR PROGRAMMERS: WRITING PLATFORM CHECKS
 --------------------------------------------------------------
-If you modify MySQL source and want to add a new platform check,please read 
-http://www.vtk.org/Wiki/CMake_HowToDoPlatformChecks first. In MySQL, most of 
+If you modify MariaDB source and want to add a new platform check,please read 
+http://www.vtk.org/Wiki/CMake_HowToDoPlatformChecks first. In MariaDB, most of 
 the platform tests are implemented in configure.cmake and the template header 
 file is config.h.cmake
 
@@ -222,7 +229,7 @@ Troubleshooting platform checks
 If you suspect that a platform check returned wrong result, examine 
 <build-root>/CMakeFiles/CMakeError.log and 
 <build-root>/CMakeFiles/CMakeOutput.log
-These files they contain compiler command line, and exact error messages.
+These files contain compiler command line, and exact error messages.
 
 Troubleshooting CMake code
 ----------------------------------
