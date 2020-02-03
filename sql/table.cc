@@ -1888,7 +1888,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
             goto err;
           }
           handle_field_as_mysql_json= true;
-          field_type= MYSQL_TYPE_LONG_BLOB;
         }
         else
         {
