@@ -6681,28 +6681,28 @@ error:
     FALSE                    Success
 */
 
-static void write_log_completed(ALTER_PARTITION_PARAM_TYPE *lpt,
-                                bool dont_crash)
+static void write_log_completed(ALTER_PARTITION_PARAM_TYPE *lpt)
 {
   partition_info *part_info= lpt->part_info;
-  DDL_LOG_MEMORY_ENTRY *log_entry= part_info->exec_log_entry;
+  DDL_LOG_MEMORY_ENTRY *exec_log_entry= part_info->exec_log_entry;
   DBUG_ENTER("write_log_completed");
 
-  DBUG_ASSERT(log_entry);
+  DBUG_ASSERT(exec_log_entry);
   mysql_mutex_lock(&LOCK_gdl);
-  if (write_execute_ddl_log_entry(0UL, TRUE, &log_entry))
-  {
-    /*
-      Failed to write, Bad...
-      We have completed the operation but have log records to REMOVE
-      stuff that shouldn't be removed. What clever things could one do
-      here? An error output was written to the error output by the
-      above method so we don't do anything here.
-    */
-    ;
-  }
+  bool error= write_execute_ddl_log_entry(0UL, TRUE, &exec_log_entry);
+  /*
+    If error == true we failed to write, Bad...
+    We have completed the operation but have log records to REMOVE
+    stuff that shouldn't be removed. What clever things could one do
+    here? An error output was written to the error output by the
+    above method so we don't do anything here.
+  */
   release_part_info_log_entries(part_info->first_log_entry);
-  release_part_info_log_entries(part_info->exec_log_entry);
+  if (!error)
+  {
+    DBUG_ASSERT(!exec_log_entry->next_active_log_entry);
+    release_ddl_log_memory_entry(exec_log_entry);
+  }
   mysql_mutex_unlock(&LOCK_gdl);
   part_info->exec_log_entry= NULL;
   part_info->first_log_entry= NULL;
@@ -6867,8 +6867,7 @@ err_exclusive_lock:
       We couldn't recover from error, most likely manual interaction
       is required.
     */
-    write_log_completed(lpt, FALSE);
-    release_log_entries(part_info);
+    write_log_completed(lpt);
     if (!action_completed)
     {
       if (drop_partition)
@@ -7191,7 +7190,7 @@ uint fast_alter_partition_table(THD *thd, TABLE *table,
         mysql_drop_partitions(lpt) ||
         ERROR_INJECT_CRASH("crash_drop_partition_8") ||
         ERROR_INJECT_ERROR("fail_drop_partition_8") ||
-        (write_log_completed(lpt, FALSE), FALSE) ||
+        (write_log_completed(lpt), FALSE) ||
         ERROR_INJECT_CRASH("crash_drop_partition_9") ||
         ERROR_INJECT_ERROR("fail_drop_partition_9") ||
         (alter_partition_lock_handling(lpt), FALSE)) 
@@ -7268,7 +7267,7 @@ uint fast_alter_partition_table(THD *thd, TABLE *table,
         (frm_install= FALSE, FALSE) ||
         ERROR_INJECT_CRASH("crash_add_partition_9") ||
         ERROR_INJECT_ERROR("fail_add_partition_9") ||
-        (write_log_completed(lpt, FALSE), FALSE) ||
+        (write_log_completed(lpt), FALSE) ||
         ERROR_INJECT_CRASH("crash_add_partition_10") ||
         ERROR_INJECT_ERROR("fail_add_partition_10") ||
         (alter_partition_lock_handling(lpt), FALSE))
@@ -7373,7 +7372,7 @@ uint fast_alter_partition_table(THD *thd, TABLE *table,
         mysql_rename_partitions(lpt) ||
         ERROR_INJECT_CRASH("crash_change_partition_11") ||
         ERROR_INJECT_ERROR("fail_change_partition_11") ||
-        (write_log_completed(lpt, FALSE), FALSE) ||
+        (write_log_completed(lpt), FALSE) ||
         ERROR_INJECT_CRASH("crash_change_partition_12") ||
         ERROR_INJECT_ERROR("fail_change_partition_12") ||
         (alter_partition_lock_handling(lpt), FALSE))
