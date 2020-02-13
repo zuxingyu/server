@@ -70,7 +70,8 @@ int main(int argc, char **argv)
   int res;
   char a_buf[MYSQL_USERNAME_LENGTH + 1 + 1024];
 
-  (void) setreuid(0, 0);
+  if (setreuid(0, 0) < 1)
+    return -1;
 
   if (read(0, &field, 1) < 1)
     return -1;
