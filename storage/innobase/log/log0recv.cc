@@ -2913,8 +2913,6 @@ Apply log records automatically when the hash table becomes full.
 @param[in]	checkpoint_lsn		latest checkpoint LSN
 @param[in]	start_lsn		buffer start LSN
 @param[in]	end_lsn			buffer end LSN
-@param[in,out]	contiguous_lsn		it is known that all groups contain
-					contiguous log data upto this lsn
 @param[out]	group_scanned_lsn	scanning succeeded upto this lsn
 @return true if not able to scan any more in this log group */
 static bool recv_scan_log_recs(
@@ -2923,7 +2921,6 @@ static bool recv_scan_log_recs(
 	lsn_t		checkpoint_lsn,
 	lsn_t		start_lsn,
 	lsn_t		end_lsn,
-	lsn_t*		contiguous_lsn,
 	lsn_t*		group_scanned_lsn)
 {
 	lsn_t		scanned_lsn	= start_lsn;
@@ -2942,19 +2939,6 @@ static bool recv_scan_log_recs(
 
 	do {
 		ut_ad(!finished);
-
-		if (log_block_get_flush_bit(log_block)) {
-			/* This block was a start of a log flush operation:
-			we know that the previous flush operation must have
-			been completed for all log groups before this block
-			can have been flushed to any of the groups. Therefore,
-			we know that log data is contiguous up to scanned_lsn
-			in all non-corrupt log groups. */
-
-			if (scanned_lsn > *contiguous_lsn) {
-				*contiguous_lsn = scanned_lsn;
-			}
-		}
 
 		data_len = log_block_get_data_len(log_block);
 
@@ -3096,17 +3080,8 @@ func_exit:
 /** Scans log from a buffer and stores new log data to the parsing buffer.
 Parses and hashes the log records if new data found.
 @param[in]	checkpoint_lsn		latest checkpoint log sequence number
-@param[in,out]	contiguous_lsn		log sequence number
-until which all redo log has been scanned
-@param[in]	last_phase		whether changes
-can be applied to the tablespaces
-@return whether rescan is needed (not everything was stored) */
-static
-bool
-recv_group_scan_log_recs(
-	lsn_t		checkpoint_lsn,
-	lsn_t*		contiguous_lsn,
-	bool		last_phase)
+@return the last parsed LSN */
+static lsn_t recv_group_scan_log_recs(lsn_t checkpoint_lsn)
 {
 	DBUG_ENTER("recv_group_scan_log_recs");
 
@@ -3114,45 +3089,35 @@ recv_group_scan_log_recs(
 	recv_sys.len = 0;
 	recv_sys.recovered_offset = 0;
 	recv_sys.clear();
-	recv_sys.parse_start_lsn = *contiguous_lsn;
-	recv_sys.scanned_lsn = *contiguous_lsn;
-	recv_sys.recovered_lsn = *contiguous_lsn;
+	recv_sys.parse_start_lsn =
+		recv_sys.scanned_lsn =
+		recv_sys.recovered_lsn = checkpoint_lsn;
 	recv_sys.scanned_checkpoint_no = 0;
 	ut_ad(recv_max_page_lsn == 0);
-	ut_ad(last_phase || !recv_writer_thread_active);
 	mutex_exit(&recv_sys.mutex);
 
 	lsn_t	start_lsn;
 	lsn_t	end_lsn;
-	store_t	store	= last_phase ? STORE_IF_EXISTS : STORE_YES;
+	store_t	store	= STORE_IF_EXISTS;
 
-	log_sys.log.scanned_lsn = end_lsn = *contiguous_lsn =
-		ut_uint64_align_down(*contiguous_lsn, OS_FILE_LOG_BLOCK_SIZE);
-	ut_d(recv_sys.after_apply = last_phase);
+	log_sys.log.scanned_lsn = end_lsn =
+		ut_uint64_align_down(checkpoint_lsn, OS_FILE_LOG_BLOCK_SIZE);
 
 	do {
-		if (last_phase && store == STORE_NO) {
-			store = STORE_IF_EXISTS;
-			recv_apply_hashed_log_recs(false);
-			/* Rescan the redo logs from last stored lsn */
-			end_lsn = recv_sys.recovered_lsn;
-		}
-
 		start_lsn = ut_uint64_align_down(end_lsn,
 						 OS_FILE_LOG_BLOCK_SIZE);
 		end_lsn = start_lsn;
 		log_sys.log.read_log_seg(&end_lsn, start_lsn + RECV_SCAN_SIZE);
 	} while (end_lsn != start_lsn
 		 && !recv_scan_log_recs(&store, log_sys.buf, checkpoint_lsn,
-					start_lsn, end_lsn, contiguous_lsn,
+					start_lsn, end_lsn,
 					&log_sys.log.scanned_lsn));
 
 	if (recv_sys.found_corrupt_log || recv_sys.found_corrupt_fs) {
 		DBUG_RETURN(false);
 	}
 
-	DBUG_PRINT("ib_log", ("%s " LSN_PF " completed",
-			      last_phase ? "rescan" : "scan",
+	DBUG_PRINT("ib_log", ("scan " LSN_PF " completed",
 			      log_sys.log.scanned_lsn));
 
 	DBUG_RETURN(store == STORE_NO);
@@ -3522,10 +3487,7 @@ err_exit:
 		os_thread_create(recv_writer_thread, 0, 0);
 
 		if (rescan) {
-			contiguous_lsn = checkpoint_lsn;
-
-			recv_group_scan_log_recs(
-				checkpoint_lsn, &contiguous_lsn, true);
+			recv_group_scan_log_recs(checkpoint_lsn);
 
 			if ((recv_sys.found_corrupt_log
 			     && !srv_force_recovery)
