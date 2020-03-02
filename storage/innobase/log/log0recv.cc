@@ -1633,15 +1633,21 @@ recv_find_max_checkpoint(ulint* max_field)
 	max_no = 0;
 	*max_field = 0;
 
+	ut_ad(!(log_sys.log.file_size & 511));
+
 	buf = log_sys.checkpoint_buf;
 
 	log_sys.log.main_read(0, {buf, OS_FILE_LOG_BLOCK_SIZE});
 	/* Check the header page checksum. There was no
 	checksum in the first redo log format (version 0). */
 	log_sys.log.format = mach_read_from_4(buf + log_header::FORMAT);
-	log_sys.log.key_version = log_sys.is_physical()
-		? mach_read_from_4(buf + log_header::KEY_VERSION)
-		: 0;
+	if (log_sys.is_physical()) {
+		log_sys.log.key_version = mach_read_from_4(
+			buf + log_header::KEY_VERSION);
+	} else {
+		log_sys.log.key_version = 0;
+	}
+
 	if (log_sys.log.format != log_t::FORMAT_3_23
 	    && !recv_check_log_header_checksum(buf)) {
 		ib::error() << "Invalid redo log header checksum.";
@@ -1665,8 +1671,13 @@ recv_find_max_checkpoint(ulint* max_field)
 	case log_t::FORMAT_10_4 | log_t::FORMAT_ENCRYPTED:
 		break;
 	case log_t::FORMAT_10_5:
-		if (!mach_read_from_8(buf + log_header::FLAGS)) {
-			break;
+		if (auto size = mach_read_from_8(buf + log_header::SIZE)) {
+			if (size == log_sys.log.file_size) {
+				break;
+			}
+
+			ib::error() << "Inconsistent redo log size: "
+				    << size << "!=" << log_sys.log.file_size;
 		}
 		/* fall through */
 	default:

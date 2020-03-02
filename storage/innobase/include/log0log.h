@@ -416,8 +416,10 @@ namespace log_header
   constexpr unsigned FORMAT= 0;
   /** Redo log encryption key version (0 if not encrypted) */
   constexpr unsigned KEY_VERSION= 4;
-  /** Capability flags (64 bits, must be 0 for now) */
-  constexpr unsigned FLAGS= 8;
+  /** innodb_log_file_size of the circular log file (big endian).
+  Some most or least significant bits may be repurposed for flags later.
+  For now, the least significant 9 bits must be 0. */
+  constexpr unsigned SIZE= 8;
   /** A NUL terminated string identifying the MySQL 5.7 or MariaDB 10.2+
   version that created the redo log file */
   constexpr unsigned CREATOR= 16;

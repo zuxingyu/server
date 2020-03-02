@@ -863,12 +863,14 @@ static void log_file_header_flush()
 	ut_ad(log_write_lock_own());
 	ut_ad(!recv_no_log_write);
 	ut_ad(log_sys.log.format == log_t::FORMAT_10_5);
+	ut_ad(!(log_sys.log.file_size & 511));
 
 	// man 2 open suggests this buffer to be aligned by 512 for O_DIRECT
 	alignas(OS_FILE_LOG_BLOCK_SIZE) byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
 
 	mach_write_to_4(buf + log_header::FORMAT, log_sys.log.format);
 	mach_write_to_4(buf + log_header::KEY_VERSION, log_sys.log.key_version);
+	mach_write_to_8(buf + log_header::SIZE, log_sys.log.file_size);
 	memcpy(buf + log_header::CREATOR, log_header::CREATOR_CURRENT,
 	       sizeof log_header::CREATOR_CURRENT);
 	static_assert(log_header::CREATOR_END - log_header::CREATOR
