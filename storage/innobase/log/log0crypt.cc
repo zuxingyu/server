@@ -34,9 +34,6 @@ MDEV-11782: Rewritten for MariaDB 10.2 by Marko Mäkelä, MariaDB Corporation.
 /** innodb_encrypt_log: whether to encrypt the redo log */
 my_bool srv_encrypt_log;
 
-/** Redo log encryption key ID */
-#define LOG_DEFAULT_ENCRYPTION_KEY 1
-
 struct aes_block_t {
 	byte		bytes[MY_AES_BLOCK_SIZE];
 };
@@ -94,7 +91,7 @@ static bool init_crypt_key(crypt_info_t* info, bool upgrade = false)
 	compile_time_assert(16 == sizeof info->crypt_key.bytes);
 	compile_time_assert(16 == MY_AES_BLOCK_SIZE);
 
-	if (uint rc = encryption_key_get(LOG_DEFAULT_ENCRYPTION_KEY,
+	if (uint rc = encryption_key_get(log_t::KEY_ID,
 					 info->key_version, mysqld_key,
 					 &keylen)) {
 		ib::error()
@@ -131,12 +128,12 @@ static bool init_crypt_key(crypt_info_t* info, bool upgrade = false)
 @param[in,out]	buf	log blocks to encrypt or decrypt
 @param[in]	lsn	log sequence number of the start of the buffer
 @param[in]	size	size of the buffer, in bytes
-@param[in]	op	whether to decrypt, encrypt, or rotate key and encrypt
+@param[in]	decrypt	whether to decrypt, instead of encrypting
 @return	whether the operation succeeded (encrypt always does) */
-bool log_crypt(byte* buf, lsn_t lsn, ulint size, log_crypt_t op)
+bool log_crypt(byte* buf, lsn_t lsn, ulint size, bool decrypt)
 {
 	ut_ad(size % OS_FILE_LOG_BLOCK_SIZE == 0);
-	ut_ad(ulint(buf) % OS_FILE_LOG_BLOCK_SIZE == 0);
+	buf = my_assume_aligned<OS_FILE_LOG_BLOCK_SIZE>(buf);
 	ut_a(info.key_version);
 
 	uint32_t aes_ctr_iv[MY_AES_BLOCK_SIZE / sizeof(uint32_t)];
@@ -168,33 +165,21 @@ bool log_crypt(byte* buf, lsn_t lsn, ulint size, log_crypt_t op)
 		ut_ad(log_block_get_start_lsn(lsn,
 					      log_block_get_hdr_no(buf))
 		      == lsn);
-		byte* key_ver = &buf[OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_KEY
-				     - LOG_BLOCK_CHECKSUM];
 		const uint dst_size
 			= log_sys.log.format == log_t::FORMAT_ENC_10_4
 			? sizeof dst - LOG_BLOCK_KEY
 			: sizeof dst;
-		if (log_sys.log.format == log_t::FORMAT_ENC_10_4) {
+		if (!decrypt) {
+			ut_ad(log_sys.is_physical());
+		} else if (UNIV_UNLIKELY(log_sys.log.format
+					 == log_t::FORMAT_ENC_10_4)) {
 			const uint key_version = info.key_version;
-			switch (op) {
-			case LOG_ENCRYPT_ROTATE_KEY:
-				info.key_version
-					= encryption_key_get_latest_version(
-						LOG_DEFAULT_ENCRYPTION_KEY);
-				if (key_version != info.key_version
-				    && !init_crypt_key(&info)) {
-					info.key_version = key_version;
-				}
-				/* fall through */
-			case LOG_ENCRYPT:
-				mach_write_to_4(key_ver, info.key_version);
-				break;
-			case LOG_DECRYPT:
-				info.key_version = mach_read_from_4(key_ver);
-				if (key_version != info.key_version
-				    && !init_crypt_key(&info)) {
-					return false;
-				}
+			info.key_version = mach_read_from_4(
+				OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_KEY
+				- LOG_BLOCK_CHECKSUM + buf);
+			if (key_version != info.key_version
+			    && !init_crypt_key(&info)) {
+				return false;
 			}
 #ifndef DBUG_OFF
 			if (key_version != info.key_version) {
@@ -215,10 +200,10 @@ bool log_crypt(byte* buf, lsn_t lsn, ulint size, log_crypt_t op)
 			const_cast<byte*>(info.crypt_key.bytes),
 			MY_AES_BLOCK_SIZE,
 			reinterpret_cast<byte*>(aes_ctr_iv), sizeof aes_ctr_iv,
-			op == LOG_DECRYPT
+			decrypt
 			? ENCRYPTION_FLAG_DECRYPT | ENCRYPTION_FLAG_NOPAD
 			: ENCRYPTION_FLAG_ENCRYPT | ENCRYPTION_FLAG_NOPAD,
-			LOG_DEFAULT_ENCRYPTION_KEY,
+			log_t::KEY_ID,
 			info.key_version);
 		ut_a(rc == MY_AES_OK);
 		ut_a(dst_len == dst_size);
@@ -234,29 +219,31 @@ The random parameters will be persisted in the log checkpoint pages.
 @see log_crypt_write_checkpoint_buf()
 @see log_crypt_read_checkpoint_buf()
 @return whether the operation succeeded */
-UNIV_INTERN
-bool
-log_crypt_init()
+bool log_crypt_init()
 {
-	info.key_version = encryption_key_get_latest_version(
-		LOG_DEFAULT_ENCRYPTION_KEY);
+  info.key_version= encryption_key_get_latest_version(log_t::KEY_ID);
 
-	if (info.key_version == ENCRYPTION_KEY_VERSION_INVALID) {
-		ib::error() << "innodb_encrypt_log: cannot get key version";
-		info.key_version = 0;
-		return false;
-	}
+  if (info.key_version == ENCRYPTION_KEY_VERSION_INVALID)
+    ib::error() << "log_crypt_init(): cannot get key version";
+  else if (my_random_bytes(tmp_iv, MY_AES_BLOCK_SIZE) != MY_AES_OK ||
+           my_random_bytes(info.crypt_msg.bytes, sizeof info.crypt_msg) !=
+           MY_AES_OK ||
+           my_random_bytes(info.crypt_nonce.bytes, sizeof info.crypt_nonce) !=
+           MY_AES_OK)
+    ib::error() << "log_crypt_init(): my_random_bytes() failed";
+  else if (init_crypt_key(&info))
+    goto func_exit;
 
-	if (my_random_bytes(tmp_iv, MY_AES_BLOCK_SIZE) != MY_AES_OK
-	    || my_random_bytes(info.crypt_msg.bytes, sizeof info.crypt_msg)
-	    != MY_AES_OK
-	    || my_random_bytes(info.crypt_nonce.bytes, sizeof info.crypt_nonce)
-	    != MY_AES_OK) {
-		ib::error() << "innodb_encrypt_log: my_random_bytes() failed";
-		return false;
-	}
+  info.key_version= 0;
+func_exit:
+  return info.key_version != 0;
+}
 
-	return init_crypt_key(&info);
+/** @return the desired redo log encryption key version after log_crypt_init()
+@retval 0 if encryption is not available */
+uint32_t log_crypt_key_version()
+{
+  return info.key_version;
 }
 
 /** Read the MariaDB 10.1 checkpoint crypto (version, msg and iv) info.
@@ -351,7 +338,7 @@ found:
 				  aes_ctr_iv, MY_AES_BLOCK_SIZE,
 				  ENCRYPTION_FLAG_DECRYPT
 				  | ENCRYPTION_FLAG_NOPAD,
-				  LOG_DEFAULT_ENCRYPTION_KEY,
+				  log_t::KEY_ID,
 				  info->key_version);
 
 	if (rc != MY_AES_OK || dst_len != src_len) {
@@ -437,7 +424,7 @@ log_tmp_block_encrypt(
 		encrypt
 		? ENCRYPTION_FLAG_ENCRYPT|ENCRYPTION_FLAG_NOPAD
 		: ENCRYPTION_FLAG_DECRYPT|ENCRYPTION_FLAG_NOPAD,
-		LOG_DEFAULT_ENCRYPTION_KEY, info.key_version);
+		log_t::KEY_ID, info.key_version);
 
 	if (rc != MY_AES_OK) {
 		ib::error() << (encrypt ? "Encryption" : "Decryption")

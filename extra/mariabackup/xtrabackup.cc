@@ -4100,14 +4100,15 @@ reread_log_header:
 	}
 
 	/* label it */
-	byte MY_ALIGNED(OS_FILE_LOG_BLOCK_SIZE) log_hdr_buf[LOG_FILE_HDR_SIZE];
+	alignas(OS_FILE_LOG_BLOCK_SIZE) byte log_hdr_buf[LOG_FILE_HDR_SIZE];
 	memset(log_hdr_buf, 0, sizeof log_hdr_buf);
 
 	byte *log_hdr_field = log_hdr_buf;
-	mach_write_to_4(LOG_HEADER_FORMAT + log_hdr_field, log_sys.log.format);
-	mach_write_to_4(LOG_HEADER_SUBFORMAT + log_hdr_field, log_sys.log.subformat);
-	mach_write_to_8(LOG_HEADER_START_LSN + log_hdr_field, checkpoint_lsn_start);
-	strcpy(reinterpret_cast<char*>(LOG_HEADER_CREATOR + log_hdr_field),
+	mach_write_to_4(log_header::FORMAT + log_hdr_field,
+			log_sys.log.format);
+	mach_write_to_4(log_header::KEY_VERSION + log_hdr_field,
+			log_sys.log.key_version);
+	strcpy(reinterpret_cast<char*>(log_header::CREATOR + log_hdr_field),
 		"Backup " MYSQL_SERVER_VERSION);
 	log_block_set_checksum(log_hdr_field,
 		log_block_calc_checksum_crc32(log_hdr_field));

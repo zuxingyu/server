@@ -310,6 +310,10 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
         renamed. */
 
 	log_sys.log.create();
+	if (srv_encrypt_log && !log_sys.is_encrypted_physical()) {
+		return DB_ERROR;
+	}
+
 	if (!log_set_capacity(srv_log_file_size_requested)) {
 		return DB_ERROR;
 	}
@@ -319,9 +323,6 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 
 	/* Create a log checkpoint. */
 	log_mutex_enter();
-	if (log_sys.is_encrypted() && !log_crypt_init()) {
-		return DB_ERROR;
-	}
 	ut_d(recv_no_log_write = false);
 	log_sys.lsn = ut_uint64_align_up(lsn, OS_FILE_LOG_BLOCK_SIZE);
 
@@ -978,10 +979,6 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 	ulint	pending_io = 0;
 	ulint	count = 0;
 
-	if (log_sys.log.subformat != 2) {
-		srv_log_file_size = 0;
-	}
-
 	do {
 		/* Clean the buffer pool. */
 		buf_flush_sync();
@@ -998,14 +995,14 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 		{
 			ib::info	info;
 			if (srv_log_file_size == 0
-			    || (log_sys.log.format & ~log_t::FORMAT_ENCRYPTED)
-			    != log_t::FORMAT_10_5) {
+			    || log_sys.log.format != log_t::FORMAT_10_5) {
 				info << "Upgrading redo log: ";
 			} else if (!old_exists
 				   || srv_log_file_size
 				   != srv_log_file_size_requested) {
-				if (srv_encrypt_log
-				    == (my_bool)log_sys.is_encrypted()) {
+				if ((srv_encrypt_log
+				     ? log_crypt_key_version() : 0)
+				    == log_sys.log.key_version) {
 					info << (srv_encrypt_log
 						 ? "Resizing encrypted"
 						 : "Resizing");
@@ -1168,12 +1165,17 @@ dberr_t srv_start(bool create_new_db)
 
 	ib::info() << "Compressed tables use zlib " ZLIB_VERSION
 #ifdef UNIV_ZIP_DEBUG
-	      " with validation"
+		" with validation"
 #endif /* UNIV_ZIP_DEBUG */
-	      ;
 #ifdef UNIV_ZIP_COPY
-	ib::info() << "and extra copying";
+		" and extra copying"
 #endif /* UNIV_ZIP_COPY */
+		;
+
+	if (!innodb_encrypt_temporary_tables && !srv_encrypt_log) {
+	} else if (!log_crypt_init()) {
+		return srv_init_abort(DB_ERROR);
+	}
 
 	/* Since InnoDB does not currently clean up all its internal data
 	structures in MySQL Embedded Server Library server_end(), we
@@ -1382,10 +1384,6 @@ dberr_t srv_start(bool create_new_db)
 	}
 
 	srv_log_file_size_requested = srv_log_file_size;
-
-	if (innodb_encrypt_temporary_tables && !log_crypt_init()) {
-		return srv_init_abort(DB_ERROR);
-	}
 
 	std::string logfile0;
 	if (create_new_db) {
@@ -1713,11 +1711,9 @@ file_checked:
 			/* Leave the redo log alone. */
 		} else if (srv_log_file_size_requested == srv_log_file_size
 			   && srv_log_file_found
-			   && log_sys.log.format
-			   == (srv_encrypt_log
-			       ? log_t::FORMAT_ENC_10_5
-			       : log_t::FORMAT_10_5)
-			   && log_sys.log.subformat == 2) {
+			   && log_sys.log.format == log_t::FORMAT_10_5
+			   && (srv_encrypt_log ? log_crypt_key_version() : 0)
+			   == log_sys.log.key_version) {
 			/* No need to add or remove encryption,
 			upgrade, downgrade, or resize. */
 		} else {

@@ -43,9 +43,6 @@ Created 12/9/1995 Heikki Tuuri
 
 using st_::span;
 
-/** Magic value to use instead of log checksums when they are disabled */
-#define LOG_NO_CHECKSUM_MAGIC 0xDEADBEEFUL
-
 /* Margin for the free space in the smallest log, before a new query
 step which modifies the database, is started */
 
@@ -174,9 +171,8 @@ wait and check if an already running write is covering the request.
 @param[in]	lsn		log sequence number that should be
 included in the redo log file write
 @param[in]	flush_to_disk	whether the written log should also
-be flushed to the file system
-@param[in]	rotate_key	whether to rotate the encryption key */
-void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key = false);
+be flushed to the file system */
+void log_write_up_to(lsn_t lsn, bool flush_to_disk);
 
 /** write to the log file up to the last log entry.
 @param[in]	sync	whether we want the written log
@@ -405,34 +401,35 @@ to this checkpoint, or 0 if the information has not been written */
 /* @} */
 
 /** Offsets of a log file header */
-/* @{ */
-/** Log file header format identifier (32-bit unsigned big-endian integer).
-This used to be called LOG_GROUP_ID and always written as 0,
-because InnoDB never supported more than one copy of the redo log. */
-#define LOG_HEADER_FORMAT	0
-/** Redo log subformat (originally 0). In format version 0, the
-LOG_FILE_START_LSN started here, 4 bytes earlier than LOG_HEADER_START_LSN,
-which the LOG_FILE_START_LSN was renamed to.
-Subformat 1 is for the fully redo-logged TRUNCATE
-(no MLOG_TRUNCATE records or extra log checkpoints or log file) */
-#define LOG_HEADER_SUBFORMAT	4
-/** LSN of the start of data in this log file (with format version 1;
-in format version 0, it was called LOG_FILE_START_LSN and at offset 4). */
-#define LOG_HEADER_START_LSN	8
-/** A null-terminated string which will contain either the string 'ibbackup'
-and the creation time if the log file was created by mysqlbackup --restore,
-or the MySQL version that created the redo log file. */
-#define LOG_HEADER_CREATOR	16
-/** End of the log file creator field. */
-#define LOG_HEADER_CREATOR_END	(LOG_HEADER_CREATOR + 32)
-/** Contents of the LOG_HEADER_CREATOR field */
-#define LOG_HEADER_CREATOR_CURRENT		\
-	"MariaDB "				\
-	IB_TO_STR(MYSQL_VERSION_MAJOR) "."	\
-	IB_TO_STR(MYSQL_VERSION_MINOR) "."	\
-	IB_TO_STR(MYSQL_VERSION_PATCH)
+namespace log_header
+{
+  /** Log file header format identifier (32-bit unsigned big-endian integer).
+  Before MariaDB 10.2.2 or MySQL 5.7.9, this was called LOG_GROUP_ID
+  and always written as 0, because InnoDB never supported more than one
+  copy of the redo log. */
+  constexpr unsigned FORMAT= 0;
+  /** Redo log encryption key version (0 if not encrypted) */
+  constexpr unsigned KEY_VERSION= 4;
+  /** Capability flags (64 bits, must be 0 for now) */
+  constexpr unsigned FLAGS= 8;
+  /** A NUL terminated string identifying the MySQL 5.7 or MariaDB 10.2+
+  version that created the redo log file */
+  constexpr unsigned CREATOR= 16;
+  /** End of the log file creator field. */
+  constexpr unsigned CREATOR_END= CREATOR + 32;
 
-/* @} */
+#if 1 // MDEV-14425 TODO: write here, not in the checkpoint header!
+  constexpr unsigned CRYPT_MSG= CREATOR_END;
+  constexpr unsigned CRYPT_KEY= CREATOR_END + MY_AES_BLOCK_SIZE;
+  /** wider than info.crypt_nonce because we will no longer use the LSN */
+  constexpr unsigned CRYPT_NONCE= CRYPT_KEY + MY_AES_BLOCK_SIZE;
+#endif
+
+  /** Contents of the CREATOR field */
+  constexpr const char CREATOR_CURRENT[32]= "MariaDB "
+    IB_TO_STR(MYSQL_VERSION_MAJOR) "." IB_TO_STR(MYSQL_VERSION_MINOR) "."
+    IB_TO_STR(MYSQL_VERSION_PATCH);
+};
 
 #define LOG_CHECKPOINT_1	OS_FILE_LOG_BLOCK_SIZE
 					/* first checkpoint field in the log
@@ -542,12 +539,7 @@ struct log_t{
   static constexpr uint32_t FORMAT_3_23 = 0;
   /** The MySQL 5.7.9/MariaDB 10.2.2 log format */
   static constexpr uint32_t FORMAT_10_2 = 1;
-  /** The MariaDB 10.3.2 log format.
-  To prevent crash-downgrade to earlier 10.2 due to the inability to
-  roll back a retroactively introduced TRX_UNDO_RENAME_TABLE undo log record,
-  MariaDB 10.2.18 and later will use the 10.3 format, but LOG_HEADER_SUBFORMAT
-  1 instead of 0. MariaDB 10.3 will use subformat 0 (5.7-style TRUNCATE) or 2
-  (MDEV-13564 backup-friendly TRUNCATE). */
+  /** The MariaDB 10.3.2 log format. */
   static constexpr uint32_t FORMAT_10_3 = 103;
   /** The MariaDB 10.4.0 log format. */
   static constexpr uint32_t FORMAT_10_4 = 104;
@@ -555,10 +547,11 @@ struct log_t{
   static constexpr uint32_t FORMAT_ENCRYPTED = 1U << 31;
   /** The MariaDB 10.4.0 log format (only with innodb_encrypt_log=ON) */
   static constexpr uint32_t FORMAT_ENC_10_4 = FORMAT_10_4 | FORMAT_ENCRYPTED;
-  /** The MariaDB 10.5 physical redo log format */
-  static constexpr uint32_t FORMAT_10_5 = 0x50485953;
-  /** The MariaDB 10.5 physical format (only with innodb_encrypt_log=ON) */
-  static constexpr uint32_t FORMAT_ENC_10_5 = FORMAT_10_5 | FORMAT_ENCRYPTED;
+  /** The MariaDB 10.5.2 physical redo log format (encrypted or not) */
+  static constexpr uint32_t FORMAT_10_5= 0x50485953;
+
+  /** Redo log encryption key ID */
+  static constexpr uint32_t KEY_ID= 1;
 
 	MY_ALIGNED(CACHE_LINE_SIZE)
 	lsn_t		lsn;		/*!< log sequence number */
@@ -605,12 +598,11 @@ struct log_t{
   /** Log file stuff. Protected by mutex or write_mutex. */
   struct file {
     /** format of the redo log: e.g., FORMAT_10_5 */
-    uint32_t				format;
-    /** redo log subformat: 0 with separately logged TRUNCATE,
-    2 with fully redo-logged TRUNCATE (1 in MariaDB 10.2) */
-    uint32_t				subformat;
+    uint32_t format;
+    /** redo log encryption key version, or ~0 if not encrypted */
+    uint32_t key_version;
     /** individual log file size in bytes, including the header */
-    lsn_t				file_size;
+    lsn_t file_size;
   private:
     /** lsn used to fix coordinates within the log group */
     lsn_t				lsn;
@@ -643,11 +635,21 @@ struct log_t{
     /** closes log file */
     void close_file();
 
-    /** @return whether the redo log is encrypted */
-    bool is_encrypted() const { return format & FORMAT_ENCRYPTED; }
+    /** @return whether non-physical log is encrypted */
+    bool is_encrypted_old() const
+    {
+      ut_ad(!is_physical());
+      return format & FORMAT_ENCRYPTED;
+    }
+    /** @return whether the physical log is encrypted */
+    bool is_encrypted_physical() const
+    {
+      ut_ad(is_physical());
+      return key_version != 0;
+    }
+
     /** @return whether the redo log is in the physical format */
-    bool is_physical() const
-    { return (format & ~FORMAT_ENCRYPTED) == FORMAT_10_5; }
+    bool is_physical() const { return format == FORMAT_10_5; }
     /** @return capacity in bytes */
     lsn_t capacity() const{ return file_size - LOG_FILE_HDR_SIZE; }
     /** Calculate the offset of a log sequence number.
@@ -761,8 +763,10 @@ public:
   */
   log_t(): m_initialised(false) {}
 
-  /** @return whether the redo log is encrypted */
-  bool is_encrypted() const { return(log.is_encrypted()); }
+  /** @return whether the non-physical redo log is encrypted */
+  bool is_encrypted_old() const { return log.is_encrypted_old(); }
+  /** @return whether the physical redo log is encrypted */
+  bool is_encrypted_physical() const { return log.is_encrypted_physical(); }
   /** @return whether the redo log is in the physical format */
   bool is_physical() const { return log.is_physical(); }
 

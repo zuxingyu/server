@@ -1224,10 +1224,11 @@ fail:
 			goto fail;
 		}
 
-		if (is_encrypted()
+		if ((is_physical()
+		     ? is_encrypted_physical()
+		     : is_encrypted_old())
 		    && !log_crypt(buf, *start_lsn,
-				  OS_FILE_LOG_BLOCK_SIZE,
-				  LOG_DECRYPT)) {
+				  OS_FILE_LOG_BLOCK_SIZE, true)) {
 			goto fail;
 		}
 
@@ -1506,9 +1507,9 @@ static dberr_t recv_log_recover_10_4()
 		return DB_CORRUPTION;
 	}
 
-	if (log_sys.log.is_encrypted()
+	if (log_sys.log.is_encrypted_old()
 	    && !log_crypt(buf, lsn & (OS_FILE_LOG_BLOCK_SIZE - 1),
-			  OS_FILE_LOG_BLOCK_SIZE, LOG_DECRYPT)) {
+			  OS_FILE_LOG_BLOCK_SIZE, true)) {
 		return DB_ERROR;
 	}
 
@@ -1553,9 +1554,9 @@ recv_find_max_checkpoint(ulint* max_field)
 	log_sys.log.read(0, {buf, OS_FILE_LOG_BLOCK_SIZE});
 	/* Check the header page checksum. There was no
 	checksum in the first redo log format (version 0). */
-	log_sys.log.format = mach_read_from_4(buf + LOG_HEADER_FORMAT);
-	log_sys.log.subformat = log_sys.log.format != log_t::FORMAT_3_23
-		? mach_read_from_4(buf + LOG_HEADER_SUBFORMAT)
+	log_sys.log.format = mach_read_from_4(buf + log_header::FORMAT);
+	log_sys.log.key_version = log_sys.is_physical()
+		? mach_read_from_4(buf + log_header::KEY_VERSION)
 		: 0;
 	if (log_sys.log.format != log_t::FORMAT_3_23
 	    && !recv_check_log_header_checksum(buf)) {
@@ -1563,11 +1564,11 @@ recv_find_max_checkpoint(ulint* max_field)
 		return(DB_CORRUPTION);
 	}
 
-	char creator[LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR + 1];
+	char creator[log_header::CREATOR_END - log_header::CREATOR + 1];
 
-	memcpy(creator, buf + LOG_HEADER_CREATOR, sizeof creator);
+	memcpy(creator, buf + log_header::CREATOR, sizeof creator);
 	/* Ensure that the string is NUL-terminated. */
-	creator[LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR] = 0;
+	creator[log_header::CREATOR_END - log_header::CREATOR] = 0;
 
 	switch (log_sys.log.format) {
 	case log_t::FORMAT_3_23:
@@ -1578,9 +1579,12 @@ recv_find_max_checkpoint(ulint* max_field)
 	case log_t::FORMAT_10_3 | log_t::FORMAT_ENCRYPTED:
 	case log_t::FORMAT_10_4:
 	case log_t::FORMAT_10_4 | log_t::FORMAT_ENCRYPTED:
-	case log_t::FORMAT_10_5:
-	case log_t::FORMAT_10_5 | log_t::FORMAT_ENCRYPTED:
 		break;
+	case log_t::FORMAT_10_5:
+		if (!mach_read_from_8(buf + log_header::FLAGS)) {
+			break;
+		}
+		/* fall through */
 	default:
 		ib::error() << "Unsupported redo log format."
 			" The redo log was created with " << creator << ".";
@@ -1604,7 +1608,9 @@ recv_find_max_checkpoint(ulint* max_field)
 			continue;
 		}
 
-		if (log_sys.is_encrypted()
+		if ((log_sys.is_physical()
+		     ? log_sys.is_encrypted_physical()
+		     : log_sys.is_encrypted_old())
 		    && !log_crypt_read_checkpoint_buf(buf)) {
 			ib::error() << "Reading checkpoint"
 				" encryption info failed.";
@@ -1643,19 +1649,15 @@ recv_find_max_checkpoint(ulint* max_field)
 		return(DB_ERROR);
 	}
 
-	switch (log_sys.log.format) {
-	case log_t::FORMAT_10_5:
-	case log_t::FORMAT_10_5 | log_t::FORMAT_ENCRYPTED:
-		break;
-	default:
-		if (dberr_t err = recv_log_recover_10_4()) {
-			ib::error()
-				<< "Upgrade after a crash is not supported."
-				" The redo log was created with " << creator
-				<< (err == DB_ERROR
-				    ? "." : ", and it appears corrupted.");
-			return err;
-		}
+	if (log_sys.log.format == log_t::FORMAT_10_5) {
+		return DB_SUCCESS;
+	} else if (dberr_t err = recv_log_recover_10_4()) {
+		ib::error()
+			<< "Upgrade after a crash is not supported."
+			" The redo log was created with " << creator
+			<< (err == DB_ERROR
+			    ? "." : ", and it appears corrupted.");
+		return err;
 	}
 
 	return(DB_SUCCESS);
@@ -2544,17 +2546,6 @@ void recv_apply_hashed_log_recs(bool last_batch)
 
 	if (recv_sys.pages.empty()) {
 		goto done;
-	}
-
-	if (!log_sys.log.subformat && !srv_force_recovery
-	    && srv_undo_tablespaces_open) {
-		ib::error() << "Recovery of separately logged"
-			" TRUNCATE operations is no longer supported."
-			" Set innodb_force_recovery=1"
-			" if no *trunc.log files exist";
-		recv_sys.found_corrupt_log = true;
-		mutex_exit(&recv_sys.mutex);
-		return;
 	} else {
 		const char* msg = last_batch
 			? "Starting final batch to recover "

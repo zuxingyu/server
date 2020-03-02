@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (C) 2013, 2015, Google Inc. All Rights Reserved.
-Copyright (C) 2014, 2018, MariaDB Corporation.
+Copyright (C) 2014, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -38,9 +38,11 @@ The random parameters will be persisted in the log checkpoint pages.
 @see log_crypt_write_checkpoint_buf()
 @see log_crypt_read_checkpoint_buf()
 @return whether the operation succeeded */
-UNIV_INTERN
-bool
-log_crypt_init();
+bool log_crypt_init();
+
+/** @return the desired redo log encryption key version after log_crypt_init()
+@retval 0 if encryption is not available */
+uint32_t log_crypt_key_version();
 
 /*********************************************************************//**
 Writes the crypto (version, msg and iv) info, which has been used for
@@ -72,23 +74,13 @@ UNIV_INTERN
 bool
 log_crypt_read_checkpoint_buf(const byte* buf);
 
-/** log_crypt() operation code */
-enum log_crypt_t {
-	/** encrypt a log block without rotating key */
-	LOG_ENCRYPT,
-	/** decrypt a log block */
-	LOG_DECRYPT,
-	/** attempt to rotate the key, and encrypt a log block */
-	LOG_ENCRYPT_ROTATE_KEY
-};
-
 /** Encrypt or decrypt log blocks.
 @param[in,out]	buf	log blocks to encrypt or decrypt
 @param[in]	lsn	log sequence number of the start of the buffer
 @param[in]	size	size of the buffer, in bytes
-@param[in]	op	whether to decrypt, encrypt, or rotate key and encrypt
+@param[in]	decrypt	whether to decrypt, instead of encrypting
 @return	whether the operation succeeded (encrypt always does) */
-bool log_crypt(byte* buf, lsn_t lsn, ulint size, log_crypt_t op = LOG_ENCRYPT);
+bool log_crypt(byte* buf, lsn_t lsn, ulint size, bool decrypt= false);
 
 /** Encrypt or decrypt a temporary file block.
 @param[in]	src		block to encrypt or decrypt

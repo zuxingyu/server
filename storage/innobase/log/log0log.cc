@@ -810,8 +810,8 @@ void log_t::file::create()
   ut_ad(this == &log_sys.log);
   ut_ad(log_sys.is_initialised());
 
-  format= srv_encrypt_log ? log_t::FORMAT_ENC_10_5 : log_t::FORMAT_10_5;
-  subformat= 2;
+  format= log_t::FORMAT_10_5;
+  key_version= srv_encrypt_log ? log_crypt_key_version() : 0;
   file_size= srv_log_file_size;
   lsn= LOG_START_LSN;
   lsn_offset= LOG_FILE_HDR_SIZE;
@@ -825,31 +825,22 @@ inline void log_block_store_checksum(byte* block)
 
 /******************************************************//**
 Writes a log file header to a log file space. */
-static
-void
-log_file_header_flush(
-	lsn_t		start_lsn)	/*!< in: log file data starts at this
-					lsn */
+static void log_file_header_flush()
 {
 	ut_ad(log_write_lock_own());
 	ut_ad(!recv_no_log_write);
-	ut_ad(log_sys.log.format == log_t::FORMAT_10_5
-	      || log_sys.log.format == log_t::FORMAT_ENC_10_5);
+	ut_ad(log_sys.log.format == log_t::FORMAT_10_5);
 
 	// man 2 open suggests this buffer to be aligned by 512 for O_DIRECT
-	MY_ALIGNED(OS_FILE_LOG_BLOCK_SIZE)
-	byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
+	alignas(OS_FILE_LOG_BLOCK_SIZE) byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
 
-	mach_write_to_4(buf + LOG_HEADER_FORMAT, log_sys.log.format);
-	mach_write_to_4(buf + LOG_HEADER_SUBFORMAT, log_sys.log.subformat);
-	mach_write_to_8(buf + LOG_HEADER_START_LSN, start_lsn);
-	strcpy(reinterpret_cast<char*>(buf) + LOG_HEADER_CREATOR,
-	       LOG_HEADER_CREATOR_CURRENT);
-	ut_ad(LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR
-	      >= sizeof LOG_HEADER_CREATOR_CURRENT);
+	mach_write_to_4(buf + log_header::FORMAT, log_sys.log.format);
+	mach_write_to_4(buf + log_header::KEY_VERSION, log_sys.log.key_version);
+	memcpy(buf + log_header::CREATOR, log_header::CREATOR_CURRENT,
+	       sizeof log_header::CREATOR_CURRENT);
+	static_assert(log_header::CREATOR_END - log_header::CREATOR
+		      == sizeof log_header::CREATOR_CURRENT, "compatibility");
 	log_block_store_checksum(buf);
-
-	DBUG_PRINT("ib_log", ("write " LSN_PF, start_lsn));
 
 	log_sys.n_log_ios++;
 
@@ -903,7 +894,7 @@ loop:
 
 		ut_a(next_offset / log_sys.log.file_size <= ULINT_MAX);
 
-		log_file_header_flush(start_lsn);
+		log_file_header_flush();
 		srv_stats.os_log_written.add(OS_FILE_LOG_BLOCK_SIZE);
 
 		srv_stats.log_writes.inc();
@@ -1032,7 +1023,7 @@ Note : the caller must have log_mutex locked, and this
 mutex is released in the function.
 
 */
-static void log_write(bool rotate_key)
+static void log_write()
 {
 	ut_ad(log_mutex_own());
 	ut_ad(!recv_no_log_write);
@@ -1107,10 +1098,11 @@ static void log_write(bool rotate_key)
 					       LSN_PF, log_sys.write_lsn);
 	}
 
-	if (log_sys.is_encrypted()) {
+	if (log_sys.is_physical()
+	    ? log_sys.is_encrypted_physical()
+	    : log_sys.is_encrypted_old()) {
 		log_crypt(write_buf + area_start, log_sys.write_lsn,
-			  area_end - area_start,
-			  rotate_key ? LOG_ENCRYPT_ROTATE_KEY : LOG_ENCRYPT);
+			  area_end - area_start);
 	}
 
 	/* Do the write to the log file */
@@ -1145,51 +1137,40 @@ wait and check if an already running write is covering the request.
 @param[in]	lsn		log sequence number that should be
 included in the redo log file write
 @param[in]	flush_to_disk	whether the written log should also
-be flushed to the file system
-@param[in]	rotate_key	whether to rotate the encryption key */
-void log_write_up_to(lsn_t lsn, bool flush_to_disk, bool rotate_key)
+be flushed to the file system */
+void log_write_up_to(lsn_t lsn, bool flush_to_disk)
 {
   ut_ad(!srv_read_only_mode);
-  ut_ad(!rotate_key || flush_to_disk);
 
   if (recv_no_ibuf_operations)
-  {
     /* Recovery is running and no operations on the log files are
     allowed yet (the variable name .._no_ibuf_.. is misleading) */
     return;
-  }
 
-  if (flush_to_disk &&
-    flush_lock.acquire(lsn) != group_commit_lock::ACQUIRED)
-  {
+  if (flush_to_disk && flush_lock.acquire(lsn) != group_commit_lock::ACQUIRED)
     return;
-  }
 
   if (write_lock.acquire(lsn) == group_commit_lock::ACQUIRED)
   {
     log_mutex_enter();
-    auto write_lsn = log_sys.lsn;
+    lsn_t write_lsn= log_sys.lsn;
     write_lock.set_pending(write_lsn);
 
-    log_write(rotate_key);
+    log_write();
 
     ut_a(log_sys.write_lsn == write_lsn);
     write_lock.release(write_lsn);
   }
 
   if (!flush_to_disk)
-  {
     return;
-  }
 
   /* Flush the highest written lsn.*/
-  auto flush_lsn = write_lock.value();
+  lsn_t flush_lsn= write_lock.value();
   flush_lock.set_pending(flush_lsn);
 
   if (!log_sys.log.writes_are_durable())
-  {
     log_write_flush_to_disk_low(flush_lsn);
-  }
 
   flush_lock.release(flush_lsn);
 
@@ -1341,7 +1322,9 @@ void log_write_checkpoint_info(lsn_t end_lsn)
 	mach_write_to_8(buf + LOG_CHECKPOINT_NO, log_sys.next_checkpoint_no);
 	mach_write_to_8(buf + LOG_CHECKPOINT_LSN, log_sys.next_checkpoint_lsn);
 
-	if (log_sys.is_encrypted()) {
+	if (log_sys.is_physical()
+	    ? log_sys.is_encrypted_physical()
+	    : log_sys.is_encrypted_old()) {
 		log_crypt_write_checkpoint_buf(buf);
 	}
 
@@ -1479,7 +1462,7 @@ bool log_checkpoint()
 
 	log_mutex_exit();
 
-	log_write_up_to(flush_lsn, true, true);
+	log_write_up_to(flush_lsn, true);
 
 	log_mutex_enter();
 
