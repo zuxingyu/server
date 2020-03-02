@@ -829,6 +829,7 @@ size_t recv_sys_t::files_size()
   return files.size();
 }
 
+#if 0 // MDEV-14425 TODO
 /** Process a file name from a FILE_* record.
 @param[in,out]	name		file name
 @param[in]	len		length of the file name
@@ -960,6 +961,7 @@ fil_name_process(char* name, ulint len, ulint space_id, bool deleted)
 		}
 	}
 }
+#endif
 
 /** Clean up after recv_sys_t::create() */
 void recv_sys_t::close()
@@ -2992,6 +2994,20 @@ static bool recv_scan_log_recs(
 				ib::info() << "Starting crash recovery from"
 					" checkpoint LSN="
 					<< recv_sys.scanned_lsn;
+
+				if (srv_operation == SRV_OPERATION_NORMAL) {
+					buf_dblwr_process();
+				}
+
+				ut_ad(srv_force_recovery
+				      <= SRV_FORCE_NO_UNDO_LOG_SCAN);
+
+				/* Spawn the background thread to
+				flush dirty pages from the buffer
+				pools. */
+				ut_ad(!recv_writer_thread_active);
+				recv_writer_thread_active = true;
+				os_thread_create(recv_writer_thread, 0, 0);
 			}
 
 			/* We were able to find more log data: add it to the
@@ -3123,6 +3139,7 @@ static lsn_t recv_group_scan_log_recs(lsn_t checkpoint_lsn)
 	DBUG_RETURN(store == STORE_NO);
 }
 
+#if 0 // MDEV-14425 TODO
 /** Report a missing tablespace for which page-redo log exists.
 @param[in]	err	previous error code
 @param[in]	i	tablespace descriptor
@@ -3292,6 +3309,7 @@ recv_init_crash_recovery_spaces(bool rescan, bool& missing_tablespace)
 
 	return DB_SUCCESS;
 }
+#endif
 
 /** Start recovering from a redo log checkpoint.
 @see recv_recovery_from_checkpoint_finish
@@ -3431,6 +3449,7 @@ err_exit:
 
 	log_sys.lsn = recv_sys.recovered_lsn;
 
+#if 0// MDEV-14425 TODO
 	if (recv_needed_recovery) {
 		bool missing_tablespace = false;
 
@@ -3474,35 +3493,13 @@ err_exit:
 
 			rescan = true;
 		}
-
-		if (srv_operation == SRV_OPERATION_NORMAL) {
-			buf_dblwr_process();
-		}
-
-		ut_ad(srv_force_recovery <= SRV_FORCE_NO_UNDO_LOG_SCAN);
-
-		/* Spawn the background thread to flush dirty pages
-		from the buffer pools. */
-		recv_writer_thread_active = true;
-		os_thread_create(recv_writer_thread, 0, 0);
-
-		if (rescan) {
-			recv_group_scan_log_recs(checkpoint_lsn);
-
-			if ((recv_sys.found_corrupt_log
-			     && !srv_force_recovery)
-			    || recv_sys.found_corrupt_fs) {
-				log_mutex_exit();
-				return(DB_ERROR);
-			}
-		}
 	} else {
 		ut_ad(!rescan || recv_sys.pages.empty());
 	}
+#endif
 
-	if (log_sys.is_physical()
-	    && (log_sys.log.scanned_lsn < checkpoint_lsn
-		|| log_sys.log.scanned_lsn < recv_max_page_lsn)) {
+	if (log_sys.log.scanned_lsn < checkpoint_lsn
+	    || log_sys.log.scanned_lsn < recv_max_page_lsn) {
 
 		ib::error() << "We scanned the log up to "
 			<< log_sys.log.scanned_lsn

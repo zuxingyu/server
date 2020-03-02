@@ -2653,7 +2653,7 @@ static lsn_t xtrabackup_copy_log(lsn_t start_lsn, lsn_t end_lsn, bool last)
 		}
 	}
 
-	if (more_data && recv_sys.parse(0, STORE_NO, false)) {
+	if (more_data && recv_sys.parse(0, STORE_NO)) {
 		msg("Error: copying the log failed");
 		return(0);
 	}
