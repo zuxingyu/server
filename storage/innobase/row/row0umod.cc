@@ -258,8 +258,6 @@ row_undo_mod_clust(
 	mtr.start();
 	if (index->table->is_temporary()) {
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
-	} else {
-		index->set_modified(mtr);
 	}
 
 	online = dict_index_is_online_ddl(index);
@@ -292,8 +290,6 @@ row_undo_mod_clust(
 		mtr.start();
 		if (index->table->is_temporary()) {
 			mtr.set_log_mode(MTR_LOG_NO_REDO);
-		} else {
-			index->set_modified(mtr);
 		}
 
 		err = row_undo_mod_clust_low(
@@ -367,11 +363,8 @@ row_undo_mod_clust(
 
 		if (index->table->is_temporary()) {
 			mtr.set_log_mode(MTR_LOG_NO_REDO);
-		} else {
-			if (!row_undo_mod_must_purge(node, &mtr)) {
-				goto mtr_commit_exit;
-			}
-			index->set_modified(mtr);
+		} else if (!row_undo_mod_must_purge(node, &mtr)) {
+			goto mtr_commit_exit;
 		}
 
 		ut_ad(rec_get_deleted_flag(btr_pcur_get_rec(pcur),
@@ -391,11 +384,8 @@ row_undo_mod_clust(
 
 		if (index->table->is_temporary()) {
 			mtr.set_log_mode(MTR_LOG_NO_REDO);
-		} else {
-			if (!row_undo_mod_must_purge(node, &mtr)) {
-				goto mtr_commit_exit;
-			}
-			index->set_modified(mtr);
+		} else if (!row_undo_mod_must_purge(node, &mtr)) {
+			goto mtr_commit_exit;
 		}
 
 		ut_ad(rec_get_deleted_flag(btr_pcur_get_rec(pcur),
@@ -470,7 +460,6 @@ row_undo_mod_clust(
 			ut_ad(!rec_get_deleted_flag(
 				      rec, dict_table_is_comp(node->table))
 			      || rec_is_alter_metadata(rec, *index));
-			index->set_modified(mtr);
 			buf_block_t* block = btr_pcur_get_block(pcur);
 			if (UNIV_LIKELY_NULL(block->page.zip.data)) {
 				page_zip_write_trx_id_and_roll_ptr(

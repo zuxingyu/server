@@ -989,8 +989,6 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 
 		log_mutex_enter();
 
-		fil_names_clear(log_sys.lsn, false);
-
 		flushed_lsn = log_sys.lsn;
 
 		{

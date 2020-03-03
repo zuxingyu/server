@@ -1999,17 +1999,11 @@ row_upd_sec_index_entry(
 
 	mtr.start();
 
-	switch (index->table->space_id) {
-	case SRV_TMP_SPACE_ID:
+	if (index->table->is_temporary()) {
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 		flags = BTR_NO_LOCKING_FLAG;
-		break;
-	default:
-		index->set_modified(mtr);
-		/* fall through */
-	case IBUF_SPACE_ID:
+	} else {
 		flags = index->table->no_rollback() ? BTR_NO_ROLLBACK : 0;
-		break;
 	}
 
 	if (!index->is_committed()) {
@@ -2594,8 +2588,6 @@ row_upd_clust_rec(
 		shared between transactions or connections. */
 		flags |= BTR_NO_LOCKING_FLAG;
 		mtr->set_log_mode(MTR_LOG_NO_REDO);
-	} else {
-		index->set_modified(*mtr);
 	}
 
 	/* NOTE: this transaction has an s-lock or x-lock on the record and
@@ -2785,7 +2777,6 @@ row_upd_clust_step(
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 	} else {
 		flags = node->table->no_rollback() ? BTR_NO_ROLLBACK : 0;
-		index->set_modified(mtr);
 	}
 
 	/* If the restoration does not succeed, then the same
@@ -2834,7 +2825,6 @@ row_upd_clust_step(
 		mtr.commit();
 
 		mtr.start();
-		index->set_modified(mtr);
 
 		success = btr_pcur_restore_position(BTR_MODIFY_LEAF, pcur,
 						    &mtr);

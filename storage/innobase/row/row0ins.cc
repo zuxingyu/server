@@ -2530,8 +2530,6 @@ row_ins_index_entry_big_rec(
 	mtr.start();
 	if (index->table->is_temporary()) {
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
-	} else {
-		index->set_modified(mtr);
 	}
 
 	btr_pcur_open(index, entry, PAGE_CUR_LE, BTR_MODIFY_TREE,
@@ -2614,8 +2612,6 @@ row_ins_clust_index_entry_low(
 		ut_ad(!index->is_instant());
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 	} else {
-		index->set_modified(mtr);
-
 		if (UNIV_UNLIKELY(entry->is_metadata())) {
 			ut_ad(index->is_instant());
 			ut_ad(!dict_index_is_online_ddl(index));
@@ -2836,12 +2832,10 @@ row_ins_sec_mtr_start_and_check_if_aborted(
 	ulint		search_mode)
 {
 	ut_ad(!dict_index_is_clust(index));
-	ut_ad(mtr->is_named_space(index->table->space));
 
 	const mtr_log_t	log_mode = mtr->get_log_mode();
 
 	mtr->start();
-	index->set_modified(*mtr);
 	mtr->set_log_mode(log_mode);
 
 	if (!check) {
@@ -2920,7 +2914,6 @@ row_ins_sec_index_entry_low(
 		ut_ad(flags & BTR_NO_LOCKING_FLAG);
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 	} else {
-		index->set_modified(mtr);
 		if (!dict_index_is_spatial(index)) {
 			search_mode |= BTR_INSERT;
 		}
@@ -2973,7 +2966,6 @@ row_ins_sec_index_entry_low(
 					  index, false);
 			rtr_info_update_btr(&cursor, &rtr_info);
 			mtr_start(&mtr);
-			index->set_modified(mtr);
 			search_mode &= ulint(~BTR_MODIFY_LEAF);
 			search_mode |= BTR_MODIFY_TREE;
 			err = btr_cur_search_to_nth_level(

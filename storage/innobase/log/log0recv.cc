@@ -2937,7 +2937,6 @@ static bool recv_scan_log_recs(
 
 	const byte* const	log_end = log_block
 		+ ulint(end_lsn - start_lsn);
-	constexpr ulint sizeof_checkpoint= SIZE_OF_FILE_CHECKPOINT;
 
 	do {
 		ut_ad(!finished);
@@ -2984,13 +2983,8 @@ static bool recv_scan_log_recs(
 
 		scanned_lsn += data_len;
 
-		if (data_len == LOG_BLOCK_HDR_SIZE + sizeof_checkpoint
-		    && scanned_lsn == checkpoint_lsn + sizeof_checkpoint
-		    && log_block[LOG_BLOCK_HDR_SIZE]
-		    == (FILE_CHECKPOINT | (SIZE_OF_FILE_CHECKPOINT - 2))
-		    && checkpoint_lsn == mach_read_from_8(
-			    (LOG_BLOCK_HDR_SIZE + 1 + 2)
-			    + log_block)) {
+		if (data_len == LOG_BLOCK_HDR_SIZE
+		    && scanned_lsn == checkpoint_lsn) {
 			/* The redo log is logically empty. */
 			ut_ad(recv_sys.mlog_checkpoint_lsn == 0
 			      || recv_sys.mlog_checkpoint_lsn
@@ -3315,10 +3309,9 @@ recv_init_crash_recovery_spaces(bool rescan, bool& missing_tablespace)
 			/* The tablespace was deleted,
 			so we can ignore any redo log for it. */
 			flag_deleted = true;
-		} else if (rs.second.space != NULL) {
+		} else if (rs.second.space) {
 			/* The tablespace was found, and there
 			are some redo log records for it. */
-			fil_names_dirty(rs.second.space);
 		} else if (rs.second.name == "") {
 			ib::error() << "Missing FILE_CREATE, FILE_DELETE"
 				" or FILE_MODIFY before FILE_CHECKPOINT"
@@ -3430,6 +3423,8 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	if (!log_sys.is_physical()) {
 		sizeof_checkpoint = 9/* size of MLOG_CHECKPOINT */;
 		goto completed;
+	} else {
+		sizeof_checkpoint = 0;
 	}
 
 	/* Look for FILE_CHECKPOINT. */
@@ -3479,7 +3474,6 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	/* NOTE: we always do a 'recovery' at startup, but only if
 	there is something wrong we will print a message to the
 	user about recovery: */
-	sizeof_checkpoint= SIZE_OF_FILE_CHECKPOINT;
 
 completed:
 	if (flush_lsn == checkpoint_lsn + sizeof_checkpoint
@@ -3628,15 +3622,6 @@ completed:
 	log_sys.write_lsn = log_sys.lsn;
 
 	log_sys.last_checkpoint_lsn = checkpoint_lsn;
-
-	if (!srv_read_only_mode && srv_operation == SRV_OPERATION_NORMAL) {
-		/* Write a FILE_CHECKPOINT marker as the first thing,
-		before generating any other redo log. This ensures
-		that subsequent crash recovery will be possible even
-		if the server were killed soon after this. */
-		fil_names_clear(log_sys.last_checkpoint_lsn, true);
-	}
-
 	log_sys.next_checkpoint_no = ++checkpoint_no;
 
 	mutex_enter(&recv_sys.mutex);

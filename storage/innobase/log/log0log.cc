@@ -1344,8 +1344,6 @@ void log_write_checkpoint_info(lsn_t end_lsn)
 	ut_ad(!srv_read_only_mode);
 	ut_ad(end_lsn == 0 || end_lsn >= log_sys.next_checkpoint_lsn);
 	ut_ad(end_lsn <= log_sys.lsn);
-	ut_ad(end_lsn + SIZE_OF_FILE_CHECKPOINT <= log_sys.lsn
-	      || srv_shutdown_state != SRV_SHUTDOWN_NONE);
 
 	DBUG_PRINT("ib_log", ("checkpoint " UINT64PF " at " LSN_PF
 			      " written",
@@ -1418,8 +1416,6 @@ log file. Use log_make_checkpoint() to flush also the pool.
 @return true if success, false if a checkpoint write was already running */
 bool log_checkpoint()
 {
-	lsn_t	oldest_lsn;
-
 	ut_ad(!srv_read_only_mode);
 
 	DBUG_EXECUTE_IF("no_checkpoint",
@@ -1448,7 +1444,7 @@ bool log_checkpoint()
 	log_mutex_enter();
 
 	ut_ad(!recv_no_log_write);
-	oldest_lsn = log_buf_pool_get_oldest_modification();
+	lsn_t flush_lsn = log_buf_pool_get_oldest_modification();
 
 	/* Because log also contains headers and dummy log records,
 	log_buf_pool_get_oldest_modification() will return log_sys.lsn
@@ -1456,44 +1452,15 @@ bool log_checkpoint()
 	We must make sure that the log is flushed up to that lsn.
 	If there are dirty buffers in the buffer pool, then our
 	write-ahead-logging algorithm ensures that the log has been
-	flushed up to oldest_lsn. */
+	flushed up to flush_lsn. */
 
-	ut_ad(oldest_lsn >= log_sys.last_checkpoint_lsn);
-	if (oldest_lsn
-	    > log_sys.last_checkpoint_lsn + SIZE_OF_FILE_CHECKPOINT) {
-		/* Some log has been written since the previous checkpoint. */
-	} else if (srv_shutdown_state != SRV_SHUTDOWN_NONE) {
-		/* MariaDB startup expects the redo log file to be
-		logically empty (not even containing a MLOG_CHECKPOINT record)
-		after a clean shutdown. Perform an extra checkpoint at
-		shutdown. */
-	} else {
-		/* Do nothing, because nothing was logged (other than
-		a FILE_CHECKPOINT marker) since the previous checkpoint. */
+	ut_ad(flush_lsn >= log_sys.last_checkpoint_lsn);
+	if (flush_lsn <= log_sys.last_checkpoint_lsn) {
+		/* Nothing was logged since the previous checkpoint. */
 		log_mutex_exit();
 		return(true);
 	}
-	/* Repeat the FILE_MODIFY records after the checkpoint, in
-	case some log records between the checkpoint and log_sys.lsn
-	need them. Finally, write a FILE_CHECKPOINT marker. Redo log
-	apply expects to see a FILE_CHECKPOINT after the checkpoint,
-	except on clean shutdown, where the log will be empty after
-	the checkpoint.
-	It is important that we write out the redo log before any
-	further dirty pages are flushed to the tablespace files.  At
-	this point, because log_mutex_own(), mtr_commit() in other
-	threads will be blocked, and no pages can be added to the
-	flush lists. */
-	lsn_t		flush_lsn	= oldest_lsn;
 	const lsn_t	end_lsn		= log_sys.lsn;
-	const bool	do_write
-		= srv_shutdown_state == SRV_SHUTDOWN_NONE
-		|| flush_lsn != end_lsn;
-
-	if (fil_names_clear(flush_lsn, do_write)) {
-		ut_ad(log_sys.lsn >= end_lsn + SIZE_OF_FILE_CHECKPOINT);
-		flush_lsn = log_sys.lsn;
-	}
 
 	log_mutex_exit();
 
@@ -1502,9 +1469,8 @@ bool log_checkpoint()
 	log_mutex_enter();
 
 	ut_ad(log_sys.flushed_to_disk_lsn >= flush_lsn);
-	ut_ad(flush_lsn >= oldest_lsn);
 
-	if (log_sys.last_checkpoint_lsn >= oldest_lsn) {
+	if (log_sys.last_checkpoint_lsn >= flush_lsn) {
 		log_mutex_exit();
 		return(true);
 	}
@@ -1516,7 +1482,7 @@ bool log_checkpoint()
 		return(false);
 	}
 
-	log_sys.next_checkpoint_lsn = oldest_lsn;
+	log_sys.next_checkpoint_lsn = flush_lsn;
 	log_write_checkpoint_info(end_lsn);
 	ut_ad(!log_mutex_own());
 
@@ -1832,9 +1798,7 @@ wait_suspend_loop:
 
 		lsn = log_sys.lsn;
 
-		const bool lsn_changed = lsn != log_sys.last_checkpoint_lsn
-			&& lsn != log_sys.last_checkpoint_lsn
-			+ SIZE_OF_FILE_CHECKPOINT;
+		const bool lsn_changed = lsn != log_sys.last_checkpoint_lsn;
 		ut_ad(lsn >= log_sys.last_checkpoint_lsn);
 
 		log_mutex_exit();

@@ -722,7 +722,6 @@ void btr_page_free(dict_index_t* index, buf_block_t* block, mtr_t* mtr,
 	ut_ad(index->table->space_id == block->page.id.space());
 	/* The root page is freed by btr_free_root(). */
 	ut_ad(block->page.id.page_no() != index->page);
-	ut_ad(mtr->is_named_space(index->table->space));
 
 	/* The page gets invalid for optimistic searches: increment the frame
 	modify clock */
@@ -966,7 +965,6 @@ static void btr_free_root(buf_block_t *block, mtr_t *mtr, bool invalidate)
 {
   ut_ad(mtr_memo_contains_flagged(mtr, block,
 				  MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX));
-  ut_ad(mtr->is_named_space(block->page.id.space()));
 
   btr_search_drop_page_hash_index(block);
 
@@ -1045,7 +1043,6 @@ btr_create(
 {
 	buf_block_t*		block;
 
-	ut_ad(mtr->is_named_space(space));
 	ut_ad(index_id != BTR_FREED_INDEX_ID);
 
 	/* Create the two new segments (one, in the case of an ibuf tree) for
@@ -1181,7 +1178,6 @@ btr_free_but_not_root(
 leaf_loop:
 	mtr_start(&mtr);
 	mtr_set_log_mode(&mtr, log_mode);
-	mtr.set_named_space_id(block->page.id.space());
 
 	page_t*	root = block->frame;
 
@@ -1211,7 +1207,6 @@ leaf_loop:
 top_loop:
 	mtr_start(&mtr);
 	mtr_set_log_mode(&mtr, log_mode);
-	mtr.set_named_space_id(block->page.id.space());
 
 	root = block->frame;
 
@@ -1249,7 +1244,6 @@ btr_free_if_exists(
 	}
 
 	btr_free_but_not_root(root, mtr->get_log_mode());
-	mtr->set_named_space_id(page_id.space());
 	btr_free_root(root, mtr, true);
 }
 
@@ -1360,7 +1354,6 @@ btr_write_autoinc(dict_index_t* index, ib_uint64_t autoinc, bool reset)
 	mtr_t		mtr;
 	mtr.start();
 	fil_space_t* space = index->table->space;
-	mtr.set_named_space(space);
 	page_set_autoinc(buf_page_get(page_id_t(space->id, index->page),
 				      space->zip_size(),
 				      RW_SX_LATCH, &mtr),

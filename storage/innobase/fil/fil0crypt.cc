@@ -1082,7 +1082,6 @@ static bool fil_crypt_start_encrypting_space(fil_space_t* space)
 	{
 		mtr_t mtr;
 		mtr.start();
-		mtr.set_named_space(space);
 
 		/* 2 - get page 0 */
 		dberr_t err = DB_SUCCESS;
@@ -1868,8 +1867,6 @@ fil_crypt_rotate_page(
 				kv,
 				key_state->key_version,
 				key_state->rotate_key_age)) {
-
-			mtr.set_named_space(space);
 			modified = true;
 
 			/* force rotation by dummy updating page */
@@ -1907,8 +1904,6 @@ fil_crypt_rotate_page(
 				&sleeptime_ms);
 
 			if (block) {
-				mtr.set_named_space(space);
-
 				/* get required table/index and index-locks */
 				needs_scrubbing = btr_scrub_recheck_page(
 					&state->scrub_data, block, allocated, &mtr);
@@ -2080,7 +2075,6 @@ fil_crypt_flush_space(
 		    page_id_t(space->id, 0), space->zip_size(),
 		    RW_X_LATCH, NULL, BUF_GET,
 		    __FILE__, __LINE__, &mtr, &err)) {
-		mtr.set_named_space(space);
 		crypt_data->write_page0(block, &mtr);
 	}
 

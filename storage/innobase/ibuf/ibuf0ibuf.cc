@@ -621,7 +621,6 @@ ibuf_bitmap_page_set_bits(
 	static_assert(bit < IBUF_BITS_PER_PAGE, "wrong bit");
 	compile_time_assert(!(IBUF_BITS_PER_PAGE % 2));
 	ut_ad(mtr_memo_contains(mtr, block, MTR_MEMO_PAGE_X_FIX));
-	ut_ad(mtr->is_named_space(page_id.space()));
 
 	bit_offset = (page_id.page_no() % physical_size)
 		* IBUF_BITS_PER_PAGE + bit;
@@ -723,7 +722,6 @@ ibuf_set_free_bits_low(
 	ulint			val,	/*!< in: value to set: < 4 */
 	mtr_t*			mtr)	/*!< in/out: mtr */
 {
-	ut_ad(mtr->is_named_space(block->page.id.space()));
 	if (!page_is_leaf(block->frame)) {
 		return;
 	}
@@ -761,16 +759,21 @@ ibuf_set_free_bits_func(
 
 	mtr_t	mtr;
 	mtr.start();
-	const fil_space_t* space = mtr.set_named_space_id(
-		block->page.id.space());
+	switch (uint32_t space_id = block->page.id.space()) {
+	case 0:
+		break;
+	default:
+		if (fil_space_get(space_id)->purpose == FIL_TYPE_TABLESPACE) {
+			break;
+		}
+		/* fall through */
+	case SRV_TMP_SPACE_ID:
+		mtr.set_log_mode(MTR_LOG_NO_REDO);
+	}
 
 	buf_block_t* bitmap_page = ibuf_bitmap_get_map_page(block->page.id,
 							    block->zip_size(),
 							    &mtr);
-
-	if (space->purpose != FIL_TYPE_TABLESPACE) {
-		mtr.set_log_mode(MTR_LOG_NO_REDO);
-	}
 
 #ifdef UNIV_IBUF_DEBUG
 	if (max_val != ULINT_UNDEFINED) {
@@ -834,7 +837,6 @@ ibuf_update_free_bits_low(
 	ulint	after;
 
 	ut_a(!is_buf_block_get_page_zip(block));
-	ut_ad(mtr->is_named_space(block->page.id.space()));
 
 	before = ibuf_index_page_calc_free_bits(srv_page_size,
 						max_ins_size);
@@ -900,7 +902,6 @@ ibuf_update_free_bits_for_two_pages_low(
 {
 	ulint	state;
 
-	ut_ad(mtr->is_named_space(block1->page.id.space()));
 	ut_ad(block1->page.id.space() == block2->page.id.space());
 
 	/* As we have to x-latch two random bitmap pages, we have to acquire
@@ -3342,7 +3343,6 @@ fail_exit:
 	and done mtr_commit(&mtr) to release the latch. */
 
 	ibuf_mtr_start(&bitmap_mtr);
-	index->set_modified(bitmap_mtr);
 
 	bitmap_page = ibuf_bitmap_get_map_page(page_id, zip_size, &bitmap_mtr);
 
@@ -3733,7 +3733,6 @@ ibuf_insert_to_index_page(
 	ut_ad(!block->index);
 	assert_block_ahi_empty(block);
 #endif /* BTR_CUR_HASH_ADAPT */
-	ut_ad(mtr->is_named_space(block->page.id.space()));
 
 	if (UNIV_UNLIKELY(dict_table_is_comp(index->table)
 			  != (ibool)!!page_is_comp(page))) {
@@ -4321,8 +4320,6 @@ loop:
 		ut_ad(rw_lock_own(&block->lock, RW_LOCK_X));
 		buf_block_buf_fix_inc(block, __FILE__, __LINE__);
 		rw_lock_x_lock(&block->lock);
-
-		mtr.set_named_space(space);
 		mtr.memo_push(block, MTR_MEMO_PAGE_X_FIX);
 		/* This is a user page (secondary index leaf page),
 		but we pretend that it is a change buffer page in
@@ -4331,8 +4328,6 @@ loop:
 		the block is io-fixed. Other threads must not try to
 		latch an io-fixed block. */
 		buf_block_dbg_add_level(block, SYNC_IBUF_TREE_NODE);
-	} else if (update_ibuf_bitmap) {
-		mtr.set_named_space(space);
 	}
 
 	if (!btr_pcur_is_on_user_rec(&pcur)) {
@@ -4434,7 +4429,6 @@ loop:
 				ibuf_btr_pcur_commit_specify_mtr(&pcur, &mtr);
 
 				ibuf_mtr_start(&mtr);
-				mtr.set_named_space(space);
 
 				ut_ad(rw_lock_own(&block->lock, RW_LOCK_X));
 				buf_block_buf_fix_inc(block,
@@ -4797,10 +4791,8 @@ ibuf_set_bitmap_for_bulk_load(
 	free_val = ibuf_index_page_calc_free(block);
 
 	mtr.start();
-	fil_space_t* space = mtr.set_named_space_id(block->page.id.space());
-
 	buf_block_t* bitmap_page = ibuf_bitmap_get_map_page(block->page.id,
-							    space->zip_size(),
+							    block->zip_size(),
 							    &mtr);
 
 	free_val = reset ? 0 : ibuf_index_page_calc_free(block);

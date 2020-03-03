@@ -516,7 +516,6 @@ void fil_space_t::modify_check(const mtr_t& mtr) const
 		/* We may only write redo log for a persistent
 		tablespace. */
 		ut_ad(purpose == FIL_TYPE_TABLESPACE);
-		ut_ad(mtr.is_named_space(id));
 		return;
 	}
 
@@ -898,7 +897,6 @@ fsp_fill_free_list(
 				mtr_t	ibuf_mtr;
 
 				ibuf_mtr.start();
-				ibuf_mtr.set_named_space(space);
 
 				const page_id_t	page_id(
 					space->id,
@@ -2869,7 +2867,6 @@ fseg_free_step_not_header_func(
 	ulint		page_no;
 
 	space_id = page_get_space_id(page_align(header));
-	ut_ad(mtr->is_named_space(space_id));
 
 	fil_space_t*		space = mtr_x_lock_space(space_id, mtr);
 	buf_block_t*		iblock;

@@ -48,7 +48,6 @@ PageBulk::init()
 	m_heap = mem_heap_create(1000);
 
 	m_mtr.start();
-	m_index->set_modified(m_mtr);
 
 	if (m_page_no == FIL_NULL) {
 		mtr_t	alloc_mtr;
@@ -58,7 +57,6 @@ PageBulk::init()
 		the allocation order, and we will always generate redo log
 		for page allocation, even when creating a new tablespace. */
 		alloc_mtr.start();
-		m_index->set_modified(alloc_mtr);
 
 		ulint	n_reserved;
 		bool	success;
@@ -823,7 +821,6 @@ dberr_t
 PageBulk::latch()
 {
 	m_mtr.start();
-	m_index->set_modified(m_mtr);
 
 	/* In case the block is S-latched by page_cleaner. */
 	if (!buf_page_optimistic_get(RW_X_LATCH, m_block, m_modify_clock,
@@ -1176,7 +1173,6 @@ BtrBulk::finish(dberr_t	err)
 					       m_index->page, m_root_level);
 
 		mtr.start();
-		m_index->set_modified(mtr);
 		mtr_x_lock_index(m_index, &mtr);
 
 		ut_ad(last_page_no != FIL_NULL);

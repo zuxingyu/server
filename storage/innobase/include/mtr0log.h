@@ -377,7 +377,6 @@ inline byte *mtr_t::log_write(const page_id_t id, const buf_page_t *bpage,
 {
   static_assert(!(type & 15) && type != RESERVED && type != OPTION &&
                 type <= FILE_CHECKPOINT, "invalid type");
-  ut_ad(type >= FILE_CREATE || is_named_space(id.space()));
   ut_ad(!bpage || bpage->id == id);
   constexpr bool have_len= type != INIT_PAGE && type != FREE_PAGE;
   constexpr bool have_offset= type == WRITE || type == MEMSET ||
