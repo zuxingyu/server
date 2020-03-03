@@ -1098,7 +1098,6 @@ void recv_sys_t::create()
 	recovered_lsn = 0;
 	found_corrupt_log = false;
 	found_corrupt_fs = false;
-	mlog_checkpoint_lsn = 0;
 
 	progress_time = time(NULL);
 	recv_max_page_lsn = 0;
@@ -1546,8 +1545,7 @@ static dberr_t recv_log_format_0_recover(lsn_t lsn, bool crypt)
 	/* Mark the redo log for upgrading. */
 	srv_log_file_size = 0;
 	recv_sys.parse_start_lsn = recv_sys.recovered_lsn
-		= recv_sys.scanned_lsn
-		= recv_sys.mlog_checkpoint_lsn = lsn;
+		= recv_sys.scanned_lsn = lsn;
 	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
 		= log_sys.lsn = log_sys.write_lsn
 		= log_sys.current_flush_lsn = log_sys.flushed_to_disk_lsn
@@ -1607,8 +1605,7 @@ static dberr_t recv_log_recover_10_4()
 	/* Mark the redo log for upgrading. */
 	srv_log_file_size = 0;
 	recv_sys.parse_start_lsn = recv_sys.recovered_lsn
-		= recv_sys.scanned_lsn
-		= recv_sys.mlog_checkpoint_lsn = lsn;
+		= recv_sys.scanned_lsn = lsn;
 	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
 		= log_sys.lsn = log_sys.write_lsn
 		= log_sys.current_flush_lsn = log_sys.flushed_to_disk_lsn
@@ -1876,13 +1873,137 @@ append:
 }
 
 
+#if 0 // MDEV-14425 TODO: parse the file operations
+  switch (b & 0xf0) {
+# if 1 /* MDEV-14425 FIXME: Remove this! */
+  case FILE_CHECKPOINT:
+    if (space_id == 0 && page_no == 0 && rlen == 8)
+    {
+      const lsn_t lsn= mach_read_from_8(l);
+
+      if (UNIV_UNLIKELY(srv_print_verbose_log == 2))
+        fprintf(stderr, "FILE_CHECKPOINT(" LSN_PF ") %s at " LSN_PF "\n",
+                lsn, lsn != checkpoint_lsn
+                ? "ignored"
+                : mlog_checkpoint_lsn ? "reread" : "read",
+                recovered_lsn);
+
+      DBUG_PRINT("ib_log", ("FILE_CHECKPOINT(" LSN_PF ") %s at " LSN_PF,
+                            lsn, lsn != checkpoint_lsn
+                            ? "ignored"
+                            : mlog_checkpoint_lsn ? "reread" : "read",
+                            recovered_lsn));
+
+      if (lsn == checkpoint_lsn)
+      {
+        ut_ad(mlog_checkpoint_lsn <= recovered_lsn);
+        if (mlog_checkpoint_lsn)
+          continue;
+        mlog_checkpoint_lsn= recovered_lsn;
+        l+= 8;
+        recovered_offset= l - buf;
+        return true;
+      }
+      continue;
+    }
+# endif
+    /* fall through */
+  default:
+    if (!srv_force_recovery)
+      goto malformed;
+    ib::warn() << "Ignoring malformed log record at LSN " << recovered_lsn;
+    continue;
+  case FILE_DELETE:
+  case FILE_MODIFY:
+  case FILE_RENAME:
+    if (UNIV_UNLIKELY(page_no != 0))
+    {
+    file_rec_error:
+      if (!srv_force_recovery)
+      {
+        ib::error() << "Corrupted file-level record;"
+                       " set innodb_force_recovery=1 to ignore.";
+        goto corrupted;
+      }
+
+      ib::warn() << "Ignoring corrupted file-level record at LSN "
+                 << recovered_lsn;
+      continue;
+    }
+    /* fall through */
+  case FILE_CREATE:
+    if (UNIV_UNLIKELY(space_id == 0))
+      goto file_rec_error;
+    /* There is no terminating NUL character. Names must end in .ibd.
+    For FILE_RENAME, there is a NUL between the two file names. */
+    const char * const fn= reinterpret_cast<const char*>(l);
+    const char *fn2= static_cast<const char*>(memchr(fn, 0, rlen));
+
+    if (UNIV_UNLIKELY((fn2 == nullptr) == ((b & 0xf0) == FILE_RENAME)))
+      goto file_rec_error;
+
+    const char * const fnend= fn2 ? fn2 : fn + rlen;
+    const char * const fn2end= fn2 ? fn + rlen : nullptr;
+
+    if (fn2)
+    {
+      fn2++;
+      if (memchr(fn2, 0, fn2end - fn2))
+        goto file_rec_error;
+      if (fn2end - fn2 < 4 || memcmp(fn2end - 4, DOT_IBD, 4))
+        goto file_rec_error;
+    }
+
+    if (page_no)
+    {
+      if (UNIV_UNLIKELY((b & 0xf0) != FILE_CREATE))
+        goto file_rec_error;
+      /* truncating an undo log tablespace */
+      ut_ad(fnend - fn >= 7);
+      ut_ad(!memcmp(fnend - 7, "undo", 4));
+      ut_d(char n[4]; char *end; memcpy(n, fnend - 3, 3); n[3]= 0);
+      ut_ad(strtoul(n, &end, 10) <= 127);
+      ut_ad(end == &n[3]);
+      ut_ad(page_no == SRV_UNDO_TABLESPACE_SIZE_IN_PAGES);
+      ut_ad(srv_is_undo_tablespace(space_id));
+      static_assert(UT_ARR_SIZE(truncated_undo_spaces) ==
+                    TRX_SYS_MAX_UNDO_SPACES, "compatibility");
+      truncated_undo_spaces[space_id - srv_undo_space_id_start]=
+        { recovered_lsn, page_no };
+      continue;
+    }
+    if (is_predefined_tablespace(space_id))
+      goto file_rec_error;
+    if (fnend - fn < 4 || memcmp(fnend - 4, DOT_IBD, 4))
+      goto file_rec_error;
+
+    const char saved_end= fn[rlen];
+    const_cast<char&>(fn[rlen])= '\0';
+    fil_name_process(const_cast<char*>(fn), fnend - fn, space_id,
+                     (b & 0xf0) == FILE_DELETE);
+    if (fn2)
+      fil_name_process(const_cast<char*>(fn2), fn2end - fn2, space_id,
+                       false);
+    if ((b & 0xf0) < FILE_MODIFY && log_file_op)
+      log_file_op(space_id, (b & 0xf0) == FILE_CREATE,
+                  l, static_cast<ulint>(fnend - fn),
+                  reinterpret_cast<const byte*>(fn2),
+                  fn2 ? static_cast<ulint>(fn2end - fn2) : 0);
+
+	if (fn2 && !fil_op_replay_rename(space_id, fn, fn2))
+      found_corrupt_fs= true;
+    const_cast<char&>(fn[rlen])= saved_end;
+    if (UNIV_UNLIKELY(found_corrupt_fs))
+      return true;
+  }
+#endif
+
+
 /** Parse and register one mini-transaction in log_t::FORMAT_10_5.
 @param checkpoint_lsn  the log sequence number of the latest checkpoint
 @param store           whether to store the records
-@param apply           whether to apply file-level log records
-@return whether FILE_CHECKPOINT record was seen the first time,
-or corruption was noticed */
-bool recv_sys_t::parse(lsn_t checkpoint_lsn, store_t store, bool apply)
+@return whether corruption was noticed */
+bool recv_sys_t::parse(lsn_t checkpoint_lsn, store_t store)
 {
   ut_ad(log_mutex_own());
   ut_ad(mutex_own(&mutex));
@@ -2031,21 +2152,16 @@ page_id_corrupted:
     l+= idlen;
     rlen-= idlen;
     got_page_op = !(b & 0x80);
-    if (got_page_op && apply && !is_predefined_tablespace(space_id))
+    if (got_page_op && !is_predefined_tablespace(space_id))
     {
       recv_spaces_t::iterator i= recv_spaces.lower_bound(space_id);
       if (i != recv_spaces.end() && i->first == space_id);
-      else if (recovered_lsn < mlog_checkpoint_lsn)
-        /* We have not seen all records between the checkpoint and
-        FILE_CHECKPOINT. There should be a FILE_DELETE for this
-        tablespace later. */
-        recv_spaces.emplace_hint(i, space_id, file_name_t("", false));
       else
       {
         const page_id_t id(space_id, page_no);
         if (!srv_force_recovery)
         {
-          ib::error() << "Missing FILE_DELETE or FILE_MODIFY for " << id
+          ib::error() << "Missing FILE record for " << id
                       << " at " << recovered_lsn
                       << "; set innodb_force_recovery=1 to ignore the record.";
           goto corrupted;
@@ -2060,253 +2176,140 @@ same_page:
                 recovered_lsn, b, static_cast<size_t>(l + rlen - recs),
                 space_id, page_no));
 
-    if (got_page_op)
-    {
-      ut_d(const page_id_t id(space_id, page_no));
-      ut_d(if ((b & 0x70) == INIT_PAGE) freed.erase(id));
-      ut_ad(freed.find(id) == freed.end());
-      switch (b & 0x70) {
-      case FREE_PAGE:
-        ut_ad(freed.emplace(id).second);
-        last_offset= 1; /* the next record must not be same_page  */
-        goto free_or_init_page;
-      case INIT_PAGE:
-        last_offset= FIL_PAGE_TYPE;
-      free_or_init_page:
-        if (UNIV_UNLIKELY(rlen != 0))
-          goto record_corrupted;
-        break;
-      case EXTENDED:
-        if (UNIV_UNLIKELY(!rlen))
-          goto record_corrupted;
-        if (rlen == 1 && *l == TRIM_PAGES)
-        {
+    if (!got_page_op)
+      goto malformed;
+    ut_d(const page_id_t id(space_id, page_no));
+    ut_d(if ((b & 0x70) == INIT_PAGE) freed.erase(id));
+    ut_ad(freed.find(id) == freed.end());
+    switch (b & 0x70) {
+    case FREE_PAGE:
+      ut_ad(freed.emplace(id).second);
+      last_offset= 1; /* the next record must not be same_page  */
+      goto free_or_init_page;
+    case INIT_PAGE:
+      last_offset= FIL_PAGE_TYPE;
+    free_or_init_page:
+      if (UNIV_UNLIKELY(rlen != 0))
+        goto record_corrupted;
+      break;
+    case EXTENDED:
+      if (UNIV_UNLIKELY(!rlen))
+        goto record_corrupted;
+      if (rlen == 1 && *l == TRIM_PAGES)
+      {
 #if 0 /* For now, we can only truncate an undo log tablespace */
-          if (UNIV_UNLIKELY(!space_id || !page_no))
-            goto record_corrupted;
+        if (UNIV_UNLIKELY(!space_id || !page_no))
+          goto record_corrupted;
 #else
-          if (!srv_is_undo_tablespace(space_id) ||
-              page_no != SRV_UNDO_TABLESPACE_SIZE_IN_PAGES)
-            goto record_corrupted;
-          static_assert(UT_ARR_SIZE(truncated_undo_spaces) ==
-                        TRX_SYS_MAX_UNDO_SPACES, "compatibility");
-          truncated_undo_spaces[space_id - srv_undo_space_id_start]=
-            { recovered_lsn, page_no };
+        if (!srv_is_undo_tablespace(space_id) ||
+            page_no != SRV_UNDO_TABLESPACE_SIZE_IN_PAGES)
+          goto record_corrupted;
+        static_assert(UT_ARR_SIZE(truncated_undo_spaces) ==
+                      TRX_SYS_MAX_UNDO_SPACES, "compatibility");
+        truncated_undo_spaces[space_id - srv_undo_space_id_start]=
+          { recovered_lsn, page_no };
 #endif
-          last_offset= 1; /* the next record must not be same_page  */
-          continue;
-        }
-        last_offset= FIL_PAGE_TYPE;
-        break;
-      case RESERVED:
-      case OPTION:
+        last_offset= 1; /* the next record must not be same_page  */
         continue;
-      case WRITE:
-      case MEMMOVE:
-      case MEMSET:
-        if (UNIV_UNLIKELY(rlen == 0 || last_offset == 1))
+      }
+      last_offset= FIL_PAGE_TYPE;
+      break;
+    case RESERVED:
+    case OPTION:
+      continue;
+    case WRITE:
+    case MEMMOVE:
+    case MEMSET:
+      if (UNIV_UNLIKELY(rlen == 0 || last_offset == 1))
+        goto record_corrupted;
+      const uint32_t olen= mlog_decode_varint_length(*l);
+      if (UNIV_UNLIKELY(olen >= rlen) || UNIV_UNLIKELY(olen > 3))
+        goto record_corrupted;
+      const uint32_t offset= mlog_decode_varint(l);
+      ut_ad(offset != MLOG_DECODE_ERROR);
+      static_assert(FIL_PAGE_OFFSET == 4, "compatibility");
+      if (UNIV_UNLIKELY(offset >= srv_page_size))
+        goto record_corrupted;
+      last_offset+= offset;
+      if (UNIV_UNLIKELY(last_offset < 8 || last_offset >= srv_page_size))
+        goto record_corrupted;
+      l+= olen;
+      rlen-= olen;
+      if ((b & 0x70) == WRITE)
+      {
+        if (UNIV_UNLIKELY(rlen + last_offset > srv_page_size))
           goto record_corrupted;
-        const uint32_t olen= mlog_decode_varint_length(*l);
-        if (UNIV_UNLIKELY(olen >= rlen) || UNIV_UNLIKELY(olen > 3))
-          goto record_corrupted;
-        const uint32_t offset= mlog_decode_varint(l);
-        ut_ad(offset != MLOG_DECODE_ERROR);
-        static_assert(FIL_PAGE_OFFSET == 4, "compatibility");
-        if (UNIV_UNLIKELY(offset >= srv_page_size))
-          goto record_corrupted;
-        last_offset+= offset;
-        if (UNIV_UNLIKELY(last_offset < 8 || last_offset >= srv_page_size))
-          goto record_corrupted;
-        l+= olen;
-        rlen-= olen;
-        if ((b & 0x70) == WRITE)
+        if (UNIV_UNLIKELY(page_no == 0) &&
+            last_offset <= FSP_HEADER_OFFSET + FSP_SIZE &&
+            last_offset + rlen >= FSP_HEADER_OFFSET + FSP_SIZE + 4)
         {
-          if (UNIV_UNLIKELY(rlen + last_offset > srv_page_size))
-            goto record_corrupted;
-          if (UNIV_UNLIKELY(page_no == 0) && apply &&
-              last_offset <= FSP_HEADER_OFFSET + FSP_SIZE &&
-              last_offset + rlen >= FSP_HEADER_OFFSET + FSP_SIZE + 4)
-          {
-            recv_spaces_t::iterator it= recv_spaces.find(space_id);
-            const uint32_t size= mach_read_from_4(FSP_HEADER_OFFSET + FSP_SIZE
-                                                  + l - last_offset);
-            if (it == recv_spaces.end())
-              ut_ad(!mlog_checkpoint_lsn || space_id == TRX_SYS_SPACE ||
-                    srv_is_undo_tablespace(space_id));
-            else if (!it->second.space)
-              it->second.size= size;
-            fil_space_set_recv_size(space_id, size);
-          }
-          last_offset+= rlen;
-          break;
+          recv_spaces_t::iterator it= recv_spaces.find(space_id);
+          const uint32_t size= mach_read_from_4(FSP_HEADER_OFFSET + FSP_SIZE
+                                                + l - last_offset);
+          if (it == recv_spaces.end())
+            ut_ad(space_id == TRX_SYS_SPACE ||
+                  srv_is_undo_tablespace(space_id));
+          else if (!it->second.space)
+            it->second.size= size;
+          fil_space_set_recv_size(space_id, size);
         }
-        uint32_t llen= mlog_decode_varint_length(*l);
-        if (UNIV_UNLIKELY(llen > rlen || llen > 3))
-          goto record_corrupted;
-        const uint32_t len= mlog_decode_varint(l);
-        ut_ad(len != MLOG_DECODE_ERROR);
-        if (UNIV_UNLIKELY(last_offset + len > srv_page_size))
-          goto record_corrupted;
-        l+= llen;
-        rlen-= llen;
-        llen= len;
-        if ((b & 0x70) == MEMSET)
-        {
-          if (UNIV_UNLIKELY(rlen > llen))
-            goto record_corrupted;
-          last_offset+= llen;
-          break;
-        }
-        const uint32_t slen= mlog_decode_varint_length(*l);
-        if (UNIV_UNLIKELY(slen != rlen || slen > 3))
-          goto record_corrupted;
-        uint32_t s= mlog_decode_varint(l);
-        ut_ad(slen != MLOG_DECODE_ERROR);
-        if (s & 1)
-          s= last_offset - (s >> 1) - 1;
-        else
-          s= last_offset + (s >> 1) + 1;
-        if (UNIV_UNLIKELY(s < 8 || s + llen > srv_page_size))
+        last_offset+= rlen;
+        break;
+      }
+      uint32_t llen= mlog_decode_varint_length(*l);
+      if (UNIV_UNLIKELY(llen > rlen || llen > 3))
+        goto record_corrupted;
+      const uint32_t len= mlog_decode_varint(l);
+      ut_ad(len != MLOG_DECODE_ERROR);
+      if (UNIV_UNLIKELY(last_offset + len > srv_page_size))
+        goto record_corrupted;
+      l+= llen;
+      rlen-= llen;
+      llen= len;
+      if ((b & 0x70) == MEMSET)
+      {
+        if (UNIV_UNLIKELY(rlen > llen))
           goto record_corrupted;
         last_offset+= llen;
         break;
       }
+      const uint32_t slen= mlog_decode_varint_length(*l);
+      if (UNIV_UNLIKELY(slen != rlen || slen > 3))
+        goto record_corrupted;
+      uint32_t s= mlog_decode_varint(l);
+      ut_ad(slen != MLOG_DECODE_ERROR);
+      if (s & 1)
+        s= last_offset - (s >> 1) - 1;
+      else
+        s= last_offset + (s >> 1) + 1;
+      if (UNIV_UNLIKELY(s < 8 || s + llen > srv_page_size))
+        goto record_corrupted;
+      last_offset+= llen;
+      break;
+    }
 #if 0 && defined UNIV_DEBUG
-      switch (b & 0x70) {
-      case RESERVED:
-      case OPTION:
-        ut_ad(0); /* we did "continue" earlier */
-        break;
-      case FREE_PAGE:
-        break;
-      default:
-        ut_ad(modified.emplace(id).second || (b & 0x70) != INIT_PAGE);
-      }
-#endif
-      switch (store) {
-      case STORE_NO:
-        continue;
-      case STORE_IF_EXISTS:
-        if (!fil_space_get_size(space_id))
-          continue;
-        /* fall through */
-      case STORE_YES:
-        add(page_id_t(space_id, page_no), start_lsn, end_lsn, recs,
-            static_cast<size_t>(l + rlen - recs));
-      }
-    }
-#if 1 /* MDEV-14425 FIXME: this must be in the checkpoint file only! */
-    else if (rlen)
-    {
-      switch (b & 0xf0) {
-# if 1 /* MDEV-14425 FIXME: Remove this! */
-      case FILE_CHECKPOINT:
-        if (space_id == 0 && page_no == 0 && rlen == 8)
-        {
-          const lsn_t lsn= mach_read_from_8(l);
-
-          if (UNIV_UNLIKELY(srv_print_verbose_log == 2))
-            fprintf(stderr, "FILE_CHECKPOINT(" LSN_PF ") %s at " LSN_PF "\n",
-                    lsn, lsn != checkpoint_lsn
-                    ? "ignored"
-                    : mlog_checkpoint_lsn ? "reread" : "read",
-                    recovered_lsn);
-
-          DBUG_PRINT("ib_log", ("FILE_CHECKPOINT(" LSN_PF ") %s at " LSN_PF,
-                                lsn, lsn != checkpoint_lsn
-                                ? "ignored"
-                                : mlog_checkpoint_lsn ? "reread" : "read",
-                                recovered_lsn));
-
-          if (lsn == checkpoint_lsn)
-          {
-            ut_ad(mlog_checkpoint_lsn <= recovered_lsn);
-            if (mlog_checkpoint_lsn)
-              continue;
-            mlog_checkpoint_lsn= recovered_lsn;
-            l+= 8;
-            recovered_offset= l - buf;
-            return true;
-          }
-          continue;
-        }
-# endif
-        /* fall through */
-      default:
-        if (!srv_force_recovery)
-          goto malformed;
-        ib::warn() << "Ignoring malformed log record at LSN " << recovered_lsn;
-        continue;
-      case FILE_DELETE:
-      case FILE_MODIFY:
-      case FILE_RENAME:
-        if (UNIV_UNLIKELY(page_no != 0))
-        {
-        file_rec_error:
-          if (!srv_force_recovery)
-          {
-            ib::error() << "Corrupted file-level record;"
-                           " set innodb_force_recovery=1 to ignore.";
-            goto corrupted;
-          }
-
-          ib::warn() << "Ignoring corrupted file-level record at LSN "
-                     << recovered_lsn;
-          continue;
-        }
-        /* fall through */
-      case FILE_CREATE:
-        if (UNIV_UNLIKELY(!space_id || page_no))
-          goto file_rec_error;
-        /* There is no terminating NUL character. Names must end in .ibd.
-        For FILE_RENAME, there is a NUL between the two file names. */
-        const char * const fn= reinterpret_cast<const char*>(l);
-        const char *fn2= static_cast<const char*>(memchr(fn, 0, rlen));
-
-        if (UNIV_UNLIKELY((fn2 == nullptr) == ((b & 0xf0) == FILE_RENAME)))
-          goto file_rec_error;
-
-        const char * const fnend= fn2 ? fn2 : fn + rlen;
-        const char * const fn2end= fn2 ? fn + rlen : nullptr;
-
-        if (fn2)
-        {
-          fn2++;
-          if (memchr(fn2, 0, fn2end - fn2))
-            goto file_rec_error;
-          if (fn2end - fn2 < 4 || memcmp(fn2end - 4, DOT_IBD, 4))
-            goto file_rec_error;
-        }
-
-        if (is_predefined_tablespace(space_id))
-          goto file_rec_error;
-        if (fnend - fn < 4 || memcmp(fnend - 4, DOT_IBD, 4))
-          goto file_rec_error;
-
-        const char saved_end= fn[rlen];
-        const_cast<char&>(fn[rlen])= '\0';
-        fil_name_process(const_cast<char*>(fn), fnend - fn, space_id,
-                         (b & 0xf0) == FILE_DELETE);
-        if (fn2)
-          fil_name_process(const_cast<char*>(fn2), fn2end - fn2, space_id,
-                           false);
-        if ((b & 0xf0) < FILE_MODIFY && log_file_op)
-          log_file_op(space_id, (b & 0xf0) == FILE_CREATE,
-                      l, static_cast<ulint>(fnend - fn),
-                      reinterpret_cast<const byte*>(fn2),
-                      fn2 ? static_cast<ulint>(fn2end - fn2) : 0);
-
-        if (!fn2 || !apply);
-        else if (!fil_op_replay_rename(space_id, fn, fn2))
-          found_corrupt_fs= true;
-        const_cast<char&>(fn[rlen])= saved_end;
-        if (UNIV_UNLIKELY(found_corrupt_fs))
-          return true;
-      }
+    switch (b & 0x70) {
+    case RESERVED:
+    case OPTION:
+      ut_ad(0); /* we did "continue" earlier */
+      break;
+    case FREE_PAGE:
+      break;
+    default:
+      ut_ad(modified.emplace(id).second || (b & 0x70) != INIT_PAGE);
     }
 #endif
-    else
-      goto malformed;
+    switch (store) {
+    case STORE_NO:
+      continue;
+    case STORE_IF_EXISTS:
+      if (!fil_space_get_size(space_id))
+        continue;
+      /* fall through */
+    case STORE_YES:
+      add(page_id_t(space_id, page_no), start_lsn, end_lsn, recs,
+          static_cast<size_t>(l + rlen - recs));
+    }
   }
 
   ut_ad(l == el);
@@ -2927,7 +2930,6 @@ static bool recv_scan_log_recs(
 	bool		finished	= false;
 	ulint		data_len;
 	bool		more_data	= false;
-	bool		apply		= recv_sys.mlog_checkpoint_lsn != 0;
 	ulint		recv_parsing_buf_size = RECV_PARSING_BUF_SIZE;
 	const bool	last_phase = (*store == STORE_IF_EXISTS);
 	ut_ad(start_lsn % OS_FILE_LOG_BLOCK_SIZE == 0);
@@ -2986,10 +2988,6 @@ static bool recv_scan_log_recs(
 		if (data_len == LOG_BLOCK_HDR_SIZE
 		    && scanned_lsn == checkpoint_lsn) {
 			/* The redo log is logically empty. */
-			ut_ad(recv_sys.mlog_checkpoint_lsn == 0
-			      || recv_sys.mlog_checkpoint_lsn
-			      == checkpoint_lsn);
-			recv_sys.mlog_checkpoint_lsn = checkpoint_lsn;
 			DBUG_PRINT("ib_log", ("found empty log; LSN=" LSN_PF,
 					      scanned_lsn));
 			finished = true;
@@ -3066,11 +3064,9 @@ static bool recv_scan_log_recs(
 
 	if (more_data && !recv_sys.found_corrupt_log) {
 		/* Try to parse more log records */
-		if (recv_sys.parse(checkpoint_lsn, *store, apply)) {
+		if (recv_sys.parse(checkpoint_lsn, *store)) {
 			ut_ad(recv_sys.found_corrupt_log
-			      || recv_sys.found_corrupt_fs
-			      || recv_sys.mlog_checkpoint_lsn
-			      == recv_sys.recovered_lsn);
+			      || recv_sys.found_corrupt_fs);
 			finished = true;
 			goto func_exit;
 		}
@@ -3113,7 +3109,6 @@ recv_group_scan_log_recs(
 	bool		last_phase)
 {
 	DBUG_ENTER("recv_group_scan_log_recs");
-	DBUG_ASSERT(!last_phase || recv_sys.mlog_checkpoint_lsn > 0);
 
 	mutex_enter(&recv_sys.mutex);
 	recv_sys.len = 0;
@@ -3129,8 +3124,7 @@ recv_group_scan_log_recs(
 
 	lsn_t	start_lsn;
 	lsn_t	end_lsn;
-	store_t	store	= recv_sys.mlog_checkpoint_lsn == 0
-		? STORE_NO : (last_phase ? STORE_IF_EXISTS : STORE_YES);
+	store_t	store	= last_phase ? STORE_IF_EXISTS : STORE_YES;
 
 	log_sys.log.scanned_lsn = end_lsn = *contiguous_lsn =
 		ut_uint64_align_down(*contiguous_lsn, OS_FILE_LOG_BLOCK_SIZE);
@@ -3344,9 +3338,7 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 {
 	ulint		max_cp_field;
 	lsn_t		checkpoint_lsn;
-	bool		rescan = false;
 	ib_uint64_t	checkpoint_no;
-	lsn_t		contiguous_lsn;
 	byte*		buf;
 	dberr_t		err = DB_SUCCESS;
 
@@ -3376,8 +3368,8 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	err = recv_find_max_checkpoint(&max_cp_field);
 
 	if (err != DB_SUCCESS) {
-
 		recv_sys.recovered_lsn = log_sys.lsn;
+err_exit:
 		log_mutex_exit();
 		return(err);
 	}
@@ -3388,86 +3380,47 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	checkpoint_lsn = mach_read_from_8(buf + LOG_CHECKPOINT_LSN);
 	checkpoint_no = mach_read_from_8(buf + LOG_CHECKPOINT_NO);
 
-	/* Start reading the log from the checkpoint lsn. The variable
-	contiguous_lsn contains an lsn up to which the log is known to
-	be contiguously written. */
-	recv_sys.mlog_checkpoint_lsn = 0;
+	/* Start reading the log from the checkpoint lsn. */
 
 	ut_ad(RECV_SCAN_SIZE <= srv_log_buffer_size);
 
-	const lsn_t	end_lsn = mach_read_from_8(
-		buf + LOG_CHECKPOINT_END_LSN);
-
 	ut_ad(recv_sys.pages.empty());
-	contiguous_lsn = checkpoint_lsn;
+
 	switch (log_sys.log.format) {
 	case 0:
 		log_mutex_exit();
 		return recv_log_format_0_recover(checkpoint_lsn,
 						 buf[20 + 32 * 9] == 2);
 	default:
-		if (end_lsn == 0) {
-			break;
-		}
-		if (end_lsn >= checkpoint_lsn) {
-			contiguous_lsn = end_lsn;
-			break;
-		}
-		recv_sys.found_corrupt_log = true;
-		log_mutex_exit();
-		return(DB_ERROR);
-	}
-
-	size_t sizeof_checkpoint;
-
-	if (!log_sys.is_physical()) {
-		sizeof_checkpoint = 9/* size of MLOG_CHECKPOINT */;
-		goto completed;
-	} else {
-		sizeof_checkpoint = 0;
-	}
-
-	/* Look for FILE_CHECKPOINT. */
-	recv_group_scan_log_recs(checkpoint_lsn, &contiguous_lsn, false);
-	/* The first scan should not have stored or applied any records. */
-	ut_ad(recv_sys.pages.empty());
-	ut_ad(!recv_sys.found_corrupt_fs);
-
-	if (srv_read_only_mode && recv_needed_recovery) {
-		log_mutex_exit();
-		return(DB_READ_ONLY);
-	}
-
-	if (recv_sys.found_corrupt_log && !srv_force_recovery) {
-		log_mutex_exit();
-		ib::warn() << "Log scan aborted at LSN " << contiguous_lsn;
-		return(DB_ERROR);
-	}
-
-	if (recv_sys.mlog_checkpoint_lsn == 0) {
-		lsn_t scan_lsn = log_sys.log.scanned_lsn;
-		if (!srv_read_only_mode && scan_lsn != checkpoint_lsn) {
-			log_mutex_exit();
-			ib::error err;
-			err << "Missing FILE_CHECKPOINT";
-			if (end_lsn) {
-				err << " at " << end_lsn;
+		if (const lsn_t end_lsn = mach_read_from_8(
+			    buf + LOG_CHECKPOINT_END_LSN)) {
+			if (end_lsn < checkpoint_lsn) {
+				recv_sys.found_corrupt_log = true;
+				err = DB_ERROR;
+				goto err_exit;
 			}
-			err << " between the checkpoint " << checkpoint_lsn
-			    << " and the end " << scan_lsn << ".";
-			return(DB_ERROR);
+		}
+		log_sys.lsn = recv_sys.recovered_lsn;
+		ut_ad(recv_sys.recovered_lsn == checkpoint_lsn);
+		goto completed;
+	case log_t::FORMAT_10_5:
+		lsn_t end_lsn = recv_group_scan_log_recs(checkpoint_lsn);
+#if 1// FIXME
+		/* The first scan should not have stored or applied any
+		records. */
+		ut_ad(recv_sys.pages.empty());
+		ut_ad(!recv_sys.found_corrupt_fs);
+#endif
+
+		if (srv_read_only_mode && recv_needed_recovery) {
+			err = DB_READ_ONLY;
+			goto err_exit;
 		}
 
-		log_sys.log.scanned_lsn = checkpoint_lsn;
-	} else {
-		contiguous_lsn = checkpoint_lsn;
-		rescan = recv_group_scan_log_recs(
-			checkpoint_lsn, &contiguous_lsn, false);
-
-		if ((recv_sys.found_corrupt_log && !srv_force_recovery)
-		    || recv_sys.found_corrupt_fs) {
-			log_mutex_exit();
-			return(DB_ERROR);
+		if (recv_sys.found_corrupt_log && !srv_force_recovery) {
+			ib::warn() << "Log scan aborted at LSN " << end_lsn;
+			err = DB_ERROR;
+			goto err_exit;
 		}
 	}
 
@@ -3475,14 +3428,12 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	there is something wrong we will print a message to the
 	user about recovery: */
 
-completed:
-	if (flush_lsn == checkpoint_lsn + sizeof_checkpoint
-	    && recv_sys.mlog_checkpoint_lsn == checkpoint_lsn) {
+	if (flush_lsn == checkpoint_lsn) {
 		/* The redo log is logically empty. */
 	} else if (checkpoint_lsn != flush_lsn) {
 		ut_ad(!srv_log_file_created);
 
-		if (checkpoint_lsn + sizeof_checkpoint < flush_lsn) {
+		if (checkpoint_lsn < flush_lsn) {
 			ib::warn()
 				<< "Are you sure you are using the right "
 				<< LOG_FILE_NAME
@@ -3495,7 +3446,6 @@ completed:
 		}
 
 		if (!recv_needed_recovery) {
-
 			ib::info()
 				<< "The log sequence number " << flush_lsn
 				<< " in the system tablespace does not match"
@@ -3600,6 +3550,7 @@ completed:
 			" database is now corrupt!";
 	}
 
+completed:
 	if (recv_sys.recovered_lsn < checkpoint_lsn) {
 		log_mutex_exit();
 
