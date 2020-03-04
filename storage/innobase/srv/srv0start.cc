@@ -287,21 +287,10 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 		OS_FILE_CREATE|OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
 		OS_LOG_FILE, srv_read_only_mode, &ret);
 
-	if (!ret) {
+	if (!ret || !os_file_close(file)) {
 		ib::error() << "Cannot create " << logfile0;
 		return DB_ERROR;
 	}
-
-	ret = os_file_set_size(logfile0.c_str(), file, LOG_MAIN_FILE_SIZE);
-	if (!ret) {
-		os_file_close(file);
-		ib::error() << "Cannot set log file " << logfile0
-			    << " size to " << LOG_MAIN_FILE_SIZE << " bytes";
-		return DB_ERROR;
-	}
-
-	ret = os_file_close(file);
-	ut_a(ret);
 
 	DBUG_EXECUTE_IF("innodb_log_abort_8", return(DB_ERROR););
 	DBUG_PRINT("ib_log", ("After innodb_log_abort_8"));
@@ -310,43 +299,106 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 	that crash recovery cannot find it until it has been completed and
 	renamed. */
 
-	if (srv_encrypt_log && !log_sys.is_encrypted_physical()) {
-		return DB_ERROR;
-	}
-
 	if (!log_set_capacity(srv_log_file_size_requested)) {
 		return DB_ERROR;
 	}
 
 	log_sys.log.open_files(logfile0);
-	fil_open_system_tablespace_files();
 
-	/* Create a log checkpoint. */
-	log_mutex_enter();
-	ut_d(recv_no_log_write = false);
-	log_sys.lsn = ut_uint64_align_up(lsn, OS_FILE_LOG_BLOCK_SIZE);
+  ut_ad(log_sys.log.format == log_t::FORMAT_10_5);
+  ut_ad(!(srv_log_file_size & 511));
+  static_assert(OS_FILE_LOG_BLOCK_SIZE >= 512, "compatibility");
+  static_assert(!(OS_FILE_LOG_BLOCK_SIZE & 511), "compatibility");
+  ut_ad(srv_log_file_size <= 1ULL << 47);
 
-	log_sys.log.set_lsn(log_sys.lsn);
-	log_sys.log.set_lsn_offset(0);
+  byte *buf= log_sys.buf;
+  memset_aligned<OS_FILE_LOG_BLOCK_SIZE>(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
+  mach_write_to_4(buf + log_header::FORMAT, log_sys.log.format);
+  mach_write_to_4(buf + log_header::KEY_VERSION, log_sys.log.key_version);
+  /* Write sequence_bit=1 so that the all-zero ib_logdata file will
+  appear empty. */
+  mach_write_to_8(buf + log_header::SIZE, 1ULL << 47 | srv_log_file_size);
+  memcpy(buf + log_header::CREATOR, log_header::CREATOR_CURRENT,
+         sizeof log_header::CREATOR_CURRENT);
+  static_assert(log_header::CREATOR_END - log_header::CREATOR ==
+                sizeof log_header::CREATOR_CURRENT, "compatibility");
+  log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
+  buf+= 512;
 
-	log_sys.buf_next_to_write = 0;
-	log_sys.write_lsn = log_sys.lsn;
+  /* Write FILE_ID records for any non-predefined tablespaces. */
+  mutex_enter(&fil_system.mutex);
+  for (fil_space_t *space= UT_LIST_GET_FIRST(fil_system.space_list); space;
+       space= UT_LIST_GET_NEXT(space_list, space))
+  {
+    if (is_predefined_tablespace(space->id))
+      continue;
+    const char *path= space->chain.start->name;
+    /* The following is based on file_op() */
+    const size_t len= strlen(path);
+    ut_ad(len > 0);
+    const size_t size= 1 + 3/*length*/ + 5/*space_id*/ + 4/*CRC-32C*/ + len;
 
-	log_sys.next_checkpoint_no = 0;
-	log_sys.last_checkpoint_lsn = 0;
+    if (UNIV_UNLIKELY(buf + size > log_sys.buf + srv_log_buffer_size))
+    {
+      mutex_exit(&fil_system.mutex);
+      return DB_OUT_OF_MEMORY;
+    }
 
-	memset(log_sys.buf, 0, srv_log_buffer_size);
-	log_block_init(log_sys.buf, log_sys.lsn);
-	log_block_set_first_rec_group(log_sys.buf, LOG_BLOCK_HDR_SIZE);
+    byte *end= buf + 1;
+    end= mlog_encode_varint(end, space->id);
+    if (UNIV_LIKELY(end + len >= &buf[16]))
+    {
+      *buf= FILE_ID;
+      size_t total_len= len + end - buf - 15;
+      if (total_len >= MIN_3BYTE)
+        total_len+= 2;
+      else if (total_len >= MIN_2BYTE)
+        total_len++;
+      end= mlog_encode_varint(buf + 1, total_len);
+      end= mlog_encode_varint(buf, space->id);
+    }
+    else
+    {
+      *buf= FILE_ID | static_cast<byte>(end + len - &buf[1]);
+      ut_ad(*buf & 15);
+    }
 
-	log_sys.buf_free = LOG_BLOCK_HDR_SIZE;
-	log_sys.lsn += LOG_BLOCK_HDR_SIZE;
+    memcpy(end, path, len);
+    end+= len;
+    mach_write_to_4(end, ut_crc32(buf, end - buf));
+    end+= 4;
+    ut_ad(end <= &buf[size]);
+  }
+  mutex_exit(&fil_system.mutex);
 
-	log_mutex_exit();
+  *buf= FILE_CHECKPOINT | (8 + 6);
+  mach_write_to_8(&buf[1], lsn);
+  memset(&buf[1 + 8], 0, 6); /* start offset in ib_logdata */
+  mach_write_to_8(&buf[1 + 8 + 6], ut_crc32(buf, 1 + 8 + 6));
+  buf+= 1 + 8 + 6 + 4;
 
-	log_make_checkpoint();
+  /* Write the log header. */
+  if (dberr_t error= log_sys.append({log_sys.buf, buf}))
+    return error;
 
-	return DB_SUCCESS;
+  memset_aligned<OS_FILE_LOG_BLOCK_SIZE>(log_sys.buf, 0, srv_log_buffer_size);
+
+  log_mutex_enter();
+  ut_d(recv_no_log_write= false);
+  log_sys.lsn= lsn;
+  log_sys.log.set_lsn(log_sys.lsn);
+  log_sys.log.set_lsn_offset(0);
+
+  log_sys.buf_next_to_write= 0;
+  log_sys.write_lsn= log_sys.lsn;
+
+  log_sys.next_checkpoint_no= 0;
+  log_sys.last_checkpoint_lsn= 0;
+
+  log_sys.buf_free= 0;
+  log_mutex_exit();
+  fil_open_system_tablespace_files();
+  return DB_SUCCESS;
 }
 
 /** Rename the first redo log file.

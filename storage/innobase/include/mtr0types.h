@@ -298,19 +298,19 @@ Changing these codes or their interpretation on crash recovery
 may break compatibility! */
 enum mfile_type_t
 {
-  /** Create a file. Followed by tablespace ID and the file name. */
-  FILE_CREATE = 0x80,
-  /** Delete a file. Followed by tablespace ID and the file name.  */
-  FILE_DELETE = 0x90,
-  /** Rename a file. Followed by tablespace ID and the old file name,
-  NUL, and the new file name.  */
-  FILE_RENAME = 0xa0,
+  /** Checkpoint identifier. Followed by 64 bits of LSN,
+  1 sequence bit, and 47 bits of ib_logdata byte offset. */
+  FILE_CHECKPOINT= 0x00,
   /** Identify a file that already existed when ib_logfile0 was created.
   Followed by tablespace ID and the file name. */
-  FILE_ID = 0xb0,
-  /** Checkpoint identifier. Followed by 8 bytes of LSN and 6 bytes
-  of ib_logdata byte offset. */
-  FILE_CHECKPOINT = 0xf0
+  FILE_ID= 0x10,
+  /** Create a file. Followed by tablespace ID and the file name. */
+  FILE_CREATE= 0x20,
+  /** Delete a file. Followed by tablespace ID and the file name.  */
+  FILE_DELETE= 0x30,
+  /** Rename a file. Followed by tablespace ID and the old file name,
+  NUL, and the new file name.  */
+  FILE_RENAME= 0x40,
 };
 
 #ifndef UNIV_INNOCHECKSUM

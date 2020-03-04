@@ -104,11 +104,8 @@ void log_buffer_extend(ulong len);
 /** Check margin not to overwrite transaction log from the last checkpoint.
 If would estimate the log write to exceed the log_capacity,
 waits for the checkpoint is done enough.
-@param[in]	len	length of the data to be written */
-
-void
-log_margin_checkpoint_age(
-	ulint	len);
+@param[in]	margin	length of the data to be written */
+void log_margin_checkpoint_age(ulint margin);
 
 /** Open the log for log_write_low. The log must be closed with log_close.
 @param[in]	len	length of the data to be written
@@ -334,9 +331,6 @@ Refreshes the statistics used to print per-second averages. */
 void
 log_refresh_stats(void);
 /*===================*/
-
-/* The counting of lsn's starts from this value: this must be non-zero */
-#define LOG_START_LSN		((lsn_t) (16 * OS_FILE_LOG_BLOCK_SIZE))
 
 /* Offsets of a log block header */
 #define	LOG_BLOCK_HDR_NO	0	/* block number which must be > 0 and
@@ -867,7 +861,6 @@ inline void log_t::file::set_lsn(lsn_t a_lsn) {
 
 inline void log_t::file::set_lsn_offset(lsn_t a_lsn) {
       ut_ad(log_sys.mutex.is_owned() || log_write_lock_own());
-      ut_ad((lsn % OS_FILE_LOG_BLOCK_SIZE) == (a_lsn % OS_FILE_LOG_BLOCK_SIZE));
       lsn_offset = a_lsn;
 }
 

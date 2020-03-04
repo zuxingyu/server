@@ -19727,11 +19727,8 @@ static MYSQL_SYSVAR_ULONG(log_buffer_size, srv_log_buffer_size,
 
 static MYSQL_SYSVAR_ULONGLONG(log_file_size, srv_log_file_size,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
-  "Size of each log file in a log group.",
-  NULL, NULL, 96 << 20, 1 << 20, std::numeric_limits<ulonglong>::max(),
-  UNIV_PAGE_SIZE_MAX);
-/* OS_FILE_LOG_BLOCK_SIZE would be more appropriate than UNIV_PAGE_SIZE_MAX,
-but fil_space_t is being used for the redo log, and it uses data pages. */
+  "Size of the ib_logdata file.",
+  NULL, NULL, 96 << 20, 1 << 20, 1ULL << 47, OS_FILE_LOG_BLOCK_SIZE);
 
 static MYSQL_SYSVAR_ULONG(log_files_in_group, deprecated::srv_n_log_files,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,

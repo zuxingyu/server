@@ -164,44 +164,12 @@ void log_buffer_extend(ulong len)
 		<< new_buf_size << ".";
 }
 
-/** Calculate actual length in redo buffer and file including
-block header and trailer.
-@param[in]	len	length to write
-@return actual length to write including header and trailer. */
-static inline
-ulint
-log_calculate_actual_len(
-	ulint len)
-{
-	ut_ad(log_mutex_own());
-
-	const ulint	framing_size = log_sys.framing_size();
-	/* actual length stored per block */
-	const ulint	len_per_blk = OS_FILE_LOG_BLOCK_SIZE - framing_size;
-
-	/* actual data length in last block already written */
-	ulint	extra_len = (log_sys.buf_free % OS_FILE_LOG_BLOCK_SIZE);
-
-	ut_ad(extra_len >= LOG_BLOCK_HDR_SIZE);
-	extra_len -= LOG_BLOCK_HDR_SIZE;
-
-	/* total extra length for block header and trailer */
-	extra_len = ((len + extra_len) / len_per_blk) * framing_size;
-
-	return(len + extra_len);
-}
-
 /** Check margin not to overwrite transaction log from the last checkpoint.
 If would estimate the log write to exceed the log_capacity,
 waits for the checkpoint is done enough.
-@param[in]	len	length of the data to be written */
-
-void
-log_margin_checkpoint_age(
-	ulint	len)
+@param[in]	margin	length of the data to be written */
+void log_margin_checkpoint_age(ulint margin)
 {
-	ulint	margin = log_calculate_actual_len(len);
-
 	ut_ad(log_mutex_own());
 
 	if (margin > log_sys.log_capacity) {
@@ -213,8 +181,8 @@ log_margin_checkpoint_age(
 			log_last_margine_warning_time = time(NULL);
 
 			ib::error() << "The transaction log file is too"
-				" small for the single transaction log (size="
-				<< len << "). So, the last checkpoint age"
+				" small for a mini-transaction log (size="
+				<< margin << "). So, the last checkpoint age"
 				" might exceed the log capacity "
 				<< log_sys.log_capacity << ".";
 		}
@@ -227,7 +195,7 @@ log_margin_checkpoint_age(
 	result in hang in case the current mtr has latch on oldest lsn */
 	if (log_sys.lsn - log_sys.last_checkpoint_lsn + margin
 	    > log_sys.log_capacity) {
-		/* The log write of 'len' might overwrite the transaction log
+		/* The log write might overwrite the transaction log
 		after the last checkpoint. Makes checkpoint. */
 
 		bool	flushed_enough = false;
@@ -499,11 +467,6 @@ void log_t::create()
   mutex_create(LATCH_ID_LOG_SYS, &mutex);
   mutex_create(LATCH_ID_LOG_FLUSH_ORDER, &log_flush_order_mutex);
 
-  /* Start the lsn from one log block from zero: this way every
-  log record has a non-zero start lsn, a fact which we will use */
-
-  lsn= LOG_START_LSN;
-
   ut_ad(srv_log_buffer_size >= 16 * OS_FILE_LOG_BLOCK_SIZE);
   ut_ad(srv_log_buffer_size >= 4U << srv_page_size_shift);
 
@@ -533,13 +496,11 @@ void log_t::create()
   next_checkpoint_lsn= 0;
   n_pending_checkpoint_writes= 0;
 
-  last_checkpoint_lsn= lsn;
+  /* Start from a non-zero log sequence number, so that 0 can be used
+  as a special value of 'no changes'. */
+  lsn= last_checkpoint_lsn= 1;
+  buf_free= 0;
 
-  log_block_init(buf, lsn);
-  log_block_set_first_rec_group(buf, LOG_BLOCK_HDR_SIZE);
-
-  buf_free= LOG_BLOCK_HDR_SIZE;
-  lsn= LOG_START_LSN + LOG_BLOCK_HDR_SIZE;
   log.create();
 }
 
@@ -769,6 +730,8 @@ void log_t::file::open_files(std::string path)
   if (const dberr_t err= fd.open(srv_read_only_mode))
     ib::fatal() << "open(" << fd.get_path() << ") returned " << err;
 
+  fd_offset= os_file_get_size(fd.get_path().c_str()).m_total_size;
+
   data_fd= log_file_t(get_log_file_path(LOG_DATA_FILE_NAME));
   bool exists;
   os_file_type_t type;
@@ -847,7 +810,7 @@ void log_t::file::create()
   format= log_t::FORMAT_10_5;
   key_version= srv_encrypt_log ? log_crypt_key_version() : 0;
   file_size= srv_log_file_size;
-  lsn= LOG_START_LSN;
+  lsn= 1;
   lsn_offset= 0;
 
   mutex_create(LATCH_ID_LOG_FILE_OP, &fd_mutex);
@@ -871,36 +834,6 @@ inline void log_block_store_checksum(byte* block)
 }
 
 /******************************************************//**
-Writes a log file header to a log file space. */
-static void log_file_header_flush()
-{
-	ut_ad(log_write_lock_own());
-	ut_ad(!recv_no_log_write);
-	ut_ad(log_sys.log.format == log_t::FORMAT_10_5);
-	ut_ad(!(log_sys.log.file_size & 511));
-
-	// man 2 open suggests this buffer to be aligned by 512 for O_DIRECT
-	alignas(OS_FILE_LOG_BLOCK_SIZE) byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
-
-	mach_write_to_4(buf + log_header::FORMAT, log_sys.log.format);
-	mach_write_to_4(buf + log_header::KEY_VERSION, log_sys.log.key_version);
-	mach_write_to_8(buf + log_header::SIZE, log_sys.log.file_size);
-	memcpy(buf + log_header::CREATOR, log_header::CREATOR_CURRENT,
-	       sizeof log_header::CREATOR_CURRENT);
-	static_assert(log_header::CREATOR_END - log_header::CREATOR
-		      == sizeof log_header::CREATOR_CURRENT, "compatibility");
-	log_block_store_checksum(buf);
-
-	log_sys.n_log_ios++;
-
-	srv_stats.os_log_pending_writes.inc();
-
-	log_sys.log.main_write_durable(0, buf);
-
-	srv_stats.os_log_pending_writes.dec();
-}
-
-/******************************************************//**
 Writes a buffer to a log file. */
 static
 void
@@ -920,7 +853,6 @@ log_write_buf(
 					header */
 {
 	ulint		write_len;
-	bool		write_header	= new_data_offset == 0;
 	lsn_t		next_offset;
 	ulint		i;
 
@@ -936,17 +868,6 @@ loop:
 	}
 
 	next_offset = log_sys.log.calc_lsn_offset(start_lsn);
-
-	if (write_header && next_offset % log_sys.log.file_size == 0) {
-		/* We start to write a new log file instance in the group */
-
-		ut_a(next_offset / log_sys.log.file_size <= ULINT_MAX);
-
-		log_file_header_flush();
-		srv_stats.os_log_written.add(OS_FILE_LOG_BLOCK_SIZE);
-
-		srv_stats.log_writes.inc();
-	}
 
 	if ((next_offset % log_sys.log.file_size) + len
 	    > log_sys.log.file_size) {
@@ -1005,9 +926,6 @@ loop:
 		start_lsn += write_len;
 		len -= write_len;
 		buf += write_len;
-
-		write_header = true;
-
 		goto loop;
 	}
 }
@@ -1402,6 +1320,7 @@ func_exit:
   DBUG_PRINT("ib_log", ("writing checkpoint at " LSN_PF, flush_lsn));
 
   byte *buf= &log_sys.checkpoint_buf[1 + 8];
+  /* FIXME: add sequence bit */
   mach_write_to_6(buf, log_sys.log.calc_lsn_offset(flush_lsn));
   ++log_sys.n_pending_checkpoint_writes;
   log_mutex_exit();
