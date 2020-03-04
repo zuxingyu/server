@@ -34,8 +34,7 @@ extern my_bool srv_encrypt_log;
 
 /** Initialize the redo log encryption key and random parameters
 when creating a new redo log.
-The random parameters will be persisted in the log checkpoint pages.
-@see log_crypt_write_checkpoint_buf()
+The random parameters will be persisted in ib_logfile0.
 @see log_crypt_read_checkpoint_buf()
 @return whether the operation succeeded */
 bool log_crypt_init();
@@ -43,16 +42,6 @@ bool log_crypt_init();
 /** @return the desired redo log encryption key version after log_crypt_init()
 @retval 0 if encryption is not available */
 uint32_t log_crypt_key_version();
-
-/*********************************************************************//**
-Writes the crypto (version, msg and iv) info, which has been used for
-log blocks with lsn <= this checkpoint's lsn, to a log header's
-checkpoint buf. */
-UNIV_INTERN
-void
-log_crypt_write_checkpoint_buf(
-/*===========================*/
-	byte*	buf);			/*!< in/out: checkpoint buffer */
 
 /** Read the MariaDB 10.1 checkpoint crypto (version, msg and iv) info.
 @param[in]	buf	checkpoint buffer

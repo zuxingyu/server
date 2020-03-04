@@ -1339,38 +1339,6 @@ fail:
 }
 
 
-
-/********************************************************//**
-Copies a log segment from the most up-to-date log group to the other log
-groups, so that they all contain the latest log data. Also writes the info
-about the latest checkpoint to the groups, and inits the fields in the group
-memory structs to up-to-date values. */
-static
-void
-recv_synchronize_groups()
-{
-	const lsn_t recovered_lsn = recv_sys.recovered_lsn;
-
-	/* Read the last recovered log block to the recovery system buffer:
-	the block is always incomplete */
-
-	lsn_t start_lsn = ut_uint64_align_down(recovered_lsn,
-					       OS_FILE_LOG_BLOCK_SIZE);
-	log_sys.log.read_log_seg(&start_lsn,
-				 start_lsn + OS_FILE_LOG_BLOCK_SIZE);
-	log_sys.log.set_fields(recovered_lsn);
-
-	/* Copy the checkpoint info to the log; remember that we have
-	incremented checkpoint_no by one, and the info will not be written
-	over the max checkpoint info, thus making the preservation of max
-	checkpoint info on disk certain */
-
-	if (!srv_read_only_mode) {
-		log_write_checkpoint_info(0);
-		log_mutex_enter();
-	}
-}
-
 /** Check the consistency of a log header block.
 @param[in]	log header block
 @return true if ok */
@@ -3498,7 +3466,13 @@ completed:
 	log_sys.next_checkpoint_lsn = checkpoint_lsn;
 	log_sys.next_checkpoint_no = checkpoint_no + 1;
 
-	recv_synchronize_groups();
+	/* Read the last recovered log block to the recovery system buffer:
+	the block is always incomplete */
+	lsn_t start_lsn = ut_uint64_align_down(recv_sys.recovered_lsn,
+					       OS_FILE_LOG_BLOCK_SIZE);
+	log_sys.log.read_log_seg(&start_lsn,
+				 start_lsn + OS_FILE_LOG_BLOCK_SIZE);
+	log_sys.log.set_fields(recv_sys.recovered_lsn);
 
 	ut_ad(recv_needed_recovery
 	      || checkpoint_lsn == recv_sys.recovered_lsn);
@@ -3515,8 +3489,6 @@ completed:
 	recv_sys.apply_log_recs = true;
 
 	mutex_exit(&recv_sys.mutex);
-
-	log_mutex_exit();
 
 	recv_lsn_checks_on = true;
 

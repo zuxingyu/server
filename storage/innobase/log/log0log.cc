@@ -1350,79 +1350,6 @@ static bool log_preflush_pool_modified_pages(lsn_t new_oldest)
 	return(success);
 }
 
-/** Write checkpoint info to the log header and invoke log_mutex_exit().
-@param[in]	end_lsn	start LSN of the FILE_CHECKPOINT mini-transaction */
-void log_write_checkpoint_info(lsn_t end_lsn)
-{
-	ut_ad(log_mutex_own());
-	ut_ad(!srv_read_only_mode);
-	ut_ad(end_lsn == 0 || end_lsn >= log_sys.next_checkpoint_lsn);
-	ut_ad(end_lsn <= log_sys.lsn);
-
-	DBUG_PRINT("ib_log", ("checkpoint " UINT64PF " at " LSN_PF
-			      " written",
-			      log_sys.next_checkpoint_no,
-			      log_sys.next_checkpoint_lsn));
-
-	byte* buf = log_sys.checkpoint_buf;
-	memset(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
-
-	mach_write_to_8(buf + LOG_CHECKPOINT_NO, log_sys.next_checkpoint_no);
-	mach_write_to_8(buf + LOG_CHECKPOINT_LSN, log_sys.next_checkpoint_lsn);
-
-	if (log_sys.is_physical()
-	    ? log_sys.is_encrypted_physical()
-	    : log_sys.is_encrypted_old()) {
-		log_crypt_write_checkpoint_buf(buf);
-	}
-
-	lsn_t lsn_offset
-		= log_sys.log.calc_lsn_offset(log_sys.next_checkpoint_lsn);
-	mach_write_to_8(buf + LOG_CHECKPOINT_OFFSET, lsn_offset);
-	mach_write_to_8(buf + LOG_CHECKPOINT_LOG_BUF_SIZE,
-			srv_log_buffer_size);
-	mach_write_to_8(buf + LOG_CHECKPOINT_END_LSN, end_lsn);
-
-	log_block_store_checksum(buf);
-
-	log_sys.n_log_ios++;
-
-	ut_ad(LOG_CHECKPOINT_1 < srv_page_size);
-	ut_ad(LOG_CHECKPOINT_2 < srv_page_size);
-
-	++log_sys.n_pending_checkpoint_writes;
-
-	log_mutex_exit();
-
-	/* Note: We alternate the physical place of the checkpoint info.
-	See the (next_checkpoint_no & 1) below. */
-
-	log_sys.log.main_write_durable((log_sys.next_checkpoint_no & 1)
-					       ? LOG_CHECKPOINT_2
-					       : LOG_CHECKPOINT_1,
-				       {buf, OS_FILE_LOG_BLOCK_SIZE});
-
-	log_mutex_enter();
-
-	--log_sys.n_pending_checkpoint_writes;
-	ut_ad(log_sys.n_pending_checkpoint_writes == 0);
-
-	log_sys.next_checkpoint_no++;
-
-	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn;
-
-	DBUG_PRINT("ib_log", ("checkpoint ended at " LSN_PF
-			      ", flushed to " LSN_PF,
-			      log_sys.last_checkpoint_lsn,
-			      log_sys.flushed_to_disk_lsn));
-
-	MONITOR_INC(MONITOR_NUM_CHECKPOINT);
-
-	DBUG_EXECUTE_IF("crash_after_checkpoint", DBUG_SUICIDE(););
-
-	log_mutex_exit();
-}
-
 /** Make a checkpoint. Note that this function does not flush dirty
 blocks from the buffer pool: it only checks what is lsn of the oldest
 modification in the pool, and writes information about the lsn in
@@ -1430,77 +1357,79 @@ log file. Use log_make_checkpoint() to flush also the pool.
 @return true if success, false if a checkpoint write was already running */
 bool log_checkpoint()
 {
-	ut_ad(!srv_read_only_mode);
+  ut_ad(!srv_read_only_mode);
 
-	DBUG_EXECUTE_IF("no_checkpoint",
-			/* We sleep for a long enough time, forcing
-			the checkpoint doesn't happen any more. */
-			os_thread_sleep(360000000););
+  if (recv_recovery_is_on())
+    recv_apply_hashed_log_recs(true);
 
-	if (recv_recovery_is_on()) {
-		recv_apply_hashed_log_recs(true);
-	}
+  if (srv_file_flush_method != SRV_NOSYNC)
+    fil_flush_file_spaces(FIL_TYPE_TABLESPACE);
 
-	switch (srv_file_flush_method) {
-	case SRV_NOSYNC:
-		break;
-	case SRV_O_DSYNC:
-	case SRV_FSYNC:
-	case SRV_LITTLESYNC:
-	case SRV_O_DIRECT:
-	case SRV_O_DIRECT_NO_FSYNC:
-#ifdef _WIN32
-	case SRV_ALL_O_DIRECT_FSYNC:
-#endif
-		fil_flush_file_spaces(FIL_TYPE_TABLESPACE);
-	}
+  log_mutex_enter();
 
-	log_mutex_enter();
+  ut_ad(!recv_no_log_write);
+  lsn_t flush_lsn= log_buf_pool_get_oldest_modification();
 
-	ut_ad(!recv_no_log_write);
-	lsn_t flush_lsn = log_buf_pool_get_oldest_modification();
+  /* Because the log also contains dummy records,
+  log_buf_pool_get_oldest_modification() will return log_sys.lsn if
+  the buffer pool contains no dirty buffers.  We must make sure that
+  the log is flushed up to that lsn.  If there are dirty buffers in
+  the buffer pool, then our write-ahead-logging algorithm ensures that
+  the log has been flushed up to flush_lsn. */
 
-	/* Because log also contains headers and dummy log records,
-	log_buf_pool_get_oldest_modification() will return log_sys.lsn
-	if the buffer pool contains no dirty buffers.
-	We must make sure that the log is flushed up to that lsn.
-	If there are dirty buffers in the buffer pool, then our
-	write-ahead-logging algorithm ensures that the log has been
-	flushed up to flush_lsn. */
+  ut_ad(flush_lsn >= log_sys.last_checkpoint_lsn);
+  bool success= flush_lsn == log_sys.last_checkpoint_lsn;
 
-	ut_ad(flush_lsn >= log_sys.last_checkpoint_lsn);
-	if (flush_lsn <= log_sys.last_checkpoint_lsn) {
-		/* Nothing was logged since the previous checkpoint. */
-		log_mutex_exit();
-		return(true);
-	}
-	const lsn_t	end_lsn		= log_sys.lsn;
+  if (success)
+  {
+    /* Nothing was logged since the previous checkpoint. */
+func_exit:
+    log_mutex_exit();
+    return success;
+  }
 
-	log_mutex_exit();
+  log_mutex_exit();
+  log_write_up_to(flush_lsn, true);
+  log_mutex_enter();
 
-	log_write_up_to(flush_lsn, true);
+  ut_ad(log_sys.flushed_to_disk_lsn >= flush_lsn);
+  success= log_sys.last_checkpoint_lsn == flush_lsn;
+  if (success || log_sys.n_pending_checkpoint_writes)
+    goto func_exit;
 
-	log_mutex_enter();
+  log_sys.next_checkpoint_lsn= flush_lsn;
 
-	ut_ad(log_sys.flushed_to_disk_lsn >= flush_lsn);
+  DBUG_PRINT("ib_log", ("writing checkpoint at " LSN_PF, flush_lsn));
 
-	if (log_sys.last_checkpoint_lsn >= flush_lsn) {
-		log_mutex_exit();
-		return(true);
-	}
+  byte *buf= &log_sys.checkpoint_buf[1 + 8];
+  mach_write_to_6(buf, log_sys.log.calc_lsn_offset(flush_lsn));
+  ++log_sys.n_pending_checkpoint_writes;
+  log_mutex_exit();
 
-	if (log_sys.n_pending_checkpoint_writes > 0) {
-		/* A checkpoint write is running */
-		log_mutex_exit();
+  log_sys.checkpoint_buf[0]= FILE_CHECKPOINT | (8 + 6);
+  mach_write_to_8(&log_sys.checkpoint_buf[1], flush_lsn);
+  buf+= 6;
+  ut_ad(buf == &log_sys.checkpoint_buf[15]);
+  mach_write_to_4(buf, ut_crc32(log_sys.checkpoint_buf, 15));
+  buf+= 4;
+  log_sys.append({log_sys.checkpoint_buf, buf});
 
-		return(false);
-	}
+  log_mutex_enter();
 
-	log_sys.next_checkpoint_lsn = flush_lsn;
-	log_write_checkpoint_info(end_lsn);
-	ut_ad(!log_mutex_own());
+  --log_sys.n_pending_checkpoint_writes;
+  ut_ad(log_sys.n_pending_checkpoint_writes == 0);
+  log_sys.n_log_ios++;
 
-	return(true);
+  log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn;
+
+  DBUG_PRINT("ib_log", ("checkpoint ended at " LSN_PF
+                        ", flushed to " LSN_PF,
+                        log_sys.last_checkpoint_lsn,
+                        log_sys.flushed_to_disk_lsn));
+
+  log_mutex_exit();
+  MONITOR_INC(MONITOR_NUM_CHECKPOINT);
+  return true;
 }
 
 /** Make a checkpoint */

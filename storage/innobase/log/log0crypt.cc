@@ -215,8 +215,7 @@ bool log_crypt(byte* buf, lsn_t lsn, ulint size, bool decrypt)
 
 /** Initialize the redo log encryption key and random parameters
 when creating a new redo log.
-The random parameters will be persisted in the log checkpoint pages.
-@see log_crypt_write_checkpoint_buf()
+The random parameters will be persisted in ib_logfile0.
 @see log_crypt_read_checkpoint_buf()
 @return whether the operation succeeded */
 bool log_crypt_init()
@@ -347,26 +346,6 @@ found:
 
 	memcpy(buf, dst, sizeof dst);
 	return true;
-}
-
-/** Add the encryption information to a redo log checkpoint buffer.
-@param[in,out]	buf	checkpoint buffer */
-UNIV_INTERN
-void
-log_crypt_write_checkpoint_buf(byte* buf)
-{
-	ut_ad(info.key_version);
-	compile_time_assert(16 == sizeof info.crypt_msg.bytes);
-	compile_time_assert(16 == MY_AES_BLOCK_SIZE);
-	compile_time_assert(LOG_CHECKPOINT_CRYPT_MESSAGE
-			    - LOG_CHECKPOINT_CRYPT_NONCE
-			    == sizeof info.crypt_nonce);
-
-	memcpy(buf + LOG_CHECKPOINT_CRYPT_MESSAGE, info.crypt_msg.bytes,
-	       MY_AES_BLOCK_SIZE);
-	memcpy(buf + LOG_CHECKPOINT_CRYPT_NONCE, info.crypt_nonce.bytes,
-	       sizeof info.crypt_nonce);
-	mach_write_to_4(buf + LOG_CHECKPOINT_CRYPT_KEY, info.key_version);
 }
 
 /** Read the checkpoint crypto (version, msg and iv) info.
