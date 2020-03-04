@@ -310,7 +310,6 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 	that crash recovery cannot find it until it has been completed and
 	renamed. */
 
-	log_sys.log.create();
 	if (srv_encrypt_log && !log_sys.is_encrypted_physical()) {
 		return DB_ERROR;
 	}
@@ -1430,8 +1429,6 @@ dberr_t srv_start(bool create_new_db)
 		srv_log_file_found = log_file_found;
 
 		log_sys.log.open_files(get_log_file_path());
-
-		log_sys.log.create();
 
 		if (!log_set_capacity(srv_log_file_size_requested)) {
 			return(srv_init_abort(DB_ERROR));

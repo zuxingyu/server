@@ -338,10 +338,6 @@ void
 log_refresh_stats(void);
 /*===================*/
 
-/* Values used as flags */
-#define LOG_FLUSH	7652559
-#define LOG_CHECKPOINT	78656949
-
 /* The counting of lsn's starts from this value: this must be non-zero */
 #define LOG_START_LSN		((lsn_t) (16 * OS_FILE_LOG_BLOCK_SIZE))
 
@@ -617,10 +613,14 @@ struct log_t{
     lsn_t				lsn;
     /** the byte offset of the above lsn */
     lsn_t				lsn_offset;
-    /** main log file */
-    log_file_t				fd;
     /** log data file */
     log_file_t				data_fd;
+    /** mutex protecting appending to fd */
+    alignas(CACHE_LINE_SIZE) ib_mutex_t fd_mutex;
+    /** write position of fd */
+    os_offset_t fd_offset;
+    /** main log file */
+    log_file_t fd;
 
   public:
     /** used only in recovery: recovery scan succeeded up to this
@@ -691,11 +691,13 @@ struct log_t{
     void create();
 
     /** Close the redo log buffer. */
-    void close() { close_files(); }
+    void close() { close_files(); mutex_free(&fd_mutex); }
     void set_lsn(lsn_t a_lsn);
     lsn_t get_lsn() const { return lsn; }
     void set_lsn_offset(lsn_t a_lsn);
     lsn_t get_lsn_offset() const { return lsn_offset; }
+
+    dberr_t append(span<const byte> buf) noexcept;
   } log;
 
 	/** The fields involved in the log buffer flush @{ */
@@ -824,6 +826,8 @@ public:
 
   /** Shut down the redo log subsystem. */
   void close();
+
+  dberr_t append(span<const byte> buf) noexcept { return log.append(buf); }
 };
 
 /** Redo log system */

@@ -540,6 +540,7 @@ void log_t::create()
 
   buf_free= LOG_BLOCK_HDR_SIZE;
   lsn= LOG_START_LSN + LOG_BLOCK_HDR_SIZE;
+  log.create();
 }
 
 mapped_file_t::~mapped_file_t() noexcept
@@ -848,6 +849,19 @@ void log_t::file::create()
   file_size= srv_log_file_size;
   lsn= LOG_START_LSN;
   lsn_offset= 0;
+
+  mutex_create(LATCH_ID_LOG_FILE_OP, &fd_mutex);
+  fd_offset= 0;
+}
+
+dberr_t log_t::file::append(span<const byte> buf) noexcept
+{
+  mutex_enter(&fd_mutex);
+  dberr_t err= fd.write(fd_offset, buf);
+  if (err == DB_SUCCESS)
+    fd_offset+= buf.size();
+  mutex_exit(&fd_mutex);
+  return err;
 }
 
 /** Update the log block checksum. */
