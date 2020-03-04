@@ -306,14 +306,6 @@ struct mtr_t {
 	/** @return true if a record was added to the mini-transaction */
 	bool is_dirty() const { return m_made_dirty; }
 
-	/** Get the buffered redo log of this mini-transaction.
-	@return	redo log */
-	const mtr_buf_t* get_log() const { return &m_log; }
-
-	/** Get the buffered redo log of this mini-transaction.
-	@return	redo log */
-	mtr_buf_t* get_log() { return &m_log; }
-
 	/** Push an object to an mtr memo stack.
 	@param object	object
 	@param type	object type: MTR_MEMO_S_LOCK, ... */
@@ -494,15 +486,6 @@ struct mtr_t {
   /** Trim the end of a tablespace.
   @param id       first page identifier that will not be in the file */
   inline void trim_pages(const page_id_t id);
-
-  /** Write a log record about a file operation.
-  @param type           file operation
-  @param space_id       tablespace identifier
-  @param path           file path
-  @param new_path       new file path for type=FILE_RENAME */
-  inline void log_file_op(mfile_type_t type, ulint space_id,
-                          const char *path,
-                          const char *new_path= nullptr);
 
 private:
   /** Log a write of a byte string to a page.
