@@ -43,6 +43,10 @@ Created 12/9/1995 Heikki Tuuri
 
 using st_::span;
 
+extern ulong srv_log_buffer_size;
+
+lsn_t buf_pool_get_oldest_modification();
+
 /* Margin for the free space in the smallest log, before a new query
 step which modifies the database, is started */
 
@@ -76,17 +80,6 @@ static inline void delete_log_file(const char* suffix)
   os_file_delete_if_exists(innodb_log_file_key, path.c_str(), nullptr);
 }
 
-/** Append a string to the log.
-@param[in]	str		string
-@param[in]	len		string length
-@param[out]	start_lsn	start LSN of the log record
-@return end lsn of the log record, zero if did not succeed */
-UNIV_INLINE
-lsn_t
-log_reserve_and_write_fast(
-	const void*	str,
-	ulint		len,
-	lsn_t*		start_lsn);
 /***********************************************************************//**
 Checks if there is need for a log buffer flush or a new checkpoint, and does
 this if yes. Any database operation should call this when it has modified
@@ -107,26 +100,6 @@ waits for the checkpoint is done enough.
 @param[in]	margin	length of the data to be written */
 void log_margin_checkpoint_age(ulint margin);
 
-/** Open the log for log_write_low. The log must be closed with log_close.
-@param[in]	len	length of the data to be written
-@return start lsn of the log record */
-lsn_t
-log_reserve_and_open(
-	ulint	len);
-/************************************************************//**
-Writes to the log the string given. It is assumed that the caller holds the
-log mutex. */
-void
-log_write_low(
-/*==========*/
-	const byte*	str,		/*!< in: string */
-	ulint		str_len);	/*!< in: string length */
-/************************************************************//**
-Closes the log.
-@return lsn */
-lsn_t
-log_close(void);
-/*===========*/
 /** Read the current LSN. */
 #define log_get_lsn() log_sys.get_lsn()
 
@@ -249,31 +222,6 @@ log_block_set_checksum(
 	byte*	log_block,	/*!< in/out: log block */
 	ulint	checksum);	/*!< in: checksum */
 /************************************************************//**
-Gets a log block first mtr log record group offset.
-@return first mtr log record group byte offset from the block start, 0
-if none */
-UNIV_INLINE
-ulint
-log_block_get_first_rec_group(
-/*==========================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
-Sets the log block first mtr log record group offset. */
-UNIV_INLINE
-void
-log_block_set_first_rec_group(
-/*==========================*/
-	byte*	log_block,	/*!< in/out: log block */
-	ulint	offset);	/*!< in: offset, 0 if none */
-/************************************************************//**
-Gets a log block checkpoint number field (4 lowest bytes).
-@return checkpoint no (4 lowest bytes) */
-UNIV_INLINE
-ulint
-log_block_get_checkpoint_no(
-/*========================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
 Initializes a log block in the log buffer. */
 UNIV_INLINE
 void
@@ -323,12 +271,6 @@ log_refresh_stats(void);
 					start parsing the log records starting
 					from this offset in this log block,
 					if value not 0 */
-#define LOG_BLOCK_CHECKPOINT_NO	8	/* 4 lower bytes of the value of
-					log_sys.next_checkpoint_no when the
-					log block was last written to: if the
-					block has not yet been written full,
-					this value is only updated before a
-					log buffer flush */
 #define LOG_BLOCK_HDR_SIZE	12	/* size of the log block header in
 					bytes */
 
@@ -646,7 +588,7 @@ public:
 					out: the last read valid lsn
     @param[in]		end_lsn		read area end
     @return	whether no invalid blocks (e.g checksum mismatch) were found */
-    bool read_log_seg(lsn_t* start_lsn, lsn_t end_lsn);
+    bool read_log_seg(lsn_t* start_lsn, lsn_t end_lsn) noexcept;
 
     /** Initialize the redo log buffer. */
     void create();
@@ -658,7 +600,8 @@ public:
     void set_lsn_offset(lsn_t a_lsn);
     lsn_t get_lsn_offset() const { return lsn_offset; }
 
-    dberr_t append(span<const byte> buf) noexcept;
+    /** Append data to ib_logfile0 */
+    dberr_t append_to_main_log(span<const byte> buf) noexcept;
   } log;
 
 	/** The fields involved in the log buffer flush @{ */
@@ -800,14 +743,61 @@ public:
 
   /** Initiate a write of the log buffer to the file if needed.
   @param flush  whether to initiate a durable write */
-  inline void initiate_write(bool flush)
+  inline void initiate_write(bool flush) noexcept
   {
     const lsn_t lsn= get_lsn();
     if (!flush || get_flushed_lsn() < lsn)
       log_write_up_to(lsn, flush);
   }
 
-  dberr_t append(span<const byte> buf) noexcept { return log.append(buf); }
+  /** Append data to ib_logfile0 */
+  dberr_t append_to_main_log(span<const byte> buf) noexcept
+  { return log.append_to_main_log(buf); }
+
+  /** Reserve space in the log buffer for appending data.
+  @param size   upper limit of the length of the data to append(), in bytes */
+  void append_prepare(size_t size) noexcept;
+
+  /** Append a string of bytes to the redo log.
+  @param s     string of bytes
+  @param size  length of str, in bytes */
+  void append(const void *s, size_t size) noexcept
+  {
+    ut_ad(mutex_own(&mutex));
+    memcpy(buf + buf_free, s, size);
+    buf_free+= size;
+    ut_ad(buf_free <= size_t{srv_log_buffer_size});
+  }
+
+  /** Finish appending data to the log. */
+  void append_finish(lsn_t end_lsn) noexcept
+  {
+    ut_ad(mutex_own(&mutex));
+    set_lsn(end_lsn);
+
+    const bool set_check= buf_free > max_buf_free;
+    if (set_check)
+      set_check_flush_or_checkpoint();
+
+    lsn_t checkpoint_age= end_lsn - last_checkpoint_lsn;
+
+    if (UNIV_UNLIKELY(checkpoint_age >= log_capacity))
+      overwrite_warning(checkpoint_age, log_capacity);
+
+    if (set_check || check_flush_or_checkpoint() ||
+        checkpoint_age <= max_modified_age_sync)
+      return;
+
+    const lsn_t oldest_lsn= buf_pool_get_oldest_modification();
+    if (!oldest_lsn || lsn - oldest_lsn > max_modified_age_sync ||
+        checkpoint_age > max_checkpoint_age_async)
+      set_check_flush_or_checkpoint();
+  }
+
+private:
+  /** Display a warning that the log tail is overwriting the head,
+  making the server crash-unsafe. */
+  ATTRIBUTE_COLD static void overwrite_warning(lsn_t age, lsn_t capacity);
 };
 
 /** Redo log system */

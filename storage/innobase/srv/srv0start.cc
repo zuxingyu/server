@@ -378,7 +378,7 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
   buf+= 1 + 8 + 6 + 4;
 
   /* Write the log header. */
-  if (dberr_t error= log_sys.append({log_sys.buf, buf}))
+  if (dberr_t error= log_sys.append_to_main_log({log_sys.buf, buf}))
     return error;
 
   memset_aligned<OS_FILE_LOG_BLOCK_SIZE>(log_sys.buf, 0, srv_log_buffer_size);

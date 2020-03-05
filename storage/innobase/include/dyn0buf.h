@@ -313,21 +313,11 @@ public:
 		return(m_size);
 	}
 
-	/**
-	Iterate over each block and call the functor.
-	@return	false if iteration was terminated. */
+	/** Iterate over each block. */
 	template <typename Functor>
-	bool for_each_block(Functor& functor) const
+	void for_each_block(const Functor& functor) const
 	{
-		for (list_t::iterator it = m_list.begin(), end = m_list.end();
-		     it != end; ++it) {
-
-			if (!functor(&*it)) {
-				return false;
-			}
-		}
-
-		return(true);
+		for (auto i: m_list) functor(i);
 	}
 
 	/**

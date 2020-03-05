@@ -220,186 +220,41 @@ void log_margin_checkpoint_age(ulint margin)
 	return;
 }
 
-/** Open the log for log_write_low. The log must be closed with log_close.
-@param[in]	len	length of the data to be written
-@return start lsn of the log record */
-lsn_t
-log_reserve_and_open(
-	ulint	len)
+/** Reserve space in the log buffer for appending data.
+@param size   upper limit of the length of the data to append(), in bytes */
+void log_t::append_prepare(size_t size) noexcept
 {
-	ulint	len_upper_limit;
-#ifdef UNIV_DEBUG
-	ulint	count			= 0;
-#endif /* UNIV_DEBUG */
+  ut_ad(mutex_own(&mutex));
+  /* Calculate the amount of free space needed. */
+  size= LOG_BUF_WRITE_MARGIN - size + srv_log_buffer_size +
+    srv_log_write_ahead_size;
 
-loop:
-	ut_ad(log_mutex_own());
-
-	/* Calculate an upper limit for the space the string may take in the
-	log buffer */
-
-	len_upper_limit = LOG_BUF_WRITE_MARGIN + srv_log_write_ahead_size
-			  + (5 * len) / 4;
-
-	if (log_sys.buf_free + len_upper_limit > srv_log_buffer_size) {
-		log_mutex_exit();
-
-		DEBUG_SYNC_C("log_buf_size_exceeded");
-
-		/* Not enough free space, do a write of the log buffer */
-		log_sys.initiate_write(false);
-
-		srv_stats.log_waits.inc();
-
-		ut_ad(++count < 50);
-
-		log_mutex_enter();
-		goto loop;
-	}
-
-	return(log_sys.get_lsn());
+  for (ut_d(int count= 50); UNIV_UNLIKELY(buf_free > size); )
+  {
+    mutex_exit(&mutex);
+    DEBUG_SYNC_C("log_buf_size_exceeded");
+    initiate_write(false);
+    srv_stats.log_waits.inc();
+    ut_ad(count--);
+    mutex_enter(&mutex);
+  }
 }
 
-/************************************************************//**
-Writes to the log the string given. It is assumed that the caller holds the
-log mutex. */
-void
-log_write_low(
-/*==========*/
-	const byte*	str,		/*!< in: string */
-	ulint		str_len)	/*!< in: string length */
+/** Display a warning that the log tail is overwriting the head,
+making the server crash-unsafe. */
+ATTRIBUTE_COLD void log_t::overwrite_warning(lsn_t age, lsn_t capacity)
 {
-	ulint	len;
+  time_t now= time(NULL);
 
-	ut_ad(log_mutex_own());
-	const ulint trailer_offset = log_sys.trailer_offset();
-part_loop:
-	/* Calculate a part length */
+  if (!log_has_printed_chkp_warning ||
+      difftime(now, log_last_warning_time) > 15)
+  {
+    log_has_printed_chkp_warning= true;
+    log_last_warning_time= now;
 
-	ulint data_len = (log_sys.buf_free % OS_FILE_LOG_BLOCK_SIZE) + str_len;
-
-	if (data_len <= trailer_offset) {
-
-		/* The string fits within the current log block */
-
-		len = str_len;
-	} else {
-		data_len = trailer_offset;
-
-		len = trailer_offset
-			- log_sys.buf_free % OS_FILE_LOG_BLOCK_SIZE;
-	}
-
-	memcpy(log_sys.buf + log_sys.buf_free, str, len);
-
-	str_len -= len;
-	str = str + len;
-
-	byte* log_block = static_cast<byte*>(
-		ut_align_down(log_sys.buf + log_sys.buf_free,
-			      OS_FILE_LOG_BLOCK_SIZE));
-
-	log_block_set_data_len(log_block, data_len);
-	lsn_t lsn = log_sys.get_lsn();
-
-	if (data_len == trailer_offset) {
-		/* This block became full */
-		log_block_set_data_len(log_block, OS_FILE_LOG_BLOCK_SIZE);
-		log_block_set_checkpoint_no(log_block,
-					    log_sys.next_checkpoint_no);
-		len += log_sys.framing_size();
-
-		lsn += len;
-
-		/* Initialize the next block header */
-		log_block_init(log_block + OS_FILE_LOG_BLOCK_SIZE, lsn);
-	} else {
-		lsn += len;
-	}
-
-	log_sys.set_lsn(lsn);
-	log_sys.buf_free += len;
-
-	ut_ad(log_sys.buf_free <= size_t{srv_log_buffer_size});
-
-	if (str_len > 0) {
-		goto part_loop;
-	}
-
-	srv_stats.log_write_requests.inc();
-}
-
-/************************************************************//**
-Closes the log.
-@return lsn */
-lsn_t
-log_close(void)
-/*===========*/
-{
-	byte*		log_block;
-	ulint		first_rec_group;
-	lsn_t		oldest_lsn;
-	lsn_t		lsn;
-	lsn_t		checkpoint_age;
-
-	ut_ad(log_mutex_own());
-
-	lsn = log_sys.get_lsn();
-
-	log_block = static_cast<byte*>(
-		ut_align_down(log_sys.buf + log_sys.buf_free,
-			      OS_FILE_LOG_BLOCK_SIZE));
-
-	first_rec_group = log_block_get_first_rec_group(log_block);
-
-	if (first_rec_group == 0) {
-		/* We initialized a new log block which was not written
-		full by the current mtr: the next mtr log record group
-		will start within this block at the offset data_len */
-
-		log_block_set_first_rec_group(
-			log_block, log_block_get_data_len(log_block));
-	}
-
-	if (log_sys.buf_free > log_sys.max_buf_free) {
-		log_sys.set_check_flush_or_checkpoint();
-	}
-
-	checkpoint_age = lsn - log_sys.last_checkpoint_lsn;
-
-	if (checkpoint_age >= log_sys.log_capacity) {
-		DBUG_EXECUTE_IF(
-			"print_all_chkp_warnings",
-			log_has_printed_chkp_warning = false;);
-
-		if (!log_has_printed_chkp_warning
-		    || difftime(time(NULL), log_last_warning_time) > 15) {
-
-			log_has_printed_chkp_warning = true;
-			log_last_warning_time = time(NULL);
-
-			ib::error() << "The age of the last checkpoint is "
-				    << checkpoint_age
-				    << ", which exceeds the log capacity "
-				    << log_sys.log_capacity << ".";
-		}
-	}
-
-	if (checkpoint_age <= log_sys.max_modified_age_sync ||
-	    log_sys.check_flush_or_checkpoint()) {
-		goto function_exit;
-	}
-
-	oldest_lsn = buf_pool_get_oldest_modification();
-
-	if (!oldest_lsn
-	    || lsn - oldest_lsn > log_sys.max_modified_age_sync
-	    || checkpoint_age > log_sys.max_checkpoint_age_async) {
-		log_sys.set_check_flush_or_checkpoint();
-	}
-function_exit:
-
-	return(lsn);
+    ib::error() << "The age of the last checkpoint is " << age
+		<< ", which exceeds the log capacity " << capacity << ".";
+  }
 }
 
 /** Calculate the recommended highest values for lsn - last_checkpoint_lsn
@@ -818,7 +673,7 @@ void log_t::file::create()
   fd_offset= 0;
 }
 
-dberr_t log_t::file::append(span<const byte> buf) noexcept
+dberr_t log_t::file::append_to_main_log(span<const byte> buf) noexcept
 {
   mutex_enter(&fd_mutex);
   dberr_t err= fd.write(fd_offset, buf);
@@ -1016,12 +871,12 @@ static void log_write()
 	area_end = ut_calc_align(end_offset, ulint(OS_FILE_LOG_BLOCK_SIZE));
 
 	ut_ad(area_end - area_start > 0);
-
+#if 0 // FIXME
 	log_block_set_flush_bit(log_sys.buf + area_start, TRUE);
 	log_block_set_checkpoint_no(
 		log_sys.buf + area_end - OS_FILE_LOG_BLOCK_SIZE,
 		log_sys.next_checkpoint_no);
-
+#endif
 	write_lsn = log_sys.get_lsn();
 	byte *write_buf = log_sys.buf;
 
@@ -1299,7 +1154,7 @@ func_exit:
   ut_ad(buf == &log_sys.checkpoint_buf[15]);
   mach_write_to_4(buf, ut_crc32(log_sys.checkpoint_buf, 15));
   buf+= 4;
-  log_sys.append({log_sys.checkpoint_buf, buf});
+  log_sys.append_to_main_log({log_sys.checkpoint_buf, buf});
 
   log_mutex_enter();
 

@@ -2617,7 +2617,11 @@ static lsn_t xtrabackup_copy_log(lsn_t start_lsn, lsn_t end_lsn, bool last)
 	for (ulint scanned_checkpoint = 0;
 	     scanned_lsn < end_lsn;
 	     log_block += OS_FILE_LOG_BLOCK_SIZE) {
+#if 0 // FIXME
 		ulint checkpoint = log_block_get_checkpoint_no(log_block);
+#else
+		ulint checkpoint = 0;
+#endif
 
 		if (scanned_checkpoint > checkpoint
 		    && scanned_checkpoint - checkpoint >= 0x80000000UL) {

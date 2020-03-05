@@ -24,14 +24,11 @@ Mini-transaction buffer
 Created 11/26/1995 Heikki Tuuri
 *******************************************************/
 
-#include "mtr0mtr.h"
-
+#include "mtr0log.h"
 #include "buf0buf.h"
 #include "buf0flu.h"
-#include "fsp0sysspace.h"
 #include "page0types.h"
-#include "mtr0log.h"
-#include "log0recv.h"
+#include "log0crypt.h"
 
 /** Iterate over a memo block in reverse. */
 template <typename Functor>
@@ -340,17 +337,6 @@ struct ReleaseBlocks {
 	lsn_t		m_start_lsn;
 };
 
-/** Write the block contents to the REDO log */
-struct mtr_write_log_t {
-	/** Append a block to the redo log buffer.
-	@return whether the appending should continue */
-	bool operator()(const mtr_buf_t::block_t* block) const
-	{
-		log_write_low(block->begin(), block->used());
-		return(true);
-	}
-};
-
 /** Start a mini-transaction. */
 void mtr_t::start()
 {
@@ -396,12 +382,7 @@ void mtr_t::commit()
   {
     ut_ad(!srv_read_only_mode || m_log_mode == MTR_LOG_NO_REDO);
 
-    lsn_t start_lsn;
-
-    if (const ulint len= prepare_write())
-      start_lsn= finish_write(len);
-    else
-      start_lsn= m_commit_lsn;
+    const lsn_t start_lsn= write();
 
     if (m_made_dirty)
       log_flush_order_mutex_enter();
@@ -500,69 +481,49 @@ mtr_t::release_page(const void* ptr, mtr_memo_type_t type)
 	ut_ad(0);
 }
 
-/** Prepare to write the mini-transaction log to the redo log buffer.
-@return number of bytes to write in finish_write() */
-inline ulint mtr_t::prepare_write()
+/** Write the mini-transaction log to the redo log buffer.
+@return LSN at the start of the mini-transaction */
+inline lsn_t mtr_t::write()
 {
-	ut_ad(!recv_no_log_write);
+  ut_ad(!recv_no_log_write);
 
-	if (UNIV_UNLIKELY(m_log_mode != MTR_LOG_ALL)) {
-		ut_ad(m_log_mode == MTR_LOG_NO_REDO);
-		ut_ad(m_log.size() == 0);
-		log_mutex_enter();
-		m_commit_lsn = log_sys.get_lsn();
-		return 0;
-	}
+  if (UNIV_UNLIKELY(m_log_mode != MTR_LOG_ALL)) {
+    ut_ad(m_log_mode == MTR_LOG_NO_REDO);
+    ut_ad(m_log.size() == 0);
+    log_mutex_enter();
+    return m_commit_lsn= log_sys.get_lsn();
+  }
 
-	ulint	len	= m_log.size();
-	ut_ad(len > 0);
-	*m_log.push<byte*>(1) = 0;
-	len++;
+  size_t len= m_log.size();
+  ut_ad(len > 0);
+  len+= 5; /* the terminating NUL byte, and CRC-32C */
+  byte header[4];
+  ut_ad(len << 2 < MIN_5BYTE);
+  byte *e= mlog_encode_varint(header, len << 2);
+  ut_ad(e <= &header[4]);
+  len+= static_cast<size_t>(e - header);
 
-	if (len > srv_log_buffer_size / 2) {
-		log_buffer_extend(ulong((len + 1) * 2));
-	}
+  uint32 crc= ut_crc32(header, e - header);
+  ut_ad(!srv_encrypt_log); /* FIXME: Encrypt the log snippet if needed */
+  m_log.for_each_block([&crc](const mtr_buf_t::block_t &b)
+                       { crc= ut_crc32_low(crc, b.begin(), b.used()); });
 
-	log_mutex_enter();
+  if (len > srv_log_buffer_size / 2)
+    log_buffer_extend(ulong((len + 1) * 2));
 
-	/* check and attempt a checkpoint if exceeding capacity */
-	log_margin_checkpoint_age(len);
+  srv_stats.log_write_requests.inc();
+  log_mutex_enter();
 
-	return(len);
-}
+  /* check and attempt a checkpoint if exceeding capacity */
+  log_margin_checkpoint_age(len);
 
-/** Append the redo log records to the redo log buffer
-@param[in] len	number of bytes to write
-@return start_lsn */
-inline lsn_t mtr_t::finish_write(ulint len)
-{
-	ut_ad(m_log_mode == MTR_LOG_ALL);
-	ut_ad(log_mutex_own());
-	ut_ad(m_log.size() == len);
-	ut_ad(len > 0);
-
-	lsn_t start_lsn;
-
-	if (m_log.is_small()) {
-		const mtr_buf_t::block_t* front = m_log.front();
-		ut_ad(len <= front->used());
-
-		m_commit_lsn = log_reserve_and_write_fast(front->begin(), len,
-							  &start_lsn);
-
-		if (m_commit_lsn) {
-			return start_lsn;
-		}
-	}
-
-	/* Open the database log for log_write_low */
-	start_lsn = log_reserve_and_open(len);
-
-	mtr_write_log_t	write_log;
-	m_log.for_each_block(write_log);
-
-	m_commit_lsn = log_close();
-	return start_lsn;
+  log_sys.append_prepare(len);
+  const lsn_t start_lsn= log_sys.get_lsn();
+  m_log.for_each_block([](const mtr_buf_t::block_t &b)
+                       { log_sys.append(b.begin(), b.used()); });
+  m_commit_lsn= start_lsn + len;
+  log_sys.append_finish(m_commit_lsn);
+  return start_lsn;
 }
 
 #ifdef UNIV_DEBUG

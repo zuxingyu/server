@@ -1239,7 +1239,7 @@ inline void recv_sys_t::free(const void *data)
 out: the last read valid lsn
 @param[in]	end_lsn		read area end
 @return	whether no invalid blocks (e.g checksum mismatch) were found */
-bool log_t::file::read_log_seg(lsn_t* start_lsn, lsn_t end_lsn)
+bool log_t::file::read_log_seg(lsn_t* start_lsn, lsn_t end_lsn) noexcept
 {
 	ulint	len;
 	bool success = true;
@@ -1300,8 +1300,6 @@ fail:
 		if (crc != cksum) {
 			ib::error() << "Invalid log block checksum."
 				    << " block: " << block_number
-				    << " checkpoint no: "
-				    << log_block_get_checkpoint_no(buf)
 				    << " expected: " << crc
 				    << " found: " << cksum;
 			goto fail;
@@ -1535,7 +1533,7 @@ static dberr_t recv_log_recover_10_4()
 			    << " block: "
 			    << log_block_get_hdr_no(buf)
 			    << " checkpoint no: "
-			    << log_block_get_checkpoint_no(buf)
+			    << mach_read_from_4(buf + 8)
 			    << " expected: " << crc
 			    << " found: " << cksum;
 		return DB_CORRUPTION;
@@ -2872,11 +2870,15 @@ static bool recv_scan_log_recs(
 		data_len = log_block_get_data_len(log_block);
 
 		if (scanned_lsn + data_len > recv_sys.scanned_lsn
+#if 0 // FIXME
 		    && log_block_get_checkpoint_no(log_block)
 		    < recv_sys.scanned_checkpoint_no
 		    && (recv_sys.scanned_checkpoint_no
 			- log_block_get_checkpoint_no(log_block)
-			> 0x80000000UL)) {
+			> 0x80000000UL)
+#endif
+		    ) {
+
 
 			/* Garbage from a log buffer flush which was made
 			before the most recent database recovery */
@@ -2965,8 +2967,10 @@ static bool recv_scan_log_recs(
 			}
 
 			recv_sys.scanned_lsn = scanned_lsn;
+#if 0//FIXME
 			recv_sys.scanned_checkpoint_no
 				= log_block_get_checkpoint_no(log_block);
+#endif
 		}
 
 		/* During last phase of scanning, there can be redo logs

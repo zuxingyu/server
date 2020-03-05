@@ -294,8 +294,7 @@ bool log_crypt_101_read_block(byte* buf, lsn_t start_lsn)
 {
 	ut_ad(log_block_calc_checksum_format_0(buf)
 	      != log_block_get_checksum(buf));
-	const uint32_t checkpoint_no
-		= uint32_t(log_block_get_checkpoint_no(buf));
+	const uint32_t checkpoint_no = mach_read_from_4(buf + 8);
 	const crypt_info_t* info = infos;
 	for (const crypt_info_t* const end = info + infos_used; info < end;
 	     info++) {

@@ -507,14 +507,9 @@ private:
   @param type   extended record subtype; @see mrec_ext_t */
   inline void log_write_extended(const buf_block_t &block, byte type);
 
-  /** Prepare to write the mini-transaction log to the redo log buffer.
-  @return number of bytes to write in finish_write() */
-  inline ulint prepare_write();
-
-  /** Append the redo log records to the redo log buffer.
-  @param len   number of bytes to write
-  @return start_lsn */
-  inline lsn_t finish_write(ulint len);
+  /** Write the mini-transaction log to the redo log buffer.
+  @return LSN at the start of the mini-transaction */
+  inline lsn_t write();
 
   /** Release the resources */
   inline void release_resources();
