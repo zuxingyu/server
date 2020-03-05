@@ -511,6 +511,9 @@ private:
   @return LSN at the start of the mini-transaction */
   inline lsn_t write();
 
+  /** Encrypt the mini-transaction log during write(). */
+  ATTRIBUTE_COLD void encrypt();
+
   /** Release the resources */
   inline void release_resources();
 

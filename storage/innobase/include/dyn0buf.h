@@ -314,8 +314,7 @@ public:
 	}
 
 	/** Iterate over each block. */
-	template <typename Functor>
-	void for_each_block(const Functor& functor) const
+	template <typename Functor> void for_each_block(const Functor& functor)
 	{
 		for (auto i: m_list) functor(i);
 	}

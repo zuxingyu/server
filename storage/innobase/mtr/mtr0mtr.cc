@@ -481,34 +481,65 @@ mtr_t::release_page(const void* ptr, mtr_memo_type_t type)
 	ut_ad(0);
 }
 
+/** Encrypt the mini-transaction log during write(). */
+ATTRIBUTE_COLD void mtr_t::encrypt()
+{
+  size_t max_len= 0;
+  m_log.for_each_block([&max_len](const mtr_buf_t::block_t &b)
+                       { max_len= std::max(b.used(), max_len); });
+  byte *tmp= static_cast<byte*>(ut_malloc_nokey(max_len));
+  m_log.for_each_block([&tmp](mtr_buf_t::block_t &b)
+                       {
+                         uint dst_len= static_cast<uint>(b.used());
+                         int rc= encryption_crypt(b.begin(), dst_len,
+                                                  tmp, &dst_len,
+                                                  (byte*) 0/*crypt_key*/,
+                                                  MY_AES_BLOCK_SIZE,
+                                                  (byte*) 0/*iv*/,
+                                                  MY_AES_BLOCK_SIZE,
+                                                  ENCRYPTION_FLAG_ENCRYPT |
+                                                  ENCRYPTION_FLAG_NOPAD,
+                                                  log_t::KEY_ID,
+                                                  log_sys.log.key_version);
+                         ut_ad(dst_len == b.used());
+                         ut_a(rc == MY_AES_OK);
+                         ::memcpy(b.begin(), tmp, dst_len);
+                       });
+  ut_free(tmp);
+}
+
 /** Write the mini-transaction log to the redo log buffer.
 @return LSN at the start of the mini-transaction */
 inline lsn_t mtr_t::write()
 {
   ut_ad(!recv_no_log_write);
 
-  if (UNIV_UNLIKELY(m_log_mode != MTR_LOG_ALL)) {
+  if (UNIV_UNLIKELY(m_log_mode != MTR_LOG_ALL))
+  {
     ut_ad(m_log_mode == MTR_LOG_NO_REDO);
     ut_ad(m_log.size() == 0);
     log_mutex_enter();
     return m_commit_lsn= log_sys.get_lsn();
   }
 
+  *m_log.push<byte*>(1)= 0; /* mini-transaction terminator */
   size_t len= m_log.size();
-  ut_ad(len > 0);
-  len+= 5; /* the terminating NUL byte, and CRC-32C */
+  ut_ad(len > 1);
+  if (UNIV_UNLIKELY(srv_encrypt_log))
+    encrypt();
+  len+= 4; /* CRC-32C */
   byte header[4];
   ut_ad(len << 2 < MIN_5BYTE);
   byte *e= mlog_encode_varint(header, len << 2);
   ut_ad(e <= &header[4]);
   len+= static_cast<size_t>(e - header);
-
   uint32 crc= ut_crc32(header, e - header);
-  ut_ad(!srv_encrypt_log); /* FIXME: Encrypt the log snippet if needed */
   m_log.for_each_block([&crc](const mtr_buf_t::block_t &b)
                        { crc= ut_crc32_low(crc, b.begin(), b.used()); });
+  alignas(4) byte crc32c[4];
+  mach_write_to_4(crc32c, crc);
 
-  if (len > srv_log_buffer_size / 2)
+  if (UNIV_UNLIKELY(len > srv_log_buffer_size / 2))
     log_buffer_extend(ulong((len + 1) * 2));
 
   srv_stats.log_write_requests.inc();
@@ -519,8 +550,10 @@ inline lsn_t mtr_t::write()
 
   log_sys.append_prepare(len);
   const lsn_t start_lsn= log_sys.get_lsn();
+  log_sys.append(header, e - header);
   m_log.for_each_block([](const mtr_buf_t::block_t &b)
                        { log_sys.append(b.begin(), b.used()); });
+  log_sys.append(crc32c, 4);
   m_commit_lsn= start_lsn + len;
   log_sys.append_finish(m_commit_lsn);
   return start_lsn;
