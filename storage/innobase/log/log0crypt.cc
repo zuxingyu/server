@@ -151,20 +151,13 @@ bool log_crypt(byte* buf, lsn_t lsn, ulint size, bool decrypt)
 		/* The log block number is not encrypted. */
 		*aes_ctr_iv =
 #ifdef WORDS_BIGENDIAN
-			~LOG_BLOCK_FLUSH_BIT_MASK
+			0x7FFFFFFFU
 #else
-			~(LOG_BLOCK_FLUSH_BIT_MASK >> 24)
+			0x7FU
 #endif
-			& (*dst = *reinterpret_cast<const uint32_t*>(
-				   buf + LOG_BLOCK_HDR_NO));
-#if LOG_BLOCK_HDR_NO + 4 != LOG_CRYPT_HDR_SIZE
-# error "LOG_BLOCK_HDR_NO has been moved; redo log format affected!"
-#endif
+			& (*dst = *reinterpret_cast<const uint32_t*>(buf));
 		aes_ctr_iv[1] = info.crypt_nonce.word;
 		mach_write_to_8(reinterpret_cast<byte*>(aes_ctr_iv + 2), lsn);
-		ut_ad(log_block_get_start_lsn(lsn,
-					      log_block_get_hdr_no(buf))
-		      == lsn);
 		const uint dst_size
 			= log_sys.log.format == log_t::FORMAT_ENC_10_4
 			? sizeof dst - LOG_BLOCK_KEY
@@ -315,22 +308,22 @@ found:
 	uint dst_len;
 	byte aes_ctr_iv[MY_AES_BLOCK_SIZE];
 
-	const uint src_len = OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_HDR_SIZE;
+	const uint src_len = OS_FILE_LOG_BLOCK_SIZE - 12;
 
-	ulint log_block_no = log_block_get_hdr_no(buf);
+	uint32_t log_block_no = mach_read_from_4(buf) & 0x7FFFFFFFU;
 
 	/* The log block header is not encrypted. */
-	memcpy(dst, buf, LOG_BLOCK_HDR_SIZE);
+	memcpy(dst, buf, 12);
 
 	memcpy(aes_ctr_iv, info->crypt_nonce.bytes, 3);
 	mach_write_to_8(aes_ctr_iv + 3,
 			log_block_get_start_lsn(start_lsn, log_block_no));
 	memcpy(aes_ctr_iv + 11, buf, 4);
-	aes_ctr_iv[11] &= ~(LOG_BLOCK_FLUSH_BIT_MASK >> 24);
+	aes_ctr_iv[11] &= 0x7f;
 	aes_ctr_iv[15] = 0;
 
-	int rc = encryption_crypt(buf + LOG_BLOCK_HDR_SIZE, src_len,
-				  dst + LOG_BLOCK_HDR_SIZE, &dst_len,
+	int rc = encryption_crypt(buf + 12, src_len,
+				  dst + 12, &dst_len,
 				  const_cast<byte*>(info->crypt_key.bytes),
 				  MY_AES_BLOCK_SIZE,
 				  aes_ctr_iv, MY_AES_BLOCK_SIZE,

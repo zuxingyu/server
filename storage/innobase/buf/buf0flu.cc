@@ -2227,7 +2227,7 @@ af_get_pct_for_lsn(
 		return(0);
 	}
 
-	max_async_age = log_get_max_modified_age_async();
+	max_async_age = log_sys.max_modified_age_async;
 
 	if (age < max_async_age && !srv_adaptive_flushing) {
 		/* We have still not reached the max_async point and

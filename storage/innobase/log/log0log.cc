@@ -683,109 +683,6 @@ dberr_t log_t::file::append_to_main_log(span<const byte> buf) noexcept
   return err;
 }
 
-/** Update the log block checksum. */
-inline void log_block_store_checksum(byte* block)
-{
-	log_block_set_checksum(block, log_block_calc_checksum_crc32(block));
-}
-
-/******************************************************//**
-Writes a buffer to a log file. */
-static
-void
-log_write_buf(
-	byte*		buf,		/*!< in: buffer */
-	ulint		len,		/*!< in: buffer len; must be divisible
-					by OS_FILE_LOG_BLOCK_SIZE */
-#ifdef UNIV_DEBUG
-	ulint		pad_len,	/*!< in: pad len in the buffer len */
-#endif /* UNIV_DEBUG */
-	lsn_t		start_lsn,	/*!< in: start lsn of the buffer; must
-					be divisible by
-					OS_FILE_LOG_BLOCK_SIZE */
-	ulint		new_data_offset)/*!< in: start offset of new data in
-					buf: this parameter is used to decide
-					if we have to write a new log file
-					header */
-{
-	ulint		write_len;
-	lsn_t		next_offset;
-	ulint		i;
-
-	ut_ad(log_write_lock_own());
-	ut_ad(!recv_no_log_write);
-	ut_a(len % OS_FILE_LOG_BLOCK_SIZE == 0);
-	ut_a(start_lsn % OS_FILE_LOG_BLOCK_SIZE == 0);
-
-loop:
-	if (len == 0) {
-
-		return;
-	}
-
-	next_offset = log_sys.log.calc_lsn_offset(start_lsn);
-
-	if ((next_offset % log_sys.log.file_size) + len
-	    > log_sys.log.file_size) {
-		/* if the above condition holds, then the below expression
-		is < len which is ulint, so the typecast is ok */
-		write_len = ulint(log_sys.log.file_size
-				  - (next_offset % log_sys.log.file_size));
-	} else {
-		write_len = len;
-	}
-
-	DBUG_PRINT("ib_log",
-		   ("write " LSN_PF " to " LSN_PF
-		    ": len " ULINTPF
-		    " blocks " ULINTPF ".." ULINTPF,
-		    start_lsn, next_offset,
-		    write_len,
-		    log_block_get_hdr_no(buf),
-		    log_block_get_hdr_no(
-			    buf + write_len
-			    - OS_FILE_LOG_BLOCK_SIZE)));
-
-	ut_ad(pad_len >= len
-	      || log_block_get_hdr_no(buf)
-		 == log_block_convert_lsn_to_no(start_lsn));
-
-	/* Calculate the checksums for each log block and write them to
-	the trailer fields of the log blocks */
-
-	for (i = 0; i < write_len / OS_FILE_LOG_BLOCK_SIZE; i++) {
-#ifdef UNIV_DEBUG
-		ulint hdr_no_2 = log_block_get_hdr_no(buf) + i;
-		DBUG_EXECUTE_IF("innodb_small_log_block_no_limit",
-				hdr_no_2 = ((hdr_no_2 - 1) & 0xFUL) + 1;);
-#endif
-		ut_ad(pad_len >= len
-			|| i * OS_FILE_LOG_BLOCK_SIZE >= len - pad_len
-			|| log_block_get_hdr_no(buf + i * OS_FILE_LOG_BLOCK_SIZE) == hdr_no_2);
-		log_block_store_checksum(buf + i * OS_FILE_LOG_BLOCK_SIZE);
-	}
-
-	log_sys.n_log_ios++;
-
-	srv_stats.os_log_pending_writes.inc();
-
-	ut_a((next_offset >> srv_page_size_shift) <= ULINT_MAX);
-
-	log_sys.log.data_write(next_offset, {buf, write_len});
-
-	srv_stats.os_log_pending_writes.dec();
-
-	srv_stats.os_log_written.add(write_len);
-	srv_stats.log_writes.inc();
-
-	if (write_len < len) {
-		start_lsn += write_len;
-		len -= write_len;
-		buf += write_len;
-		goto loop;
-	}
-}
-
 /** Flush the recently written changes to the log file.
 and invoke log_mutex_enter(). */
 static void log_write_flush_to_disk_low(lsn_t lsn)
@@ -840,102 +737,70 @@ Note : the caller must have log_mutex locked, and this
 mutex is released in the function.
 
 */
-static void log_write()
+static lsn_t log_write(lsn_t lsn)
 {
-	ut_ad(log_mutex_own());
-	ut_ad(!recv_no_log_write);
-	lsn_t write_lsn;
-	if (log_sys.buf_free == log_sys.buf_next_to_write) {
-		/* Nothing to write */
-		log_mutex_exit();
-		return;
-	}
+  ut_ad(log_mutex_own());
+  ut_ad(!recv_no_log_write);
+  ut_ad(lsn == log_sys.get_lsn());
 
-	ulint		start_offset;
-	ulint		end_offset;
-	ulint		area_start;
-	ulint		area_end;
-	ulong		write_ahead_size = srv_log_write_ahead_size;
-	ulint		pad_size;
+  if (log_sys.buf_free == log_sys.buf_next_to_write)
+  {
+    /* Nothing to write */
+    log_mutex_exit();
+    return lsn;
+  }
 
-	DBUG_PRINT("ib_log", ("write " LSN_PF " to " LSN_PF,
-			      log_sys.write_lsn,
-			      log_sys.get_lsn()));
+  DBUG_PRINT("ib_log", ("write " LSN_PF " to " LSN_PF,
+                        log_sys.write_lsn, lsn));
 
+  const ulint start_offset= log_sys.buf_next_to_write;
+  const ulint end_offset= log_sys.buf_free;
+  const ulint area_end= ut_calc_align(end_offset,
+                                      ulint{srv_log_write_ahead_size});
+  log_buffer_switch(); // FIXME: move this later!
+  log_sys.log.set_fields(log_sys.write_lsn);
+  lsn_t f= log_sys.log.calc_lsn_offset(log_sys.write_lsn);
 
-	start_offset = log_sys.buf_next_to_write;
-	end_offset = log_sys.buf_free;
+  ulint skip_len= area_end - end_offset;
+  byte *buf= log_sys.buf + start_offset;
+  const byte * const buf_end= log_sys.buf + area_end;
 
-	area_start = ut_2pow_round(start_offset,
-				   ulint(OS_FILE_LOG_BLOCK_SIZE));
-	area_end = ut_calc_align(end_offset, ulint(OS_FILE_LOG_BLOCK_SIZE));
+  if (skip_len)
+  {
+    ulint seq= 1; // FIXME: this should be a property of log_sys!
+    ut_d(const byte *b=)
+    mlog_encode_varint(log_sys.buf + end_offset, skip_len << 2 | 1 << 1 | seq);
+    ut_ad(b <= buf_end);
+    log_sys.set_lsn(lsn += skip_len);
+  }
 
-	ut_ad(area_end - area_start > 0);
-#if 0 // FIXME
-	log_block_set_flush_bit(log_sys.buf + area_start, TRUE);
-	log_block_set_checkpoint_no(
-		log_sys.buf + area_end - OS_FILE_LOG_BLOCK_SIZE,
-		log_sys.next_checkpoint_no);
-#endif
-	write_lsn = log_sys.get_lsn();
-	byte *write_buf = log_sys.buf;
+  log_mutex_exit();
 
-	log_buffer_switch();
+  srv_stats.log_padded.add(skip_len);
 
-	log_sys.log.set_fields(log_sys.write_lsn);
+  do
+  {
+    size_t len= std::min(static_cast<size_t>(buf_end - buf),
+                         static_cast<size_t>(log_sys.log.file_size - f));
+    log_sys.n_log_ios++;
+    srv_stats.os_log_pending_writes.inc();
 
-	log_mutex_exit();
-	/* Erase the end of the last log block. */
-	memset(write_buf + end_offset, 0,
-	       ~end_offset & (OS_FILE_LOG_BLOCK_SIZE - 1));
+    ut_a(f + len < 1ULL << 47);
 
-	/* Calculate pad_size if needed. */
-	pad_size = 0;
-	if (write_ahead_size > OS_FILE_LOG_BLOCK_SIZE) {
-		ulint	end_offset_in_unit;
-		lsn_t	end_offset = log_sys.log.calc_lsn_offset(
-			ut_uint64_align_up(write_lsn, OS_FILE_LOG_BLOCK_SIZE));
-		end_offset_in_unit = (ulint) (end_offset % write_ahead_size);
+    log_sys.log.data_write(f, {buf, len});
+    f= 0;
 
-		if (end_offset_in_unit > 0
-		    && (area_end - area_start) > end_offset_in_unit) {
-			/* The first block in the unit was initialized
-			after the last writing.
-			Needs to be written padded data once. */
-			pad_size = std::min<ulint>(
-				ulint(write_ahead_size) - end_offset_in_unit,
-				srv_log_buffer_size - area_end);
-			::memset(write_buf + area_end, 0, pad_size);
-		}
-	}
+    srv_stats.os_log_pending_writes.dec();
+    srv_stats.os_log_written.add(len);
+    srv_stats.log_writes.inc();
+    buf+= len;
+  }
+  while (UNIV_UNLIKELY(buf != buf_end));
 
-	if (UNIV_UNLIKELY(srv_shutdown_state != SRV_SHUTDOWN_NONE)) {
-		service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
-					       "InnoDB log write: "
-					       LSN_PF, log_sys.write_lsn);
-	}
-
-	if (log_sys.is_physical()
-	    ? log_sys.is_encrypted_physical()
-	    : log_sys.is_encrypted_old()) {
-		log_crypt(write_buf + area_start, log_sys.write_lsn,
-			  area_end - area_start);
-	}
-
-	/* Do the write to the log file */
-	log_write_buf(
-		write_buf + area_start, area_end - area_start + pad_size,
-#ifdef UNIV_DEBUG
-		pad_size,
-#endif /* UNIV_DEBUG */
-		ut_uint64_align_down(log_sys.write_lsn,
-				     OS_FILE_LOG_BLOCK_SIZE),
-		start_offset - area_start);
-	srv_stats.log_padded.add(pad_size);
-	log_sys.write_lsn = write_lsn;
-	if (log_sys.log.data_writes_are_durable())
-		log_sys.set_flushed_lsn(write_lsn);
-	return;
+  log_sys.write_lsn= lsn;
+  if (log_sys.log.data_writes_are_durable())
+    log_sys.set_flushed_lsn(lsn);
+  return lsn;
 }
 
 static group_commit_lock write_lock;
@@ -972,11 +837,7 @@ void log_write_up_to(lsn_t lsn, bool flush_to_disk)
     log_mutex_enter();
     lsn_t write_lsn= log_sys.get_lsn();
     write_lock.set_pending(write_lsn);
-
-    log_write();
-
-    ut_a(log_sys.write_lsn == write_lsn);
-    write_lock.release(write_lsn);
+    write_lock.release(log_write(write_lsn));
   }
 
   if (!flush_to_disk)

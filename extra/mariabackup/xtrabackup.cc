@@ -2611,17 +2611,15 @@ skip:
 static lsn_t xtrabackup_copy_log(lsn_t start_lsn, lsn_t end_lsn, bool last)
 {
 	lsn_t	scanned_lsn	= start_lsn;
-	const byte* log_block = log_sys.buf;
 	bool more_data = false;
+
+#if 0 // FIXME
+	const byte* log_block = log_sys.buf;
 
 	for (ulint scanned_checkpoint = 0;
 	     scanned_lsn < end_lsn;
 	     log_block += OS_FILE_LOG_BLOCK_SIZE) {
-#if 0 // FIXME
 		ulint checkpoint = log_block_get_checkpoint_no(log_block);
-#else
-		ulint checkpoint = 0;
-#endif
 
 		if (scanned_checkpoint > checkpoint
 		    && scanned_checkpoint - checkpoint >= 0x80000000UL) {
@@ -2656,6 +2654,7 @@ static lsn_t xtrabackup_copy_log(lsn_t start_lsn, lsn_t end_lsn, bool last)
 			break;
 		}
 	}
+#endif
 
 	if (more_data && recv_sys.parse(0, STORE_NO)) {
 		msg("Error: copying the log failed");

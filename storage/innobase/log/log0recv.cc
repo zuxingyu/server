@@ -1273,9 +1273,13 @@ loop:
 	for (ulint l = 0; l < len; l += OS_FILE_LOG_BLOCK_SIZE,
 		     buf += OS_FILE_LOG_BLOCK_SIZE,
 		     (*start_lsn) += OS_FILE_LOG_BLOCK_SIZE) {
+#if 0 // FIXME
 		const ulint block_number = log_block_get_hdr_no(buf);
 
 		if (block_number != log_block_convert_lsn_to_no(*start_lsn)) {
+#else
+		if (0) {
+#endif
 			/* Garbage or an incompletely written log block.
 			We will not report any error, because this can
 			happen when InnoDB was killed while it was
@@ -1298,10 +1302,11 @@ fail:
 			});
 
 		if (crc != cksum) {
+#if 0 // FIXME
 			ib::error() << "Invalid log block checksum."
-				    << " block: " << block_number
 				    << " expected: " << crc
 				    << " found: " << cksum;
+#endif
 			goto fail;
 		}
 
@@ -1312,7 +1317,7 @@ fail:
 				  OS_FILE_LOG_BLOCK_SIZE, true)) {
 			goto fail;
 		}
-
+#if 0// FIXME
 		ulint dl = log_block_get_data_len(buf);
 		if (dl < LOG_BLOCK_HDR_SIZE
 		    || (dl != OS_FILE_LOG_BLOCK_SIZE
@@ -1320,6 +1325,7 @@ fail:
 			recv_sys.found_corrupt_log = true;
 			goto fail;
 		}
+#endif
 	}
 
 	if (recv_sys.report(time(NULL))) {
@@ -1531,7 +1537,7 @@ static dberr_t recv_log_recover_10_4()
 	if (crc != cksum) {
 		ib::error() << "Invalid log block checksum."
 			    << " block: "
-			    << log_block_get_hdr_no(buf)
+			    << (mach_read_from_4(buf) & 0x7FFFFFFF)
 			    << " checkpoint no: "
 			    << mach_read_from_4(buf + 8)
 			    << " expected: " << crc
@@ -1548,7 +1554,7 @@ static dberr_t recv_log_recover_10_4()
 	/* On a clean shutdown, the redo log will be logically empty
 	after the checkpoint lsn. */
 
-	if (log_block_get_data_len(buf)
+	if (mach_read_from_2(buf + 4/* LOG_BLOCK_HDR_DATA_LEN */)
 	    != (source_offset & (OS_FILE_LOG_BLOCK_SIZE - 1))) {
 		return DB_ERROR;
 	}
@@ -1618,8 +1624,9 @@ recv_find_max_checkpoint(ulint* max_field)
 		break;
 	case log_t::FORMAT_10_5:
 		if (auto size = mach_read_from_8(buf + log_header::SIZE)) {
+			size &= ~(1ULL << 47);
 			if (size == log_sys.log.file_size) {
-				break;
+				goto current;
 			}
 
 			ib::error() << "Inconsistent redo log size: "
@@ -1690,9 +1697,7 @@ recv_find_max_checkpoint(ulint* max_field)
 		return(DB_ERROR);
 	}
 
-	if (log_sys.log.format == log_t::FORMAT_10_5) {
-		return DB_SUCCESS;
-	} else if (dberr_t err = recv_log_recover_10_4()) {
+	if (dberr_t err = recv_log_recover_10_4()) {
 		ib::error()
 			<< "Upgrade after a crash is not supported."
 			" The redo log was created with " << creator
@@ -1702,26 +1707,11 @@ recv_find_max_checkpoint(ulint* max_field)
 	}
 
 	return(DB_SUCCESS);
-}
-
-/*******************************************************//**
-Calculates the new value for lsn when more data is added to the log. */
-static
-lsn_t
-recv_calc_lsn_on_data_add(
-/*======================*/
-	lsn_t		lsn,	/*!< in: old lsn */
-	ib_uint64_t	len)	/*!< in: this many bytes of data is
-				added, log block headers not included */
-{
-	unsigned frag_len = (lsn % OS_FILE_LOG_BLOCK_SIZE) - LOG_BLOCK_HDR_SIZE;
-	unsigned payload_size = log_sys.payload_size();
-	ut_ad(frag_len < payload_size);
-	lsn_t lsn_len = len;
-	lsn_len += (lsn_len + frag_len) / payload_size
-		* (OS_FILE_LOG_BLOCK_SIZE - payload_size);
-
-	return(lsn + lsn_len);
+current:
+	/* TODO: Seek to the end of the file, read & validate the
+	last checkpoint_size bytes. If it is valid and points to
+	the end of the log, fine. Else, start crash recovery. */
+	return DB_SUCCESS;
 }
 
 /** Trim old log records for a page.
@@ -1992,7 +1982,7 @@ eom_found:
   ut_ad(!*l);
   ut_d(const byte *const el= l + 1);
 
-  const lsn_t end_lsn= recv_calc_lsn_on_data_add(start_lsn, l + 1 - log);
+  const lsn_t end_lsn= start_lsn + l + 1 - log; // FIXME: padding records
   if (UNIV_UNLIKELY(end_lsn > scanned_lsn))
     /* The log record filled a log block, and we require that also the
     next log block should have been scanned in */
@@ -2773,7 +2763,11 @@ bool recv_sys_add_to_parsing_buf(const byte* log_block, lsn_t scanned_lsn)
 		return(false);
 	}
 
+#if 0 // FIXME
 	data_len = log_block_get_data_len(log_block);
+#else
+	data_len = 0;
+#endif
 
 	if (recv_sys.parse_start_lsn >= scanned_lsn) {
 
@@ -2796,10 +2790,6 @@ bool recv_sys_add_to_parsing_buf(const byte* log_block, lsn_t scanned_lsn)
 	ut_ad(data_len >= more_len);
 
 	start_offset = data_len - more_len;
-
-	if (start_offset < LOG_BLOCK_HDR_SIZE) {
-		start_offset = LOG_BLOCK_HDR_SIZE;
-	}
 
 	end_offset = std::min<ulint>(data_len, log_sys.trailer_offset());
 
@@ -2852,7 +2842,6 @@ static bool recv_scan_log_recs(
 {
 	lsn_t		scanned_lsn	= start_lsn;
 	bool		finished	= false;
-	ulint		data_len;
 	bool		more_data	= false;
 	ulint		recv_parsing_buf_size = RECV_PARSING_BUF_SIZE;
 	const bool	last_phase = (*store == STORE_IF_EXISTS);
@@ -2867,16 +2856,15 @@ static bool recv_scan_log_recs(
 	do {
 		ut_ad(!finished);
 
+#if 0 // FIXME
 		data_len = log_block_get_data_len(log_block);
 
 		if (scanned_lsn + data_len > recv_sys.scanned_lsn
-#if 0 // FIXME
 		    && log_block_get_checkpoint_no(log_block)
 		    < recv_sys.scanned_checkpoint_no
 		    && (recv_sys.scanned_checkpoint_no
 			- log_block_get_checkpoint_no(log_block)
 			> 0x80000000UL)
-#endif
 		    ) {
 
 
@@ -2908,6 +2896,7 @@ static bool recv_scan_log_recs(
 			finished = true;
 			break;
 		}
+#endif
 
 		if (scanned_lsn > recv_sys.scanned_lsn) {
 			ut_ad(!srv_log_file_created);
@@ -2980,6 +2969,7 @@ static bool recv_scan_log_recs(
 			more_data = true;
 		}
 
+#if 0
 		if (data_len < OS_FILE_LOG_BLOCK_SIZE) {
 			/* Log data for this group ends here */
 			finished = true;
@@ -2987,6 +2977,7 @@ static bool recv_scan_log_recs(
 		} else {
 			log_block += OS_FILE_LOG_BLOCK_SIZE;
 		}
+#endif
 	} while (log_block < log_end);
 
 	*group_scanned_lsn = scanned_lsn;
@@ -3473,6 +3464,8 @@ completed:
 	recv_sys.apply_log_recs = true;
 
 	mutex_exit(&recv_sys.mutex);
+
+	log_mutex_exit();
 
 	recv_lsn_checks_on = true;
 

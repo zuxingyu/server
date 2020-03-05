@@ -106,15 +106,6 @@ void log_margin_checkpoint_age(ulint margin);
 /** Read the durable LSN */
 #define log_get_flush_lsn() log_sys.get_flushed_lsn()
 
-/****************************************************************
-Get log_sys::max_modified_age_async. It is OK to read the value without
-holding log_sys::mutex because it is constant.
-@return max_modified_age_async */
-UNIV_INLINE
-lsn_t
-log_get_max_modified_age_async(void);
-/*================================*/
-
 /** Calculate the recommended highest values for lsn - last_checkpoint_lsn
 and lsn - buf_get_oldest_modification().
 @param[in]	file_size	requested innodb_log_file_size
@@ -168,38 +159,6 @@ objects! */
 void
 log_check_margins(void);
 
-/************************************************************//**
-Gets a log block flush bit.
-@return TRUE if this block was the first to be written in a log flush */
-UNIV_INLINE
-ibool
-log_block_get_flush_bit(
-/*====================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
-Gets a log block number stored in the header.
-@return log block number stored in the block header */
-UNIV_INLINE
-ulint
-log_block_get_hdr_no(
-/*=================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
-Gets a log block data length.
-@return log block data length measured as a byte offset from the block start */
-UNIV_INLINE
-ulint
-log_block_get_data_len(
-/*===================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
-Sets the log block data length. */
-UNIV_INLINE
-void
-log_block_set_data_len(
-/*===================*/
-	byte*	log_block,	/*!< in/out: log block */
-	ulint	len);		/*!< in: data length */
 /** Calculate the CRC-32C checksum of a log block.
 @param[in]	block	log block
 @return checksum */
@@ -221,22 +180,6 @@ log_block_set_checksum(
 /*===================*/
 	byte*	log_block,	/*!< in/out: log block */
 	ulint	checksum);	/*!< in: checksum */
-/************************************************************//**
-Initializes a log block in the log buffer. */
-UNIV_INLINE
-void
-log_block_init(
-/*===========*/
-	byte*	log_block,	/*!< in: pointer to the log buffer */
-	lsn_t	lsn);		/*!< in: lsn within the log block */
-/************************************************************//**
-Converts a lsn to a log block number.
-@return log block number, it is > 0 and <= 1G */
-UNIV_INLINE
-ulint
-log_block_convert_lsn_to_no(
-/*========================*/
-	lsn_t	lsn);	/*!< in: lsn of a byte within the block */
 /******************************************************//**
 Prints info of the log. */
 void
@@ -249,39 +192,12 @@ void
 log_refresh_stats(void);
 /*===================*/
 
-/* Offsets of a log block header */
-#define	LOG_BLOCK_HDR_NO	0	/* block number which must be > 0 and
-					is allowed to wrap around at 2G; the
-					highest bit is set to 1 if this is the
-					first log block in a log flush write
-					segment */
-#define LOG_BLOCK_FLUSH_BIT_MASK 0x80000000UL
-					/* mask used to get the highest bit in
-					the preceding field */
-#define	LOG_BLOCK_HDR_DATA_LEN	4	/* number of bytes of log written to
-					this block */
-#define	LOG_BLOCK_FIRST_REC_GROUP 6	/* offset of the first start of an
-					mtr log record group in this log block,
-					0 if none; if the value is the same
-					as LOG_BLOCK_HDR_DATA_LEN, it means
-					that the first rec group has not yet
-					been catenated to this log block, but
-					if it will, it will start at this
-					offset; an archive recovery can
-					start parsing the log records starting
-					from this offset in this log block,
-					if value not 0 */
-#define LOG_BLOCK_HDR_SIZE	12	/* size of the log block header in
-					bytes */
-
 #define	LOG_BLOCK_KEY		4	/* encryption key version
 					before LOG_BLOCK_CHECKSUM;
 					in log_t::FORMAT_ENC_10_4 only */
-#define	LOG_BLOCK_CHECKSUM	4	/* 4 byte checksum of the log block
-					contents; in InnoDB versions
-					< 3.23.52 this did not contain the
-					checksum but the same value as
-					LOG_BLOCK_HDR_NO */
+#define	LOG_BLOCK_CHECKSUM	4	/* CRC-32C of the ib_logfile0
+					header, or pre-10.5.2 log block
+					contents */
 
 /** Offsets inside the checkpoint pages (redo log format version 1) @{ */
 /** Checkpoint number */
@@ -517,7 +433,7 @@ public:
     /** the byte offset of the above lsn */
     lsn_t				lsn_offset;
     /** log data file */
-    log_file_t				data_fd;
+    log_file_t data_fd;
     /** mutex protecting appending to fd */
     alignas(CACHE_LINE_SIZE) ib_mutex_t fd_mutex;
     /** write position of fd */
@@ -702,21 +618,6 @@ public:
   void set_check_flush_or_checkpoint(bool flag= true)
   { check_flush_or_checkpoint_.store(flag, std::memory_order_relaxed); }
 
-  /** @return the log block header + trailer size */
-  unsigned framing_size() const
-  {
-    return log.format == FORMAT_ENC_10_4
-      ? LOG_BLOCK_HDR_SIZE + LOG_BLOCK_KEY + LOG_BLOCK_CHECKSUM
-      : LOG_BLOCK_HDR_SIZE + LOG_BLOCK_CHECKSUM;
-  }
-  /** @return the log block payload size */
-  unsigned payload_size() const
-  {
-    return log.format == FORMAT_ENC_10_4
-      ? OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_HDR_SIZE - LOG_BLOCK_CHECKSUM -
-      LOG_BLOCK_KEY
-      : OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_HDR_SIZE - LOG_BLOCK_CHECKSUM;
-  }
   /** @return the log block trailer offset */
   unsigned trailer_offset() const
   {

@@ -1140,11 +1140,10 @@ static dberr_t find_and_check_log_file(bool &log_file_found)
   const os_offset_t size= stat_info.size;
   ut_a(size != (os_offset_t) -1);
 
-  if (size % OS_FILE_LOG_BLOCK_SIZE)
+  if (size < OS_FILE_LOG_BLOCK_SIZE)
   {
     ib::error() << "Log file " << logfile0 << " size " << size
-                << " is not a multiple of " << OS_FILE_LOG_BLOCK_SIZE
-                << " bytes";
+                << " is too small";
     return DB_ERROR;
   }
 
