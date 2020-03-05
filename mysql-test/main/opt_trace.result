@@ -1199,7 +1199,7 @@ EXPLAIN SELECT DISTINCT a FROM t1	{
                   ],
                   "best_covering_index_scan": {
                     "index": "a",
-                    "cost": 4812.5,
+                    "cost": 4354.5,
                     "chosen": true
                   },
                   "group_index_range": {

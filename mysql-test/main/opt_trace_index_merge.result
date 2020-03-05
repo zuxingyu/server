@@ -364,10 +364,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                 
                 {
                     "index": "key1",
-                    "index_scan_cost": 58.252,
-                    "cumulated_index_scan_cost": 58.252,
+                    "index_scan_cost": 40.252,
+                    "cumulated_index_scan_cost": 40.252,
                     "disk_sweep_cost": 1923.1,
-                    "cumulative_total_cost": 1981.4,
+                    "cumulative_total_cost": 1963.4,
                     "usable": true,
                     "matching_rows_now": 2243,
                     "intersect_covering_with_this_index": false,
@@ -376,10 +376,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                 
                 {
                     "index": "key2",
-                    "index_scan_cost": 58.252,
-                    "cumulated_index_scan_cost": 116.5,
+                    "index_scan_cost": 40.252,
+                    "cumulated_index_scan_cost": 80.504,
                     "disk_sweep_cost": 84.518,
-                    "cumulative_total_cost": 201.02,
+                    "cumulative_total_cost": 165.02,
                     "usable": true,
                     "matching_rows_now": 77.636,
                     "intersect_covering_with_this_index": false,
@@ -388,10 +388,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                 
                 {
                     "index": "key3",
-                    "index_scan_cost": 58.252,
-                    "cumulated_index_scan_cost": 174.76,
+                    "index_scan_cost": 40.252,
+                    "cumulated_index_scan_cost": 120.76,
                     "disk_sweep_cost": 0,
-                    "cumulative_total_cost": 174.76,
+                    "cumulative_total_cost": 120.76,
                     "usable": true,
                     "matching_rows_now": 2.6872,
                     "intersect_covering_with_this_index": true,
@@ -404,7 +404,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                 "cause": "no clustered pk index"
             },
             "rows": 2,
-            "cost": 174.76,
+            "cost": 120.76,
             "covering": true,
             "chosen": true
         },
@@ -422,7 +422,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.chosen_range_access_summary'))
         {
             "type": "index_roworder_intersect",
             "rows": 2,
-            "cost": 174.76,
+            "cost": 120.76,
             "covering": true,
             "clustered_pk_scan": false,
             "intersect_of": 
@@ -460,7 +460,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.chosen_range_access_summary'))
             ]
         },
         "rows_for_plan": 2,
-        "cost_for_plan": 174.76,
+        "cost_for_plan": 120.76,
         "chosen": true
     }
 ]
@@ -582,10 +582,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 
                                 {
                                     "index": "key1",
-                                    "index_scan_cost": 58.252,
-                                    "cumulated_index_scan_cost": 58.252,
+                                    "index_scan_cost": 40.252,
+                                    "cumulated_index_scan_cost": 40.252,
                                     "disk_sweep_cost": 1923.1,
-                                    "cumulative_total_cost": 1981.4,
+                                    "cumulative_total_cost": 1963.4,
                                     "usable": true,
                                     "matching_rows_now": 2243,
                                     "intersect_covering_with_this_index": false,
@@ -594,10 +594,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 
                                 {
                                     "index": "key2",
-                                    "index_scan_cost": 58.252,
-                                    "cumulated_index_scan_cost": 116.5,
+                                    "index_scan_cost": 40.252,
+                                    "cumulated_index_scan_cost": 80.504,
                                     "disk_sweep_cost": 84.518,
-                                    "cumulative_total_cost": 201.02,
+                                    "cumulative_total_cost": 165.02,
                                     "usable": true,
                                     "matching_rows_now": 77.636,
                                     "intersect_covering_with_this_index": false,
@@ -610,7 +610,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 "cause": "no clustered pk index"
                             },
                             "rows": 77,
-                            "cost": 201.02,
+                            "cost": 165.02,
                             "covering": false,
                             "chosen": true
                         }
@@ -631,10 +631,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 
                                 {
                                     "index": "key3",
-                                    "index_scan_cost": 58.252,
-                                    "cumulated_index_scan_cost": 58.252,
+                                    "index_scan_cost": 40.252,
+                                    "cumulated_index_scan_cost": 40.252,
                                     "disk_sweep_cost": 1923.1,
-                                    "cumulative_total_cost": 1981.4,
+                                    "cumulative_total_cost": 1963.4,
                                     "usable": true,
                                     "matching_rows_now": 2243,
                                     "intersect_covering_with_this_index": false,
@@ -643,10 +643,10 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 
                                 {
                                     "index": "key4",
-                                    "index_scan_cost": 58.252,
-                                    "cumulated_index_scan_cost": 116.5,
+                                    "index_scan_cost": 40.252,
+                                    "cumulated_index_scan_cost": 80.504,
                                     "disk_sweep_cost": 84.518,
-                                    "cumulative_total_cost": 201.02,
+                                    "cumulative_total_cost": 165.02,
                                     "usable": true,
                                     "matching_rows_now": 77.636,
                                     "intersect_covering_with_this_index": false,
@@ -659,13 +659,13 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.analyzing_range_alternatives'))
                                 "cause": "no clustered pk index"
                             },
                             "rows": 77,
-                            "cost": 201.02,
+                            "cost": 165.02,
                             "covering": false,
                             "chosen": true
                         }
                     }
                 ],
-                "index_roworder_union_cost": 386.73,
+                "index_roworder_union_cost": 314.73,
                 "members": 2,
                 "chosen": true
             }
@@ -686,7 +686,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.chosen_range_access_summary'))
                 {
                     "type": "index_roworder_intersect",
                     "rows": 77,
-                    "cost": 201.02,
+                    "cost": 165.02,
                     "covering": false,
                     "clustered_pk_scan": false,
                     "intersect_of": 
@@ -717,7 +717,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.chosen_range_access_summary'))
                 {
                     "type": "index_roworder_intersect",
                     "rows": 77,
-                    "cost": 201.02,
+                    "cost": 165.02,
                     "covering": false,
                     "clustered_pk_scan": false,
                     "intersect_of": 
@@ -747,7 +747,7 @@ JSON_DETAILED(JSON_EXTRACT(trace, '$**.chosen_range_access_summary'))
             ]
         },
         "rows_for_plan": 154,
-        "cost_for_plan": 386.73,
+        "cost_for_plan": 314.73,
         "chosen": true
     }
 ]
