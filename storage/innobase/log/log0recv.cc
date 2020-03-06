@@ -1517,9 +1517,10 @@ static dberr_t recv_log_format_0_recover(lsn_t lsn, bool crypt)
 	recv_sys.parse_start_lsn = recv_sys.recovered_lsn
 		= recv_sys.scanned_lsn = lsn;
 	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
-		= log_sys.lsn = log_sys.write_lsn
-		= log_sys.current_flush_lsn = log_sys.flushed_to_disk_lsn
-		= lsn;
+		= log_sys.write_lsn = log_sys.current_flush_lsn = lsn;
+	log_sys.set_lsn(lsn);
+	log_sys.set_flushed_lsn(lsn);
+
 	log_sys.next_checkpoint_no = 0;
 	recv_sys.set_block_to_copy(source_offset
 				   & ~(OS_FILE_LOG_BLOCK_SIZE - 1));
@@ -1577,9 +1578,7 @@ static dberr_t recv_log_recover_10_4()
 	recv_sys.parse_start_lsn = recv_sys.recovered_lsn
 		= recv_sys.scanned_lsn = lsn;
 	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
-		= log_sys.lsn = log_sys.write_lsn
-		= log_sys.current_flush_lsn = log_sys.flushed_to_disk_lsn
-		= lsn;
+		= log_sys.write_lsn = log_sys.current_flush_lsn = lsn;
 	log_sys.next_checkpoint_no = 0;
 	recv_sys.set_block_to_copy(source_offset
 				   & ~(OS_FILE_LOG_BLOCK_SIZE - 1));
@@ -3295,7 +3294,7 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 	err = recv_find_max_checkpoint(&max_cp_field);
 
 	if (err != DB_SUCCESS) {
-		recv_sys.recovered_lsn = log_sys.lsn;
+		recv_sys.recovered_lsn = log_sys.get_lsn();
 err_exit:
 		log_mutex_exit();
 		return(err);
@@ -3327,7 +3326,7 @@ err_exit:
 				goto err_exit;
 			}
 		}
-		log_sys.lsn = recv_sys.recovered_lsn;
+		log_sys.set_lsn(recv_sys.recovered_lsn);
 		ut_ad(recv_sys.recovered_lsn == checkpoint_lsn);
 		goto completed;
 	case log_t::FORMAT_10_5:
@@ -3391,7 +3390,7 @@ err_exit:
 		}
 	}
 
-	log_sys.lsn = recv_sys.recovered_lsn;
+	log_sys.set_lsn(recv_sys.recovered_lsn);
 
 #if 0// MDEV-14425 TODO
 	if (recv_needed_recovery) {
@@ -3477,9 +3476,9 @@ completed:
 	ut_ad(recv_needed_recovery
 	      || checkpoint_lsn == recv_sys.recovered_lsn);
 
-	log_sys.buf_free = ulong(log_sys.lsn % OS_FILE_LOG_BLOCK_SIZE);
+	log_sys.write_lsn = log_sys.get_lsn();
+	log_sys.buf_free = log_sys.write_lsn % OS_FILE_LOG_BLOCK_SIZE;
 	log_sys.buf_next_to_write = log_sys.buf_free;
-	log_sys.write_lsn = log_sys.lsn;
 
 	log_sys.last_checkpoint_lsn = checkpoint_lsn;
 	log_sys.next_checkpoint_no = ++checkpoint_no;

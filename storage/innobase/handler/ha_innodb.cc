@@ -18605,11 +18605,11 @@ checkpoint_now_set(THD*, st_mysql_sys_var*, void*, const void* save)
 	if (*(my_bool*) save) {
 		mysql_mutex_unlock(&LOCK_global_system_variables);
 
-		while (log_sys.last_checkpoint_lsn < log_sys.lsn) {
+		while (log_sys.last_checkpoint_lsn < log_sys.get_lsn()) {
 			log_make_checkpoint();
 		}
 
-		dberr_t err = fil_write_flushed_lsn(log_sys.lsn);
+		dberr_t err = fil_write_flushed_lsn(log_sys.get_lsn());
 
 		if (err != DB_SUCCESS) {
 			ib::warn() << "Checkpoint set failed " << err;

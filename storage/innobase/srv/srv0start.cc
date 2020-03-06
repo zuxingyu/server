@@ -385,12 +385,12 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 
   log_mutex_enter();
   ut_d(recv_no_log_write= false);
-  log_sys.lsn= lsn;
-  log_sys.log.set_lsn(log_sys.lsn);
+  log_sys.set_lsn(lsn);
+  log_sys.log.set_lsn(lsn);
   log_sys.log.set_lsn_offset(0);
 
   log_sys.buf_next_to_write= 0;
-  log_sys.write_lsn= log_sys.lsn;
+  log_sys.write_lsn= lsn;
 
   log_sys.next_checkpoint_no= 0;
   log_sys.last_checkpoint_lsn= 0;
@@ -1040,7 +1040,7 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 
 		log_mutex_enter();
 
-		flushed_lsn = log_sys.lsn;
+		flushed_lsn = log_sys.get_lsn();
 
 		{
 			ib::info	info;
@@ -1075,10 +1075,9 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 			     << " bytes; LSN=" << flushed_lsn;
 		}
 
-		bool do_flush_logs = flushed_lsn != log_sys.flushed_to_disk_lsn;
 		log_mutex_exit();
 
-		if (do_flush_logs) {
+		if (flushed_lsn != log_sys.get_flushed_lsn()) {
 			log_write_up_to(flushed_lsn, false);
 		}
 		log_sys.log.data_flush_data_only();
