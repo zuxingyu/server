@@ -1503,7 +1503,7 @@ std::vector<std::string> get_existing_log_files_paths() {
 
 dberr_t create_data_file(os_offset_t size)
 {
-  ut_ad(size > LOG_MAIN_FILE_SIZE);
+  ut_ad(size >= 512);
 
   const auto path= get_log_file_path(LOG_DATA_FILE_NAME);
   os_file_delete_if_exists(innodb_log_file_key, path.c_str(), nullptr);

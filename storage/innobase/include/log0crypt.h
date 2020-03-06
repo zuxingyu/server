@@ -46,30 +46,24 @@ uint32_t log_crypt_key_version();
 /** Read the MariaDB 10.1 checkpoint crypto (version, msg and iv) info.
 @param[in]	buf	checkpoint buffer
 @return	whether the operation was successful */
-UNIV_INTERN
-bool
-log_crypt_101_read_checkpoint(const byte* buf);
+ATTRIBUTE_COLD bool log_crypt_101_read_checkpoint(const byte* buf);
 
 /** Decrypt a MariaDB 10.1 redo log block.
 @param[in,out]	buf		log block
 @param[in]	start_lsn	server start LSN
 @return	whether the decryption was successful */
-bool log_crypt_101_read_block(byte* buf, lsn_t start_lsn);
+ATTRIBUTE_COLD bool log_crypt_101_read_block(byte* buf, lsn_t start_lsn);
 
 /** Read the checkpoint crypto (version, msg and iv) info.
 @param[in]	buf	checkpoint buffer
 @return	whether the operation was successful */
-UNIV_INTERN
-bool
-log_crypt_read_checkpoint_buf(const byte* buf);
+ATTRIBUTE_COLD bool log_crypt_read_checkpoint_buf(const byte* buf);
 
-/** Encrypt or decrypt log blocks.
-@param[in,out]	buf	log blocks to encrypt or decrypt
+/** Decrypt a log block when upgrading from MariaDB 10.2.5 to 10.5.1.
+@param[in,out]	buf	512-byte log block to decrypt
 @param[in]	lsn	log sequence number of the start of the buffer
-@param[in]	size	size of the buffer, in bytes
-@param[in]	decrypt	whether to decrypt, instead of encrypting
-@return	whether the operation succeeded (encrypt always does) */
-bool log_crypt(byte* buf, lsn_t lsn, ulint size, bool decrypt= false);
+@return	whether the operation succeeded */
+ATTRIBUTE_COLD bool log_decrypt_10_4(byte* buf, lsn_t lsn);
 
 /** Encrypt or decrypt a temporary file block.
 @param[in]	src		block to encrypt or decrypt

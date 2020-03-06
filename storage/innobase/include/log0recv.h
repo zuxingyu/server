@@ -149,7 +149,7 @@ struct recv_dblwr_t {
 /** the recovery state and buffered records for a page */
 struct page_recv_t
 {
-  /** Recovery state */
+  /** Recovery state; protected by recv_sys.mutex */
   enum
   {
     /** not yet processed */
@@ -216,10 +216,14 @@ struct page_recv_t
 };
 
 /** Recovery system data structure */
-struct recv_sys_t{
-	ib_mutex_t		mutex;	/*!< mutex protecting the fields apply_log_recs,
-				n_addrs, and the state field in each recv_addr
-				struct */
+struct recv_sys_t
+{
+  /** mutex protecting apply_log_recs and page_recv_t::state */
+  ib_mutex_t mutex;
+  /** whether recv_recover_page(), invoked from buf_page_io_complete(),
+  should apply log records*/
+  bool apply_log_recs;
+
 	ib_mutex_t		writer_mutex;/*!< mutex coordinating
 				flushing between recv_writer_thread and
 				the recovery thread. */
@@ -230,9 +234,6 @@ struct recv_sys_t{
 	buf_flush_t		flush_type;/*!< type of the flush request.
 				BUF_FLUSH_LRU: flush end of LRU, keeping free blocks.
 				BUF_FLUSH_LIST: flush all of blocks. */
-	/** whether recv_recover_page(), invoked from buf_page_io_complete(),
-	should apply log records*/
-	bool		apply_log_recs;
 	/** whether recv_apply_hashed_log_recs() is running */
 	bool		apply_batch_on;
 	byte*		buf;	/*!< buffer for parsing log records */
@@ -246,9 +247,6 @@ struct recv_sys_t{
 	lsn_t		scanned_lsn;
 				/*!< the log data has been scanned up to this
 				lsn */
-	ulint		scanned_checkpoint_no;
-				/*!< the log data has been scanned up to this
-				checkpoint number (lowest 4 bytes) */
 	ulint		recovered_offset;
 				/*!< start offset of non-parsed log records in
 				buf */
@@ -265,6 +263,9 @@ struct recv_sys_t{
 				during log scan or apply */
 	/** the time when progress was last reported */
 	time_t		progress_time;
+
+  /** The sequence bit of the next record to parse */
+  bool sequence_bit;
 
   using map = std::map<const page_id_t, page_recv_t,
                        std::less<const page_id_t>,

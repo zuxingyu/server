@@ -159,27 +159,6 @@ objects! */
 void
 log_check_margins(void);
 
-/** Calculate the CRC-32C checksum of a log block.
-@param[in]	block	log block
-@return checksum */
-inline ulint log_block_calc_checksum_crc32(const byte* block);
-
-/************************************************************//**
-Gets a log block checksum field value.
-@return checksum */
-UNIV_INLINE
-ulint
-log_block_get_checksum(
-/*===================*/
-	const byte*	log_block);	/*!< in: log block */
-/************************************************************//**
-Sets a log block checksum field value. */
-UNIV_INLINE
-void
-log_block_set_checksum(
-/*===================*/
-	byte*	log_block,	/*!< in/out: log block */
-	ulint	checksum);	/*!< in: checksum */
 /******************************************************//**
 Prints info of the log. */
 void
@@ -191,34 +170,6 @@ Refreshes the statistics used to print per-second averages. */
 void
 log_refresh_stats(void);
 /*===================*/
-
-#define	LOG_BLOCK_KEY		4	/* encryption key version
-					before LOG_BLOCK_CHECKSUM;
-					in log_t::FORMAT_ENC_10_4 only */
-#define	LOG_BLOCK_CHECKSUM	4	/* CRC-32C of the ib_logfile0
-					header, or pre-10.5.2 log block
-					contents */
-
-/** Offsets inside the checkpoint pages (redo log format version 1) @{ */
-/** Checkpoint number */
-#define LOG_CHECKPOINT_NO		0
-/** Log sequence number up to which all changes have been flushed */
-#define LOG_CHECKPOINT_LSN		8
-/** Byte offset of the log record corresponding to LOG_CHECKPOINT_LSN */
-#define LOG_CHECKPOINT_OFFSET		16
-/** srv_log_buffer_size at the time of the checkpoint (not used) */
-#define LOG_CHECKPOINT_LOG_BUF_SIZE	24
-/** MariaDB 10.2.5 encrypted redo log encryption key version (32 bits)*/
-#define LOG_CHECKPOINT_CRYPT_KEY	32
-/** MariaDB 10.2.5 encrypted redo log random nonce (32 bits) */
-#define LOG_CHECKPOINT_CRYPT_NONCE	36
-/** MariaDB 10.2.5 encrypted redo log random message (MY_AES_BLOCK_SIZE) */
-#define LOG_CHECKPOINT_CRYPT_MESSAGE	40
-/** start LSN of the MLOG_CHECKPOINT mini-transaction corresponding
-to this checkpoint, or 0 if the information has not been written */
-#define LOG_CHECKPOINT_END_LSN		OS_FILE_LOG_BLOCK_SIZE - 16
-
-/* @} */
 
 /** Offsets of a log file header */
 namespace log_header
@@ -262,8 +213,6 @@ namespace log_header
 #define LOG_CHECKPOINT_2	(3 * OS_FILE_LOG_BLOCK_SIZE)
 					/* second checkpoint field in the log
 					header */
-/** size of LOG_FILE_NAME (header + checkpoints */
-constexpr size_t LOG_MAIN_FILE_SIZE= 4 * OS_FILE_LOG_BLOCK_SIZE;
 
 typedef ib_mutex_t	LogSysMutex;
 typedef ib_mutex_t	FlushOrderMutex;
@@ -391,6 +340,10 @@ private:
   This must hold if lsn - last_checkpoint_lsn > max_checkpoint_age. */
   std::atomic<bool> check_flush_or_checkpoint_;
 public:
+#if 0
+  /** The sequence bit of the next record to write */
+  bool sequence_bit;
+#endif
 
 	MY_ALIGNED(CACHE_LINE_SIZE)
 	LogSysMutex	mutex;		/*!< mutex protecting the log */
@@ -442,14 +395,11 @@ public:
     log_file_t fd;
 
   public:
-    /** used only in recovery: recovery scan succeeded up to this
-    lsn in this log group */
-    lsn_t				scanned_lsn;
-
     /** opens log files which must be closed prior this call */
     void open_files(std::string path);
     /** renames log file */
     dberr_t main_rename(std::string path) { return fd.rename(path); }
+    os_offset_t main_file_size() const { return fd_offset; }
     /** reads from main log files */
     void main_read(os_offset_t offset, span<byte> buf);
     /** writes buffer to log file
@@ -489,7 +439,11 @@ public:
     @param[in]	lsn	log sequence number
     @return offset within the log */
     inline lsn_t calc_lsn_offset(lsn_t lsn) const;
-    lsn_t calc_lsn_offset_old(lsn_t lsn) const;
+    /** Calculate the offset of a log sequence number
+    in an old redo log file (during upgrade check).
+    @param[in]	lsn	log sequence number
+    @return byte offset within the log */
+    inline lsn_t calc_lsn_offset_old(lsn_t lsn) const;
 
     /** Set the field values to correspond to a given lsn. */
     void set_fields(lsn_t lsn)
@@ -613,14 +567,6 @@ public:
   { return check_flush_or_checkpoint_.load(std::memory_order_relaxed); }
   void set_check_flush_or_checkpoint(bool flag= true)
   { check_flush_or_checkpoint_.store(flag, std::memory_order_relaxed); }
-
-  /** @return the log block trailer offset */
-  unsigned trailer_offset() const
-  {
-    return log.format == FORMAT_ENC_10_4
-      ? OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_CHECKSUM - LOG_BLOCK_KEY
-      : OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_CHECKSUM;
-  }
 
   size_t get_pending_flushes() const
   {

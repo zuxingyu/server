@@ -324,7 +324,7 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
          sizeof log_header::CREATOR_CURRENT);
   static_assert(log_header::CREATOR_END - log_header::CREATOR ==
                 sizeof log_header::CREATOR_CURRENT, "compatibility");
-  log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
+  mach_write_to_4(&buf[512 - 4], ut_crc32(buf, 512 - 4));
   buf+= 512;
 
   /* Write FILE_ID records for any non-predefined tablespaces. */
@@ -1109,17 +1109,17 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 	DBUG_RETURN(flushed_lsn);
 }
 
-/** Tries to locate LOG_FILE_NAME and check it's size, etc
+/** Tries to locate log files and check their size, etc
 @param[out]	log_file_found	returns true here if correct file was found
-@return	dberr_t with DB_SUCCESS or some error */
-static dberr_t find_and_check_log_file(bool &log_file_found)
+@return DB_SUCCESS or some error */
+static dberr_t find_and_check_log(bool &log_file_found)
 {
   log_file_found= false;
 
   auto logfile0= get_log_file_path();
   os_file_stat_t stat_info;
-  const dberr_t err= os_file_get_status(logfile0.c_str(), &stat_info, false,
-                                        srv_read_only_mode);
+  dberr_t err= os_file_get_status(logfile0.c_str(), &stat_info, false,
+                                  srv_read_only_mode);
 
   auto is_operation_restore= []() -> bool {
     return srv_operation == SRV_OPERATION_RESTORE ||
@@ -1140,24 +1140,45 @@ static dberr_t find_and_check_log_file(bool &log_file_found)
   if (!srv_file_check_mode(logfile0.c_str()))
     return DB_ERROR;
 
-  const os_offset_t size= stat_info.size;
-  ut_a(size != (os_offset_t) -1);
+  ut_a(stat_info.size != (os_offset_t) -1);
 
-  if (size < OS_FILE_LOG_BLOCK_SIZE)
+  if (stat_info.size == 0 && is_operation_restore())
   {
-    ib::error() << "Log file " << logfile0 << " size " << size
-                << " is too small";
-    return DB_ERROR;
-  }
-
-  if (size == 0 && is_operation_restore())
-  {
-    /* Tolerate an empty LOG_FILE_NAME from a previous run of
+    /* Tolerate an empty "ib_logfile0" from a previous run of
     mariabackup --prepare. */
     return DB_NOT_FOUND;
   }
 
-  srv_log_file_size= size;
+  if (stat_info.size < 512)
+  {
+    ib::error() << "Log file " << logfile0 << " size " << stat_info.size
+                << " is too small";
+    return DB_ERROR;
+  }
+
+  auto logdata= get_log_file_path(LOG_DATA_FILE_NAME);
+
+  err= os_file_get_status(logdata.c_str(), &stat_info, false,
+                          srv_read_only_mode);
+  if (err == DB_NOT_FOUND)
+  {
+    if (is_operation_restore())
+      return DB_NOT_FOUND;
+
+    return DB_SUCCESS;
+  }
+
+  ut_a(stat_info.size != (os_offset_t) -1);
+
+  if (!stat_info.size || (stat_info.size & 511))
+  {
+    ib::error() << "Log file " << logdata << " size " << stat_info.size
+                << " is incorrect";
+    return DB_ERROR;
+  }
+
+  srv_log_file_size= stat_info.size;
+  log_sys.log.file_size= stat_info.size;
 
   log_file_found= true;
   return DB_SUCCESS;
@@ -1443,7 +1464,7 @@ dberr_t srv_start(bool create_new_db)
 		srv_log_file_size = 0;
 
 		bool log_file_found;
-		if (dberr_t err = find_and_check_log_file(log_file_found)) {
+		if (dberr_t err = find_and_check_log(log_file_found)) {
 			if (err == DB_NOT_FOUND) {
 				return DB_SUCCESS;
 			}

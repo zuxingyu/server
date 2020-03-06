@@ -1022,7 +1022,6 @@ void recv_sys_t::create()
 	len = 0;
 	parse_start_lsn = 0;
 	scanned_lsn = 0;
-	scanned_checkpoint_no = 0;
 	recovered_offset = 0;
 	recovered_lsn = 0;
 	found_corrupt_log = false;
@@ -1218,8 +1217,8 @@ fail:
 			break;
 		}
 
-		ulint crc = log_block_calc_checksum_crc32(buf);
-		ulint cksum = log_block_get_checksum(buf);
+		uint32_t crc = ut_crc32(buf, 512 - 4);
+		uint32_t cksum = mach_read_from_4(&buf[512 - 4]);
 
 		DBUG_EXECUTE_IF("log_intermittent_checksum_mismatch", {
 				static int block_counter;
@@ -1237,13 +1236,6 @@ fail:
 			goto fail;
 		}
 
-		if ((is_physical()
-		     ? is_encrypted_physical()
-		     : is_encrypted_old())
-		    && !log_crypt(buf, *start_lsn,
-				  OS_FILE_LOG_BLOCK_SIZE, true)) {
-			goto fail;
-		}
 #if 0// FIXME
 		ulint dl = log_block_get_data_len(buf);
 		if (dl < LOG_BLOCK_HDR_SIZE
@@ -1270,18 +1262,6 @@ fail:
 }
 
 
-/** Check the consistency of a log header block.
-@param[in]	log header block
-@return true if ok */
-static
-bool
-recv_check_log_header_checksum(
-	const byte*	buf)
-{
-	return(log_block_get_checksum(buf)
-	       == log_block_calc_checksum_crc32(buf));
-}
-
 static bool redo_file_sizes_are_correct()
 {
   auto paths= get_existing_log_files_paths();
@@ -1304,15 +1284,32 @@ static bool redo_file_sizes_are_correct()
   return false;
 }
 
+/** Calculate the checksum for a log block using the pre-10.2.2 algorithm. */
+inline uint32_t log_block_calc_checksum_format_0(const byte *block)
+{
+  uint32_t sum= 1;
+
+  for (ulint i= 0, sh= 0; i < 512 - 4; i++)
+  {
+    ulint b= ulint{block[i]};
+    sum&= 0x7FFFFFFFUL;
+    sum+= b;
+    sum+= b << sh++;
+    if (sh == 24)
+      sh= 0;
+  }
+
+  return sum;
+}
+
 /** Determine if a redo log from before MariaDB 10.2.2 is clean.
 @return error code
 @retval DB_SUCCESS      if the redo log is clean
 @retval DB_CORRUPTION   if the redo log is corrupted
 @retval DB_ERROR        if the redo log is not empty */
-static dberr_t recv_log_recover_pre_10_2()
+ATTRIBUTE_COLD static dberr_t recv_log_recover_pre_10_2()
 {
   uint64_t max_no= 0;
-  uint64_t checkpoint_no;
   byte *buf= log_sys.buf;
 
   ut_ad(log_sys.log.format == 0);
@@ -1348,17 +1345,17 @@ static dberr_t recv_log_recover_pre_10_2()
        continue;
      }
 
-    checkpoint_no = mach_read_from_8(buf + LOG_CHECKPOINT_NO);
-
     if (!log_crypt_101_read_checkpoint(buf))
     {
       ib::error() << "Decrypting checkpoint failed";
       continue;
     }
 
+    const uint64_t checkpoint_no= mach_read_from_8(buf);
+
     DBUG_PRINT("ib_log", ("checkpoint " UINT64PF " at " LSN_PF " found",
                           checkpoint_no,
-                          mach_read_from_8(buf + LOG_CHECKPOINT_LSN)));
+                          mach_read_from_8(buf + CHECKPOINT_LSN)));
 
     if (checkpoint_no >= max_no)
     {
@@ -1390,7 +1387,8 @@ static dberr_t recv_log_recover_pre_10_2()
 
   recv_sys.read(source_offset & ~511, {buf, 512});
 
-  if (log_block_calc_checksum_format_0(buf) != log_block_get_checksum(buf) &&
+  if (log_block_calc_checksum_format_0(buf) !=
+      mach_read_from_4(&buf[512 - 4]) &&
       !log_crypt_101_read_block(buf, lsn))
   {
     ib::error() << NO_UPGRADE_RECOVERY_MSG << ", and it appears corrupted.";
@@ -1401,8 +1399,7 @@ static dberr_t recv_log_recover_pre_10_2()
   {
     /* Mark the redo log for upgrading. */
     srv_log_file_size= 0;
-    recv_sys.parse_start_lsn= recv_sys.recovered_lsn= recv_sys.scanned_lsn=
-      lsn;
+    recv_sys.parse_start_lsn= recv_sys.scanned_lsn= lsn;
     log_sys.last_checkpoint_lsn= log_sys.next_checkpoint_lsn=
       log_sys.write_lsn= log_sys.current_flush_lsn= lsn;
     log_sys.next_checkpoint_no= 0;
@@ -1418,11 +1415,13 @@ static dberr_t recv_log_recover_pre_10_2()
   return DB_ERROR;
 }
 
-/** Same as cals_lsn_offset() except that it supports multiple files */
-lsn_t log_t::file::calc_lsn_offset_old(lsn_t lsn) const
+/** Calculate the offset of a log sequence number
+in an old redo log file (during upgrade check).
+@param[in]	lsn	log sequence number
+@return byte offset within the log */
+inline lsn_t log_t::file::calc_lsn_offset_old(lsn_t lsn) const
 {
   constexpr size_t LOG_FILE_HDR_SIZE= 2048;
-  ut_ad(log_sys.mutex.is_owned() || log_write_lock_own());
   const lsn_t size= (file_size - LOG_FILE_HDR_SIZE) * recv_sys.files_size();
   lsn_t l= lsn - this->lsn;
   if (longlong(l) < 0)
@@ -1440,198 +1439,237 @@ lsn_t log_t::file::calc_lsn_offset_old(lsn_t lsn) const
 @retval	DB_SUCCESS	if the redo log is clean
 @retval	DB_CORRUPTION	if the redo log is corrupted
 @retval	DB_ERROR	if the redo log is not empty */
-static dberr_t recv_log_recover_10_4()
+ATTRIBUTE_COLD static dberr_t recv_log_recover_10_4()
 {
-	const lsn_t	lsn = log_sys.log.get_lsn();
-	const lsn_t	source_offset =	log_sys.log.calc_lsn_offset_old(lsn);
-	byte*		buf = log_sys.buf;
+  uint64_t max_no= 0;
+  byte *buf= log_sys.buf;
+  lsn_t lsn= 0;
 
-	if (!redo_file_sizes_are_correct()) {
-		return DB_CORRUPTION;
-	}
+  /** the checkpoint LSN field */
+  constexpr uint CHECKPOINT_LSN= 8;
+  /** Byte offset of the log record corresponding to LOG_CHECKPOINT_LSN */
+  constexpr uint CHECKPOINT_OFFSET= 16;
+  /** start LSN of the MLOG_CHECKPOINT mini-transaction corresponding
+  to this checkpoint, or 0 if the information has not been written */
+  constexpr uint CHECKPOINT_END_LSN= 512 - 16;
 
-	log_sys.log.main_read(source_offset & ~(OS_FILE_LOG_BLOCK_SIZE - 1),
-			      {buf, OS_FILE_LOG_BLOCK_SIZE});
+  for (ulint field= LOG_CHECKPOINT_1; field <= LOG_CHECKPOINT_2;
+       field += LOG_CHECKPOINT_2 - LOG_CHECKPOINT_1)
+  {
+    log_sys.log.main_read(field, {buf, OS_FILE_LOG_BLOCK_SIZE});
 
-	ulint crc = log_block_calc_checksum_crc32(buf);
-	ulint cksum = log_block_get_checksum(buf);
+    const uint32_t crc32= ut_crc32(buf, 512 - 4);
+    const uint32_t cksum= mach_read_from_4(&buf[512 - 4]);
 
-	if (crc != cksum) {
-		ib::error() << "Invalid log block checksum."
-			    << " block: "
-			    << (mach_read_from_4(buf) & 0x7FFFFFFF)
-			    << " checkpoint no: "
-			    << mach_read_from_4(buf + 8)
-			    << " expected: " << crc
-			    << " found: " << cksum;
-		return DB_CORRUPTION;
-	}
+    if (crc32 != cksum)
+    {
+      DBUG_PRINT("ib_log",
+                 ("invalid checkpoint, at " ULINTPF
+                  ", checksum %x expected %x", field, cksum, crc32));
+      continue;
+    }
 
-	if (log_sys.log.is_encrypted_old()
-	    && !log_crypt(buf, lsn & (OS_FILE_LOG_BLOCK_SIZE - 1),
-			  OS_FILE_LOG_BLOCK_SIZE, true)) {
-		return DB_ERROR;
-	}
+    if (log_sys.is_encrypted_old() && !log_crypt_read_checkpoint_buf(buf))
+    {
+      ib::error() << "Reading checkpoint encryption info failed.";
+      continue;
+    }
 
-	/* On a clean shutdown, the redo log will be logically empty
-	after the checkpoint lsn. */
+    const lsn_t checkpoint_lsn= mach_read_from_8(buf + CHECKPOINT_LSN);
+    const lsn_t end_lsn= mach_read_from_8(buf + CHECKPOINT_END_LSN);
+    if (end_lsn && end_lsn < checkpoint_lsn)
+      continue;
 
-	if (mach_read_from_2(buf + 4/* LOG_BLOCK_HDR_DATA_LEN */)
-	    != (source_offset & (OS_FILE_LOG_BLOCK_SIZE - 1))) {
-		return DB_ERROR;
-	}
+    uint64_t checkpoint_no= mach_read_from_8(buf);
 
-	/* Mark the redo log for upgrading. */
-	srv_log_file_size = 0;
-	recv_sys.parse_start_lsn = recv_sys.recovered_lsn
-		= recv_sys.scanned_lsn = lsn;
-	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
-		= log_sys.write_lsn = log_sys.current_flush_lsn = lsn;
-	log_sys.next_checkpoint_no = 0;
-	return DB_SUCCESS;
+    DBUG_PRINT("ib_log", ("checkpoint " UINT64PF " at " LSN_PF " found",
+                          checkpoint_no, checkpoint_lsn));
+
+    if (checkpoint_no >= max_no)
+    {
+      max_no= checkpoint_no;
+      lsn= checkpoint_lsn;
+      log_sys.log.set_lsn(lsn);
+      log_sys.log.set_lsn_offset(mach_read_from_8(buf + CHECKPOINT_OFFSET));
+      log_sys.next_checkpoint_no= checkpoint_no;
+    }
+  }
+
+  if (!lsn)
+  {
+    /* Before 10.2.2, we could get here during database initialization
+    if we created an LOG_FILE_NAME file that was filled with zeroes,
+    and were killed. After 10.2.2, we would reject such a file already
+    earlier, when checking the file header. */
+    ib::error() << "No valid checkpoint found (corrupted redo log).";
+    return DB_ERROR;
+  }
+
+  log_sys.set_lsn(lsn);
+  log_sys.set_flushed_lsn(lsn);
+  const lsn_t source_offset= log_sys.log.calc_lsn_offset_old(lsn);
+
+  if (!redo_file_sizes_are_correct())
+    return DB_CORRUPTION;
+
+  log_sys.log.main_read(source_offset & ~511, {buf, 512});
+
+  const uint32_t crc= ut_crc32(buf, 512 - 4);
+  const uint32_t cksum= mach_read_from_4(&buf[512 - 4]);
+
+  if (crc != cksum)
+  {
+    ib::error() << "Invalid log block checksum. block: "
+		<< (mach_read_from_4(buf) & 0x7FFFFFFF)
+		<< " checkpoint no: "
+		<< mach_read_from_4(buf + 8)
+		<< " expected: " << crc << " found: " << cksum;
+    return DB_CORRUPTION;
+  }
+
+  if (log_sys.is_encrypted_old() && !log_decrypt_10_4(buf, lsn & ~511))
+    return DB_ERROR;
+
+  /* On a clean shutdown, the redo log will be logically empty
+  after the checkpoint lsn. */
+
+  if (mach_read_from_2(buf + 4) != (source_offset & 511))
+    return DB_ERROR;
+
+  /* Mark the redo log for upgrading. */
+  srv_log_file_size= 0;
+  recv_sys.parse_start_lsn= recv_sys.scanned_lsn= lsn;
+  log_sys.last_checkpoint_lsn= log_sys.next_checkpoint_lsn=
+    log_sys.write_lsn= log_sys.current_flush_lsn= lsn;
+  log_sys.next_checkpoint_no= 0;
+  return DB_SUCCESS;
 }
 
-/** Find the latest checkpoint in the log header.
-@param[out]	max_field	LOG_CHECKPOINT_1 or LOG_CHECKPOINT_2
-@return error code or DB_SUCCESS */
-dberr_t
-recv_find_max_checkpoint(ulint* max_field)
+/** Determine if the redo log is clean.
+@return error code
+@retval DB_SUCCESS      if the redo log is clean
+@retval DB_CORRUPTION   if the redo log is corrupted
+@retval DB_ERROR        if the redo log is not empty and cannot be upgraded
+@retval DB_FAIL         if crash recovery is needed */
+static dberr_t recv_check()
 {
-	ib_uint64_t	max_no;
-	ib_uint64_t	checkpoint_no;
-	ulint		field;
-	byte*		buf;
+  byte *buf= log_sys.buf;
 
-	max_no = 0;
-	*max_field = 0;
+  ut_ad(!(log_sys.log.file_size & 511));
+  log_sys.log.main_read(0, {buf, OS_FILE_LOG_BLOCK_SIZE});
+  /* Check the header page checksum. There was no checksum in the
+  first redo log format (version 0). */
+  log_sys.log.format= mach_read_from_4(buf + log_header::FORMAT);
+  log_sys.log.key_version= 0;
 
-	ut_ad(!(log_sys.log.file_size & 511));
+  if (log_sys.log.format != log_t::FORMAT_3_23 &&
+      ut_crc32(buf, 512 - 4) != mach_read_from_4(&buf[512 - 4]))
+  {
+    ib::error() << "Invalid redo log header checksum.";
+    return DB_CORRUPTION;
+  }
 
-	buf = log_sys.buf;
+  char creator[log_header::CREATOR_END - log_header::CREATOR + 1];
+  memcpy(creator, buf + log_header::CREATOR, sizeof creator);
+  /* Ensure that the string is NUL-terminated. */
+  creator[log_header::CREATOR_END - log_header::CREATOR] = 0;
 
-	log_sys.log.main_read(0, {buf, OS_FILE_LOG_BLOCK_SIZE});
-	/* Check the header page checksum. There was no
-	checksum in the first redo log format (version 0). */
-	log_sys.log.format = mach_read_from_4(buf + log_header::FORMAT);
-	if (log_sys.is_physical()) {
-		log_sys.log.key_version = mach_read_from_4(
-			buf + log_header::KEY_VERSION);
-	} else {
-		log_sys.log.key_version = 0;
-	}
+  switch (log_sys.log.format) {
+    dberr_t err;
+  case log_t::FORMAT_3_23:
+    return recv_log_recover_pre_10_2();
+  case log_t::FORMAT_10_2:
+  case log_t::FORMAT_10_2 | log_t::FORMAT_ENCRYPTED:
+  case log_t::FORMAT_10_3:
+  case log_t::FORMAT_10_3 | log_t::FORMAT_ENCRYPTED:
+  case log_t::FORMAT_10_4:
+  case log_t::FORMAT_10_4 | log_t::FORMAT_ENCRYPTED:
+    err= recv_log_recover_10_4();
+    if (err != DB_SUCCESS)
+      ib::error() << "Upgrade after a crash is not supported."
+	      " The redo log was created with " << creator
+		  << (err == DB_ERROR
+		      ? "." : ", and it appears corrupted.");
+    return err;
+  case log_t::FORMAT_10_5:
+    log_sys.log.key_version= mach_read_from_4(buf + log_header::KEY_VERSION);
 
-	if (log_sys.log.format != log_t::FORMAT_3_23
-	    && !recv_check_log_header_checksum(buf)) {
-		ib::error() << "Invalid redo log header checksum.";
-		return(DB_CORRUPTION);
-	}
+    if (auto size= mach_read_from_8(buf + log_header::SIZE))
+    {
+      size &= ~(1ULL << 47);
+      if (size == log_sys.log.file_size)
+        break;
+      ib::error() << "Inconsistent redo log size: "
+                  << size << "!=" << log_sys.log.file_size;
+    }
+    /* fall through */
+  default:
+    ib::error() << "Unsupported redo log format."
+	    " The redo log was created with " << creator << ".";
+    return DB_ERROR;
+  }
 
-	char creator[log_header::CREATOR_END - log_header::CREATOR + 1];
+  /* TODO: Seek to the end of the file, read & validate the
+  last checkpoint_size bytes. If it is valid and points to
+  the end of the log, fine. Else, start crash recovery. */
+  if (log_sys.log.main_file_size() < 512 + 19)
+    return DB_CORRUPTION;
 
-	memcpy(creator, buf + log_header::CREATOR, sizeof creator);
-	/* Ensure that the string is NUL-terminated. */
-	creator[log_header::CREATOR_END - log_header::CREATOR] = 0;
+  log_sys.log.main_read(log_sys.log.main_file_size() - 19, {buf, 19});
+  if (buf[0] != (FILE_CHECKPOINT | (8 + 6)))
+    return DB_FAIL;
+  if (mach_read_from_4(buf + 19 - 4) != ut_crc32(buf, 15))
+    return DB_FAIL;
 
-	switch (log_sys.log.format) {
-	case log_t::FORMAT_3_23:
-		return recv_log_recover_pre_10_2();
-	case log_t::FORMAT_10_2:
-	case log_t::FORMAT_10_2 | log_t::FORMAT_ENCRYPTED:
-	case log_t::FORMAT_10_3:
-	case log_t::FORMAT_10_3 | log_t::FORMAT_ENCRYPTED:
-	case log_t::FORMAT_10_4:
-	case log_t::FORMAT_10_4 | log_t::FORMAT_ENCRYPTED:
-		break;
-	case log_t::FORMAT_10_5:
-		if (auto size = mach_read_from_8(buf + log_header::SIZE)) {
-			size &= ~(1ULL << 47);
-			if (size == log_sys.log.file_size) {
-				goto current;
-			}
+  log_sys.last_checkpoint_lsn= log_sys.next_checkpoint_lsn=
+    recv_sys.parse_start_lsn= recv_sys.scanned_lsn=
+    log_sys.write_lsn= log_sys.current_flush_lsn=
+    mach_read_from_8(buf + 1);
+  log_sys.set_lsn(log_sys.last_checkpoint_lsn);
+  log_sys.set_flushed_lsn(log_sys.last_checkpoint_lsn);
 
-			ib::error() << "Inconsistent redo log size: "
-				    << size << "!=" << log_sys.log.file_size;
-		}
-		/* fall through */
-	default:
-		ib::error() << "Unsupported redo log format."
-			" The redo log was created with " << creator << ".";
-		return(DB_ERROR);
-	}
+  os_offset_t data_file_offset= mach_read_from_6(buf + 1 + 8);
+  recv_sys.sequence_bit= !!(data_file_offset & (1ULL << 47));
+  data_file_offset&= ~(1ULL << 47);
 
-	for (field = LOG_CHECKPOINT_1; field <= LOG_CHECKPOINT_2;
-	     field += LOG_CHECKPOINT_2 - LOG_CHECKPOINT_1) {
-		log_sys.log.main_read(field, {buf, OS_FILE_LOG_BLOCK_SIZE});
+  if (data_file_offset >= log_sys.log.file_size)
+    // not corrupted checkpoint with incorrect file offset?
+    return DB_FAIL;
 
-		const ulint crc32 = log_block_calc_checksum_crc32(buf);
-		const ulint cksum = log_block_get_checksum(buf);
+  os_offset_t first_block_offset= data_file_offset &
+    ~(OS_FILE_LOG_BLOCK_SIZE - 1);
+  log_sys.log.data_read(first_block_offset, {buf, OS_FILE_LOG_BLOCK_SIZE});
 
-		if (crc32 != cksum) {
-			DBUG_PRINT("ib_log",
-				   ("invalid checkpoint,"
-				    " at " ULINTPF
-				    ", checksum " ULINTPFx
-				    " expected " ULINTPFx,
-				    field, cksum, crc32));
-			continue;
-		}
+  os_offset_t offset_in_block= data_file_offset & (OS_FILE_LOG_BLOCK_SIZE - 1);
+  byte *record= buf + offset_in_block;
+  auto decoded_header= mlog_decode_varint(record);
+  auto header_size= mlog_decode_varint_length(record[0]);
 
-		if ((log_sys.is_physical()
-		     ? log_sys.is_encrypted_physical()
-		     : log_sys.is_encrypted_old())
-		    && !log_crypt_read_checkpoint_buf(buf)) {
-			ib::error() << "Reading checkpoint"
-				" encryption info failed.";
-			continue;
-		}
+  os_offset_t size= decoded_header >> 2;
 
-		checkpoint_no = mach_read_from_8(
-			buf + LOG_CHECKPOINT_NO);
+  if (!size || (decoded_header & 1) != recv_sys.sequence_bit ||
+      data_file_offset + size > log_sys.log.file_size)
+    return DB_SUCCESS; /* Garbage at the end of the log */
 
-		DBUG_PRINT("ib_log",
-			   ("checkpoint " UINT64PF " at " LSN_PF " found",
-			    checkpoint_no, mach_read_from_8(
-				    buf + LOG_CHECKPOINT_LSN)));
+  if (decoded_header & 2) /* skip_bit is set: we must read more */
+    return DB_FAIL;
 
-		if (checkpoint_no >= max_no) {
-			*max_field = field;
-			max_no = checkpoint_no;
-			log_sys.log.set_lsn(mach_read_from_8(
-				buf + LOG_CHECKPOINT_LSN));
-			log_sys.log.set_lsn_offset(mach_read_from_8(
-				buf + LOG_CHECKPOINT_OFFSET));
-			log_sys.next_checkpoint_no = checkpoint_no;
-		}
-	}
+  os_offset_t n_blocks= ((data_file_offset + header_size + size) %
+			 OS_FILE_LOG_BLOCK_SIZE - first_block_offset) /
+	  OS_FILE_LOG_BLOCK_SIZE;
 
-	if (*max_field == 0) {
-		/* Before 10.2.2, we could get here during database
-		initialization if we created an LOG_FILE_NAME file that
-		was filled with zeroes, and were killed. After
-		10.2.2, we would reject such a file already earlier,
-		when checking the file header. */
-		ib::error() << "No valid checkpoint found"
-			" (corrupted redo log)."
-			" You can try --innodb-force-recovery=6"
-			" as a last resort.";
-		return(DB_ERROR);
-	}
+  if (os_offset_t further_blocks= n_blocks - 1)
+    log_sys.log.data_read(first_block_offset + OS_FILE_LOG_BLOCK_SIZE,
+			  {buf + OS_FILE_LOG_BLOCK_SIZE,
+			   further_blocks * OS_FILE_LOG_BLOCK_SIZE});
 
-	if (dberr_t err = recv_log_recover_10_4()) {
-		ib::error()
-			<< "Upgrade after a crash is not supported."
-			" The redo log was created with " << creator
-			<< (err == DB_ERROR
-			    ? "." : ", and it appears corrupted.");
-		return err;
-	}
+  /* Clear the sequence bit before calculating the checksum. */
+  record[header_size - 1] &= ~1;
+  if (mach_read_from_4(record + header_size + size - 4) !=
+      ut_crc32(record, header_size + size))
+    return DB_SUCCESS; /* Garbage at the end of the log */
 
-	return(DB_SUCCESS);
-current:
-	/* TODO: Seek to the end of the file, read & validate the
-	last checkpoint_size bytes. If it is valid and points to
-	the end of the log, fine. Else, start crash recovery. */
-	return DB_SUCCESS;
+  return DB_FAIL;
 }
 
 /** Trim old log records for a page.
@@ -2205,7 +2243,6 @@ static void recv_recover_page(buf_block_t* block, mtr_t& mtr,
 		ut_ad(l->lsn);
 		ut_ad(end_lsn <= l->lsn);
 		end_lsn = l->lsn;
-		ut_ad(end_lsn <= log_sys.log.scanned_lsn);
 
 		ut_ad(l->start_lsn);
 		ut_ad(recv_start_lsn <= l->start_lsn);
@@ -2711,7 +2748,7 @@ bool recv_sys_add_to_parsing_buf(const byte* log_block, lsn_t scanned_lsn)
 
 	start_offset = data_len - more_len;
 
-	end_offset = std::min<ulint>(data_len, log_sys.trailer_offset());
+	end_offset = data_len; // trailer_offset
 
 	ut_ad(start_offset <= end_offset);
 
@@ -2738,6 +2775,7 @@ void recv_sys_justify_left_parsing_buf()
 	recv_sys.recovered_offset = 0;
 }
 
+#if 0//FIXME
 /** Scan redo log from a buffer and stores new log data to the parsing buffer.
 Parse and hash the log records if new data found.
 Apply log records automatically when the hash table becomes full.
@@ -2934,31 +2972,26 @@ func_exit:
 	mutex_exit(&recv_sys.mutex);
 	return(finished);
 }
+#endif
 
-/** Scans log from a buffer and stores new log data to the parsing buffer.
-Parses and hashes the log records if new data found.
-@param[in]	checkpoint_lsn		latest checkpoint log sequence number
+/** Parse and store log.
 @return the last parsed LSN */
-static lsn_t recv_group_scan_log_recs(lsn_t checkpoint_lsn)
+static lsn_t recv_scan()
 {
-	DBUG_ENTER("recv_group_scan_log_recs");
+	DBUG_ENTER("recv_scan");
 
 	mutex_enter(&recv_sys.mutex);
 	recv_sys.len = 0;
 	recv_sys.recovered_offset = 0;
 	recv_sys.clear();
-	recv_sys.parse_start_lsn =
-		recv_sys.scanned_lsn =
-		recv_sys.recovered_lsn = checkpoint_lsn;
-	recv_sys.scanned_checkpoint_no = 0;
 	ut_ad(recv_max_page_lsn == 0);
 	mutex_exit(&recv_sys.mutex);
 
-	lsn_t	start_lsn;
-	lsn_t	end_lsn;
+	lsn_t end_lsn= 0;
 	store_t	store	= STORE_IF_EXISTS;
 
-	log_sys.log.scanned_lsn = end_lsn =
+#if 0//FIXME
+	end_lsn =
 		ut_uint64_align_down(checkpoint_lsn, OS_FILE_LOG_BLOCK_SIZE);
 
 	do {
@@ -2969,14 +3002,13 @@ static lsn_t recv_group_scan_log_recs(lsn_t checkpoint_lsn)
 	} while (end_lsn != start_lsn
 		 && !recv_scan_log_recs(&store, log_sys.buf, checkpoint_lsn,
 					start_lsn, end_lsn,
-					&log_sys.log.scanned_lsn));
-
+					&recv_sys.scanned_lsn));
+#endif
 	if (recv_sys.found_corrupt_log || recv_sys.found_corrupt_fs) {
 		DBUG_RETURN(false);
 	}
 
-	DBUG_PRINT("ib_log", ("scan " LSN_PF " completed",
-			      log_sys.log.scanned_lsn));
+	DBUG_PRINT("ib_log", ("scan " LSN_PF " completed", end_lsn));
 
 	DBUG_RETURN(store == STORE_NO);
 }
@@ -3159,12 +3191,6 @@ of first system tablespace page
 dberr_t
 recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 {
-	ulint		max_cp_field;
-	lsn_t		checkpoint_lsn;
-	ib_uint64_t	checkpoint_no;
-	byte*		buf;
-	dberr_t		err = DB_SUCCESS;
-
 	ut_ad(srv_operation == SRV_OPERATION_NORMAL
 	      || srv_operation == SRV_OPERATION_RESTORE
 	      || srv_operation == SRV_OPERATION_RESTORE_EXPORT);
@@ -3184,49 +3210,21 @@ recv_recovery_from_checkpoint_start(lsn_t flush_lsn)
 		return(DB_SUCCESS);
 	}
 
-	recv_recovery_on = true;
-
-	log_mutex_enter();
-
-	err = recv_find_max_checkpoint(&max_cp_field);
-
-	if (err != DB_SUCCESS) {
-		recv_sys.recovered_lsn = log_sys.get_lsn();
-err_exit:
-		log_mutex_exit();
-		return(err);
-	}
-
-	buf = log_sys.buf;
-	log_sys.log.main_read(max_cp_field, {buf, OS_FILE_LOG_BLOCK_SIZE});
-
-	checkpoint_lsn = mach_read_from_8(buf + LOG_CHECKPOINT_LSN);
-	checkpoint_no = mach_read_from_8(buf + LOG_CHECKPOINT_NO);
-
-	/* Start reading the log from the checkpoint lsn. */
-
 	ut_ad(RECV_SCAN_SIZE <= srv_log_buffer_size);
-
 	ut_ad(recv_sys.pages.empty());
-
-	switch (log_sys.log.format) {
-	case 0:
-		log_mutex_exit();
-		return DB_SUCCESS;
+	recv_recovery_on = true;
+	log_mutex_enter();
+	dberr_t err = recv_check();
+	recv_sys.recovered_lsn= log_sys.get_lsn();
+	log_mutex_exit();
+	switch (err) {
 	default:
-		if (const lsn_t end_lsn = mach_read_from_8(
-			    buf + LOG_CHECKPOINT_END_LSN)) {
-			if (end_lsn < checkpoint_lsn) {
-				recv_sys.found_corrupt_log = true;
-				err = DB_ERROR;
-				goto err_exit;
-			}
-		}
-		log_sys.set_lsn(recv_sys.recovered_lsn);
-		ut_ad(recv_sys.recovered_lsn == checkpoint_lsn);
-		goto completed;
-	case log_t::FORMAT_10_5:
-		lsn_t end_lsn = recv_group_scan_log_recs(checkpoint_lsn);
+		return err;
+	case DB_SUCCESS:
+		break;
+	case DB_FAIL:
+		ib::error() << "FIXME: crash recovery does not work yet";
+		lsn_t end_lsn= recv_scan();
 #if 1// FIXME
 		/* The first scan should not have stored or applied any
 		records. */
@@ -3236,7 +3234,9 @@ err_exit:
 
 		if (srv_read_only_mode && recv_needed_recovery) {
 			err = DB_READ_ONLY;
-			goto err_exit;
+err_exit:
+			log_mutex_exit();
+			return err;
 		}
 
 		if (recv_sys.found_corrupt_log && !srv_force_recovery) {
@@ -3244,49 +3244,10 @@ err_exit:
 			err = DB_ERROR;
 			goto err_exit;
 		}
+
+		log_sys.set_lsn(end_lsn);
+		break;
 	}
-
-	/* NOTE: we always do a 'recovery' at startup, but only if
-	there is something wrong we will print a message to the
-	user about recovery: */
-
-	if (flush_lsn == checkpoint_lsn) {
-		/* The redo log is logically empty. */
-	} else if (checkpoint_lsn != flush_lsn) {
-		ut_ad(!srv_log_file_created);
-
-		if (checkpoint_lsn < flush_lsn) {
-			ib::warn()
-				<< "Are you sure you are using the right "
-				<< LOG_FILE_NAME
-				<< " to start up the database? Log sequence "
-				   "number in the "
-				<< LOG_FILE_NAME << " is " << checkpoint_lsn
-				<< ", less than the log sequence number in "
-				   "the first system tablespace file header, "
-				<< flush_lsn << ".";
-		}
-
-		if (!recv_needed_recovery) {
-			ib::info()
-				<< "The log sequence number " << flush_lsn
-				<< " in the system tablespace does not match"
-				   " the log sequence number "
-				<< checkpoint_lsn << " in the "
-				<< LOG_FILE_NAME << "!";
-
-			if (srv_read_only_mode) {
-				ib::error() << "innodb_read_only"
-					" prevents crash recovery";
-				log_mutex_exit();
-				return(DB_READ_ONLY);
-			}
-
-			recv_needed_recovery = true;
-		}
-	}
-
-	log_sys.set_lsn(recv_sys.recovered_lsn);
 
 #if 0// MDEV-14425 TODO
 	if (recv_needed_recovery) {
@@ -3296,7 +3257,6 @@ err_exit:
 			rescan, missing_tablespace);
 
 		if (err != DB_SUCCESS) {
-			log_mutex_exit();
 			return(err);
 		}
 
@@ -3326,7 +3286,6 @@ err_exit:
 					rescan, missing_tablespace);
 
 			if (err != DB_SUCCESS) {
-				log_mutex_exit();
 				return err;
 			}
 
@@ -3337,21 +3296,16 @@ err_exit:
 	}
 #endif
 
-	if (log_sys.log.scanned_lsn < checkpoint_lsn
-	    || log_sys.log.scanned_lsn < recv_max_page_lsn) {
-
+	if (recv_sys.scanned_lsn < recv_max_page_lsn) {
 		ib::error() << "We scanned the log up to "
-			<< log_sys.log.scanned_lsn
-			<< ". A checkpoint was at " << checkpoint_lsn << " and"
-			" the maximum LSN on a database page was "
+			<< recv_sys.scanned_lsn
+			<< ". The maximum LSN on a database page was "
 			<< recv_max_page_lsn << ". It is possible that the"
 			" database is now corrupt!";
 	}
 
-completed:
+#if 0// FIXME
 	if (recv_sys.recovered_lsn < checkpoint_lsn) {
-		log_mutex_exit();
-
 		ib::error() << "Recovered only to lsn:"
 			    << recv_sys.recovered_lsn << " checkpoint_lsn: " << checkpoint_lsn;
 
@@ -3378,15 +3332,11 @@ completed:
 
 	log_sys.last_checkpoint_lsn = checkpoint_lsn;
 	log_sys.next_checkpoint_no = ++checkpoint_no;
+#endif
 
 	mutex_enter(&recv_sys.mutex);
-
 	recv_sys.apply_log_recs = true;
-
 	mutex_exit(&recv_sys.mutex);
-
-	log_mutex_exit();
-
 	recv_lsn_checks_on = true;
 
 	/* The database is now ready to start almost normal processing of user

@@ -2663,17 +2663,14 @@ static lsn_t xtrabackup_copy_log(lsn_t start_lsn, lsn_t end_lsn, bool last)
 
 	recv_sys_justify_left_parsing_buf();
 
-	log_sys.log.scanned_lsn = scanned_lsn;
+	recv_sys.scanned_lsn = scanned_lsn;
 
 	end_lsn = last
 		? ut_uint64_align_up(scanned_lsn, OS_FILE_LOG_BLOCK_SIZE)
 		: scanned_lsn & ~lsn_t(OS_FILE_LOG_BLOCK_SIZE - 1);
 
 	if (ulint write_size = ulint(end_lsn - start_lsn)) {
-		if (srv_encrypt_log) {
-			log_crypt(log_sys.buf, start_lsn, write_size);
-		}
-
+		ut_ad(!srv_encrypt_log); // FIXME
 		if (ds_write(dst_log_file, log_sys.buf, write_size)) {
 			msg("Error: write to logfile failed");
 			return(0);
@@ -2733,7 +2730,7 @@ static bool xtrabackup_copy_logfile(bool last = false)
 		}
 	} while (start_lsn == end_lsn);
 
-	ut_ad(start_lsn == log_sys.log.scanned_lsn);
+	ut_ad(start_lsn == recv_sys.scanned_lsn);
 
 	msg(">> log scanned up to (" LSN_PF ")", start_lsn);
 
@@ -3853,7 +3850,7 @@ static void stop_backup_threads()
 static bool xtrabackup_backup_low()
 {
 	ut_ad(!metadata_to_lsn);
-
+#if 0 // FIXME
 	/* read the latest checkpoint lsn */
 	{
 		ulint	max_cp_field;
@@ -3877,7 +3874,7 @@ static bool xtrabackup_backup_low()
 		}
 		log_mutex_exit();
 	}
-
+#endif
 	stop_backup_threads();
 
 	if (metadata_to_lsn && xtrabackup_copy_logfile(true)) {
@@ -4046,8 +4043,6 @@ fail:
 	}
 
         {
-	/* definition from recv_recovery_from_checkpoint_start() */
-	ulint		max_cp_field;
 
 	/* start back ground thread to copy newer log */
 	os_thread_id_t log_copying_thread_id;
@@ -4056,9 +4051,12 @@ fail:
 	/* Look for the latest checkpoint from any of the log groups */
 
 	log_mutex_enter();
-
+#if 0
 reread_log_header:
 	dberr_t err = recv_find_max_checkpoint(&max_cp_field);
+#else
+	dberr_t err = DB_FAIL; // FIXME
+#endif
 
 	if (err != DB_SUCCESS) {
 		msg("Error: cannot read redo log header");
@@ -4072,19 +4070,19 @@ reread_log_header:
 		goto fail;
 	}
 
-	byte* buf = log_sys.buf;
 	checkpoint_lsn_start = log_sys.log.get_lsn();
 	checkpoint_no_start = log_sys.next_checkpoint_no;
 
+#if 0 // FIXME
+	byte* buf = log_sys.buf;
 	log_sys.log.main_read(max_cp_field, {buf, OS_FILE_LOG_BLOCK_SIZE});
-
 	if (checkpoint_no_start != mach_read_from_8(buf + LOG_CHECKPOINT_NO)
 	    || checkpoint_lsn_start
 	    != mach_read_from_8(buf + LOG_CHECKPOINT_LSN)
 	    || log_sys.log.get_lsn_offset()
 	    != mach_read_from_8(buf + LOG_CHECKPOINT_OFFSET))
 		goto reread_log_header;
-
+#endif
 	log_mutex_exit();
 
 	xtrabackup_init_datasinks();
@@ -4112,36 +4110,18 @@ reread_log_header:
 	}
 
 	/* label it */
-	alignas(OS_FILE_LOG_BLOCK_SIZE) byte log_hdr_buf[LOG_MAIN_FILE_SIZE];
-	memset(log_hdr_buf, 0, sizeof log_hdr_buf);
+	alignas(OS_FILE_LOG_BLOCK_SIZE) byte log_hdr[512];
+	memset(log_hdr, 0, sizeof log_hdr);
 
-	byte *log_hdr_field = log_hdr_buf;
-	mach_write_to_4(log_header::FORMAT + log_hdr_field,
+	mach_write_to_4(log_header::FORMAT + log_hdr,
 			log_sys.log.format);
-	mach_write_to_4(log_header::KEY_VERSION + log_hdr_field,
+	mach_write_to_4(log_header::KEY_VERSION + log_hdr,
 			log_sys.log.key_version);
-	strcpy(reinterpret_cast<char*>(log_header::CREATOR + log_hdr_field),
-		"Backup " MYSQL_SERVER_VERSION);
-	log_block_set_checksum(log_hdr_field,
-		log_block_calc_checksum_crc32(log_hdr_field));
+	strcpy(reinterpret_cast<char*>(log_header::CREATOR + log_hdr),
+	       "Backup " MYSQL_SERVER_VERSION);
+	mach_write_to_4(&log_hdr[512 - 4], ut_crc32(log_hdr, 512 -4));
 
-	/* copied from log_group_checkpoint() */
-	log_hdr_field +=
-		(log_sys.next_checkpoint_no & 1) ? LOG_CHECKPOINT_2 : LOG_CHECKPOINT_1;
-	/* The least significant bits of LOG_CHECKPOINT_OFFSET must be
-	stored correctly in the copy of the LOG_FILE_NAME. The most significant
-	bits, which identify the start offset of the log block in the file,
-	we did choose freely, as LOG_FILE_HDR_SIZE. */
-	ut_ad(!((log_sys.log.get_lsn() ^ checkpoint_lsn_start)
-		& (OS_FILE_LOG_BLOCK_SIZE - 1)));
-	/* Adjust the checkpoint page. */
-	memcpy(log_hdr_field, log_sys.buf, OS_FILE_LOG_BLOCK_SIZE);
-	mach_write_to_8(log_hdr_field + LOG_CHECKPOINT_OFFSET,
-		(checkpoint_lsn_start & (OS_FILE_LOG_BLOCK_SIZE - 1)));
-	log_block_set_checksum(log_hdr_field,
-			log_block_calc_checksum_crc32(log_hdr_field));
-
-	if (ds_write(dst_log_main_file, log_hdr_buf, sizeof(log_hdr_buf))) {
+	if (ds_write(dst_log_main_file, log_hdr, sizeof(log_hdr))) {
 		msg("error: write to main log file failed");
 		goto fail;
 	}
