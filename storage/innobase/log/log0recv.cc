@@ -734,79 +734,6 @@ void recv_sys_t::open_log_files_if_needed()
   }
 }
 
-void recv_sys_t::set_block_to_copy(os_offset_t off)
-{
-  ut_ad(off > 0);
-  block_to_copy_when_upgrading_file_format= off;
-}
-
-dberr_t recv_sys_t::upgrade_file_format_to_10_5_if_needed()
-{
-  if (block_to_copy_when_upgrading_file_format == 0)
-    return DB_SUCCESS;
-
-  ut_ad(!log_sys.log.data_is_opened());
-
-  if (dberr_t err= create_data_file(srv_log_file_size))
-    return err;
-
-  // Copy one block from old file to new file.
-  log_file_t data_fd(get_log_file_path(LOG_DATA_FILE_NAME));
-
-  if (dberr_t err= data_fd.open(false))
-    return err;
-
-  std::array<byte, OS_FILE_LOG_BLOCK_SIZE> buf alignas(OS_FILE_LOG_BLOCK_SIZE);
-  read(block_to_copy_when_upgrading_file_format, buf);
-  if (dberr_t err= data_fd.write(
-          block_to_copy_when_upgrading_file_format - LOG_MAIN_FILE_SIZE, buf))
-  {
-    return err;
-  }
-
-  if (!data_fd.writes_are_durable())
-    if (dberr_t err= data_fd.flush_data_only())
-      return err;
-
-  if (dberr_t err= data_fd.close())
-    return err;
-
-  // Set LOG_FILE_NAME size to LOG_MAIN_FILE_SIZE
-  bool ret;
-  std::string logfile0_path= recv_sys.files.front().get_path();
-  pfs_os_file_t logfile0=
-      os_file_create(innodb_log_file_key, logfile0_path.c_str(),
-                     OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT, OS_FILE_NORMAL,
-                     OS_LOG_FILE, true, &ret);
-
-  if (!ret)
-  {
-    ib::error() << "Cannot create " << logfile0_path;
-    return DB_ERROR;
-  }
-
-  ret= os_file_set_size(logfile0_path.c_str(), logfile0, LOG_MAIN_FILE_SIZE);
-  if (!ret)
-  {
-    os_file_close(logfile0);
-    ib::error() << "Cannot set log file " << logfile0_path << " size to "
-                << LOG_MAIN_FILE_SIZE << " bytes";
-    return DB_ERROR;
-  }
-
-  ret= os_file_close(logfile0);
-  ut_a(ret);
-
-  // Remove now unneeded multiple leftover log files
-  const size_t files_found= files.size();
-  files.clear();
-  for (size_t i= 1; i < files_found; i++)
-    delete_log_file(std::to_string(i).c_str());
-
-  block_to_copy_when_upgrading_file_format= 0;
-  return DB_SUCCESS;
-}
-
 void recv_sys_t::read(os_offset_t total_offset, span<byte> buf)
 {
   if (log_sys.log.data_is_opened())
@@ -1479,11 +1406,6 @@ static dberr_t recv_log_recover_pre_10_2()
     log_sys.last_checkpoint_lsn= log_sys.next_checkpoint_lsn=
       log_sys.write_lsn= log_sys.current_flush_lsn= lsn;
     log_sys.next_checkpoint_no= 0;
-#if 0//TODO
-    recv_sys.remove_extra_log_files= true;
-#else
-    recv_sys.set_block_to_copy(source_offset & ~511);
-#endif
     return DB_SUCCESS;
   }
 
@@ -1566,8 +1488,6 @@ static dberr_t recv_log_recover_10_4()
 	log_sys.last_checkpoint_lsn = log_sys.next_checkpoint_lsn
 		= log_sys.write_lsn = log_sys.current_flush_lsn = lsn;
 	log_sys.next_checkpoint_no = 0;
-	recv_sys.set_block_to_copy(source_offset
-				   & ~(OS_FILE_LOG_BLOCK_SIZE - 1));
 	return DB_SUCCESS;
 }
 

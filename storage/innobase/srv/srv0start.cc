@@ -265,7 +265,9 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 	DBUG_EXECUTE_IF("innodb_log_abort_6", delete_log_file("0");
 			return DB_ERROR;);
 
-	delete_log_file("0");
+	for (size_t i = 0; i < recv_sys.files_size(); i++) {
+		delete_log_file(std::to_string(i).c_str());
+	}
 	delete_log_file(INIT_LOG_FILE0);
 
 	DBUG_PRINT("ib_log", ("After innodb_log_abort_6"));
@@ -305,7 +307,6 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 
 	log_sys.log.open_files(logfile0);
 
-  ut_ad(log_sys.log.format == log_t::FORMAT_10_5);
   ut_ad(!(srv_log_file_size & 511));
   static_assert(OS_FILE_LOG_BLOCK_SIZE >= 512, "compatibility");
   static_assert(!(OS_FILE_LOG_BLOCK_SIZE & 511), "compatibility");
@@ -313,6 +314,7 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 
   byte *buf= log_sys.buf;
   memset_aligned<OS_FILE_LOG_BLOCK_SIZE>(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
+  log_sys.log.format= log_t::FORMAT_10_5;
   mach_write_to_4(buf + log_header::FORMAT, log_sys.log.format);
   mach_write_to_4(buf + log_header::KEY_VERSION, log_sys.log.key_version);
   /* Write sequence_bit=1 so that the all-zero ib_logdata file will
@@ -1080,8 +1082,8 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 
 		if (flushed_lsn != log_sys.get_flushed_lsn()) {
 			log_write_up_to(flushed_lsn, false);
+			log_sys.log.data_flush_data_only();
 		}
-		log_sys.log.data_flush_data_only();
 
 		ut_ad(flushed_lsn == log_get_lsn());
 
@@ -1564,11 +1566,6 @@ file_checked:
 		been shut down normally: this is the normal startup path */
 
 		err = recv_recovery_from_checkpoint_start(flushed_lsn);
-
-		if (dberr_t err
-		    = recv_sys.upgrade_file_format_to_10_5_if_needed()) {
-			return srv_init_abort(err);
-		}
 
 		recv_sys.dblwr.pages.clear();
 
