@@ -1003,19 +1003,16 @@ func_exit:
 
   DBUG_PRINT("ib_log", ("writing checkpoint at " LSN_PF, flush_lsn));
 
-  byte *buf= &log_sys.checkpoint_buf[1 + 8];
-  /* FIXME: add sequence bit */
-  mach_write_to_6(buf, log_sys.log.calc_lsn_offset(flush_lsn));
+  byte buf[1 + 8 + 6 + 4];
+  /* FIXME: read the sequence bit */
+  mach_write_to_6(&buf[1 + 8], log_sys.log.calc_lsn_offset(flush_lsn));
   ++log_sys.n_pending_checkpoint_writes;
   log_mutex_exit();
 
-  log_sys.checkpoint_buf[0]= FILE_CHECKPOINT | (8 + 6);
-  mach_write_to_8(&log_sys.checkpoint_buf[1], flush_lsn);
-  buf+= 6;
-  ut_ad(buf == &log_sys.checkpoint_buf[15]);
-  mach_write_to_4(buf, ut_crc32(log_sys.checkpoint_buf, 15));
-  buf+= 4;
-  log_sys.append_to_main_log({log_sys.checkpoint_buf, buf});
+  buf[0]= FILE_CHECKPOINT | (8 + 6);
+  mach_write_to_8(&buf[1], flush_lsn);
+  mach_write_to_4(&buf[1 + 8 + 6], ut_crc32(buf, 1 + 8 + 6));
+  log_sys.append_to_main_log({buf, sizeof buf});
 
   log_mutex_enter();
 

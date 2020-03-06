@@ -579,10 +579,6 @@ public:
 	ulint		n_pending_checkpoint_writes;
 					/*!< number of currently pending
 					checkpoint writes */
-
-	/** buffer for checkpoint header */
-	MY_ALIGNED(OS_FILE_LOG_BLOCK_SIZE)
-	byte		checkpoint_buf[OS_FILE_LOG_BLOCK_SIZE];
 	/* @} */
 
 private:

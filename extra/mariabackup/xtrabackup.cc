@@ -3864,11 +3864,11 @@ static bool xtrabackup_backup_low()
 		    && log_sys.log.format != 0) {
 			if (max_cp_field == LOG_CHECKPOINT_1) {
 				log_sys.log.main_read(max_cp_field,
-						      {log_sys.checkpoint_buf,
+						      {log_sys.buf,
 						       OS_FILE_LOG_BLOCK_SIZE});
 			}
 			metadata_to_lsn = mach_read_from_8(
-				log_sys.checkpoint_buf + LOG_CHECKPOINT_LSN);
+				log_sys.buf + LOG_CHECKPOINT_LSN);
 			msg("mariabackup: The latest check point"
 			    " (for incremental): '" LSN_PF "'",
 			    metadata_to_lsn);
@@ -4072,7 +4072,7 @@ reread_log_header:
 		goto fail;
 	}
 
-	byte* buf = log_sys.checkpoint_buf;
+	byte* buf = log_sys.buf;
 	checkpoint_lsn_start = log_sys.log.get_lsn();
 	checkpoint_no_start = log_sys.next_checkpoint_no;
 
@@ -4135,7 +4135,7 @@ reread_log_header:
 	ut_ad(!((log_sys.log.get_lsn() ^ checkpoint_lsn_start)
 		& (OS_FILE_LOG_BLOCK_SIZE - 1)));
 	/* Adjust the checkpoint page. */
-	memcpy(log_hdr_field, log_sys.checkpoint_buf, OS_FILE_LOG_BLOCK_SIZE);
+	memcpy(log_hdr_field, log_sys.buf, OS_FILE_LOG_BLOCK_SIZE);
 	mach_write_to_8(log_hdr_field + LOG_CHECKPOINT_OFFSET,
 		(checkpoint_lsn_start & (OS_FILE_LOG_BLOCK_SIZE - 1)));
 	log_block_set_checksum(log_hdr_field,

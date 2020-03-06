@@ -1507,7 +1507,7 @@ recv_find_max_checkpoint(ulint* max_field)
 
 	ut_ad(!(log_sys.log.file_size & 511));
 
-	buf = log_sys.checkpoint_buf;
+	buf = log_sys.buf;
 
 	log_sys.log.main_read(0, {buf, OS_FILE_LOG_BLOCK_SIZE});
 	/* Check the header page checksum. There was no
@@ -3197,7 +3197,7 @@ err_exit:
 		return(err);
 	}
 
-	buf = log_sys.checkpoint_buf;
+	buf = log_sys.buf;
 	log_sys.log.main_read(max_cp_field, {buf, OS_FILE_LOG_BLOCK_SIZE});
 
 	checkpoint_lsn = mach_read_from_8(buf + LOG_CHECKPOINT_LSN);
