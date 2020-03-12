@@ -144,7 +144,7 @@ Variable_name	Value
 Threads_connected	1
 SHOW STATUS LIKE 'wsrep_thread_count';
 Variable_name	Value
-wsrep_thread_count	2
+wsrep_thread_count	3
 
 SET @wsrep_slave_threads_saved= @@global.wsrep_slave_threads;
 SET GLOBAL wsrep_slave_threads= 10;
@@ -154,7 +154,7 @@ Variable_name	Value
 Threads_connected	1
 SHOW STATUS LIKE 'wsrep_thread_count';
 Variable_name	Value
-wsrep_thread_count	11
+wsrep_thread_count	12
 set wsrep_on=0;
 set wsrep_on=1;
 create user test@localhost;

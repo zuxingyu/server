@@ -104,7 +104,7 @@ SET GLOBAL wsrep_cluster_address= 'gcomm://';
 
 --echo # Wait for applier threads to get created.
 --let $wait_timeout=600
---let $wait_condition = SELECT COUNT(*) = 2 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE USER = 'system user' AND (STATE IS NULL OR STATE NOT LIKE 'InnoDB%');
+--let $wait_condition = SELECT COUNT(*) = 3 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE USER = 'system user' AND (STATE IS NULL OR STATE NOT LIKE 'InnoDB%');
 --source include/wait_condition.inc
 
 --replace_regex /.*libgalera_smm.*/libgalera_smm.so/
@@ -118,7 +118,7 @@ SET @wsrep_slave_threads_saved= @@global.wsrep_slave_threads;
 SET GLOBAL wsrep_slave_threads= 10;
 
 --echo # Wait for applier threads to get created.
---let $wait_condition = SELECT COUNT(*) = 11 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE USER = 'system user' AND (STATE IS NULL OR STATE NOT LIKE 'InnoDB%');
+--let $wait_condition = SELECT COUNT(*) = 12 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE USER = 'system user' AND (STATE IS NULL OR STATE NOT LIKE 'InnoDB%');
 --source include/wait_condition.inc
 
 SHOW STATUS LIKE 'threads_connected';

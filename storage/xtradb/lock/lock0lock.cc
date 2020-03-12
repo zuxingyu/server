@@ -1773,7 +1773,7 @@ wsrep_kill_victim(
 	if (!trx->is_wsrep()) return;
 
 	my_bool bf_this  = wsrep_thd_is_BF(trx->mysql_thd, FALSE);
-	my_bool bf_other = wsrep_thd_is_BF(lock->trx->mysql_thd, TRUE);
+	my_bool bf_other = wsrep_thd_is_BF(lock->trx->mysql_thd, FALSE);
 
 	if ((bf_this && !bf_other) ||
 		(bf_this && bf_other && wsrep_trx_order_before(
@@ -1818,10 +1818,8 @@ wsrep_kill_victim(
 				}
 			}
 
-			lock->trx->abort_type = TRX_WSREP_ABORT;
 			wsrep_innobase_kill_one_trx(trx->mysql_thd,
-				(const trx_t*) trx, lock->trx, TRUE);
-			lock->trx->abort_type = TRX_SERVER_ABORT;
+				lock->trx, true);
 		}
 	}
 }

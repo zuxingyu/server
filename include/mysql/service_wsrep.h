@@ -70,6 +70,7 @@ struct xid_t;
 struct wsrep;
 struct wsrep_ws_handle;
 struct wsrep_buf;
+typedef struct wsrep_kill wsrep_kill_t;
 
 extern struct wsrep_service_st {
   struct wsrep *              (*get_wsrep_func)();
@@ -112,6 +113,7 @@ extern struct wsrep_service_st {
   int                         (*wsrep_trx_order_before_func)(MYSQL_THD, MYSQL_THD);
   void                        (*wsrep_unlock_rollback_func)();
   void                        (*wsrep_set_data_home_dir_func)(const char *data_dir);
+  bool                        (*wsrep_enqueue_background_kill_func)(wsrep_kill_t);
 } *wsrep_service;
 
 #ifdef MYSQL_DYNAMIC_PLUGIN
@@ -155,6 +157,7 @@ extern struct wsrep_service_st {
 #define wsrep_trx_order_before(T1,T2) wsrep_service->wsrep_trx_order_before_func(T1,T2)
 #define wsrep_unlock_rollback() wsrep_service->wsrep_unlock_rollback_func()
 #define wsrep_set_data_home_dir(A) wsrep_service->wsrep_set_data_home_dir_func(A)
+#define wsrep_enqueue_background_kill(T) wsrep_service->wsrep_enqueue_background_kill_func(T);
 
 #define wsrep_debug get_wsrep_debug()
 #define wsrep_log_conflicts get_wsrep_log_conflicts()
@@ -215,6 +218,7 @@ bool wsrep_thd_ignore_table(THD *thd);
 void wsrep_unlock_rollback();
 void wsrep_set_data_home_dir(const char *data_dir);
 
+bool wsrep_enqueue_background_kill(wsrep_kill_t);
 #endif
 
 #ifdef __cplusplus
