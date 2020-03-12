@@ -1103,7 +1103,7 @@ wsrep_kill_victim(
 	if (!trx->is_wsrep()) return;
 
 	my_bool bf_this  = wsrep_thd_is_BF(trx->mysql_thd, FALSE);
-	my_bool bf_other = wsrep_thd_is_BF(lock->trx->mysql_thd, TRUE);
+	my_bool bf_other = wsrep_thd_is_BF(lock->trx->mysql_thd, FALSE);
 	mtr_t mtr;
 
 	if ((bf_this && !bf_other) ||
@@ -1148,7 +1148,7 @@ wsrep_kill_victim(
 			}
 
 			wsrep_innobase_kill_one_trx(trx->mysql_thd,
-						    trx, lock->trx, TRUE);
+						    lock->trx, true);
 		}
 	}
 }
