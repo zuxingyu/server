@@ -2304,7 +2304,10 @@ static int send_format_descriptor_event(binlog_send_info *info, IO_CACHE *log,
         "checksum that master is configured to log";
     sql_print_warning("Master is configured to log replication events "
                       "with checksum, but will not send such events to "
-                      "slaves that cannot process them");
+                      "slaves that cannot process them "
+                      "current: %d  slave: %d",
+                      (int) info->current_checksum_alg,
+                      (int) is_slave_checksum_aware(thd));
     DBUG_RETURN(1);
   }
 
