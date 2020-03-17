@@ -198,6 +198,7 @@ static QUEUE queue;
 static HUFF_COUNTS *global_count;
 static char zero_string[]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 static const char *load_default_groups[]= { "ariapack",0 };
+static char **default_argv;
 
 	/* The main program */
 
@@ -205,7 +206,6 @@ int main(int argc, char **argv)
 {
   int error,ok;
   PACK_MRG_INFO merge;
-  char **default_argv;
   MY_INIT(argv[0]);
 
   load_defaults_or_exit("my", load_default_groups, &argc, &argv);
@@ -248,6 +248,14 @@ int main(int argc, char **argv)
 #ifndef _lint
   return 0;					/* No compiler warning */
 #endif
+}
+
+static void my_exit(int error)
+{
+  free_defaults(default_argv);
+  maria_end();
+  my_end(verbose ? MY_CHECK_ERROR | MY_GIVE_INFO : MY_CHECK_ERROR);
+  exit(error);
 }
 
 enum options_mp {OPT_CHARSETS_DIR_MP=256, OPT_AUTO_CLOSE};
@@ -359,11 +367,12 @@ get_one_option(const struct my_option *opt,
     break;
   case 'V':
     print_version();
-    exit(0);
+    my_exit(0);
+    break;
   case 'I':
   case '?':
     usage();
-    exit(0);
+    my_exit(0);
   }
   return 0;
 }
@@ -380,12 +389,12 @@ static void get_options(int *argc,char ***argv)
     write_loop=1;
 
   if ((ho_error=handle_options(argc, argv, my_long_options, get_one_option)))
-    exit(ho_error);
+    my_exit(ho_error);
 
   if (!*argc)
   {
     usage();
-    exit(1);
+    my_exit(1);
   }
   if (join_table)
   {
