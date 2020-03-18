@@ -29,7 +29,6 @@ class THD;
 struct TABLE;
 struct handlerton;
 class handler;
-class String;
 typedef struct st_ha_check_opt HA_CHECK_OPT;
 struct HA_CREATE_INFO;
 struct Table_specification_st;
@@ -155,8 +154,6 @@ uint build_tmptable_filename(THD* thd, char *buff, size_t bufflen);
 bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         Table_specification_st *create_info,
                         Alter_info *alter_info);
-bool add_keyword_to_query(THD *thd, String *result, const LEX_CSTRING *keyword,
-                          const LEX_CSTRING *add);
 
 /*
   mysql_create_table_no_lock can be called in one of the following

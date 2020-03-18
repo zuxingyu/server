@@ -1729,17 +1729,16 @@ handlerton *ha_default_tmp_handlerton(THD *thd);
 /* can be replicated by wsrep replication provider plugin */
 #define HTON_WSREP_REPLICATION (1 << 13)
 
-/* Shared storage on slave. Ignore on slave any CREATE TABLE, DROP or updates */
+/*
+  Set this on the *slave* that's connected to a shared with a master storage.
+  The slave will ignore any CREATE TABLE, DROP or updates for this engine.
+*/
 #define HTON_IGNORE_UPDATES (1 << 14)
 
 /*
-  The table may not exists on the slave. The effects of having this flag are:
-  - ALTER TABLE that changes engine from this table to another engine will
-    be replicated as CREATE + INSERT
-  - CREATE ... LIKE shared_table will be replicated as a full CREATE TABLE
-  - ALTER TABLE for this engine will have "IF EXISTS" added.
-  - RENAME TABLE for this engine will have "IF EXISTS" added.
-  - DROP TABLE for this engine will have "IF EXISTS" added.
+  Set this on the *master* that's connected to a shared with a slave storage.
+  ALTER TABLE that moves the table from this to another engine will
+  be replicated as CREATE + INSERT
 */
 #define HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE (1 << 15)
 

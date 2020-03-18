@@ -376,6 +376,10 @@ bool Sql_cmd_alter_table::execute(THD *thd)
   /* first table of first SELECT_LEX */
   TABLE_LIST *first_table= (TABLE_LIST*) select_lex->table_list.first;
 
+  if (thd->slave_thread && !thd->slave_expected_error &&
+      slave_ddl_exec_mode_options == SLAVE_EXEC_MODE_IDEMPOTENT)
+    lex->create_info.set(DDL_options_st::OPT_IF_EXISTS);
+
   const bool used_engine= lex->create_info.used_fields & HA_CREATE_USED_ENGINE;
   DBUG_ASSERT((m_storage_engine_name.str != NULL) == used_engine);
   if (used_engine)

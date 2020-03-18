@@ -42,7 +42,7 @@ select * from t1,t1 as t1_tmp limit 2;
 stop slave;
 
 connection master;
-alter table t1 add column d int, engine=s3;
+alter table t1 add column d int;
 connection slave;
 select * from t1 limit 2;
 start slave;
@@ -64,13 +64,13 @@ select * from t1 limit 2;
 connection master;
 
 --echo # Convert S3 table to Aria. Rows should be binary logged
-alter table t1 engine=aria;
+alter table t1 rename t2, engine=aria;
 sync_slave_with_master;
-select * from t1 limit 2;
-show create table t1;
+select * from t2 limit 2;
+show create table t2;
 
 connection master;
-drop table t1;
+drop table t2;
 
 --echo #
 --echo # Test RENAME

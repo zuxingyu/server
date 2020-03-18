@@ -1996,38 +1996,6 @@ int write_bin_log(THD *thd, bool clear_error,
 
 
 /*
-  Write to binary log with optional adding "IF EXISTS"
-
-  The query is taken from thd->query()
-*/
-
-int write_bin_log_with_if_exists(THD *thd, bool clear_error,
-                                 bool is_trans, bool add_if_exists)
-{
-  char const *query;
-  ulong query_length;
-  String built_query;
-
-  query= thd->query();
-  query_length= thd->query_length();
-
-  if (add_if_exists)
-  {
-    built_query.set_charset(thd->charset());
-    LEX_CSTRING table=     { STRING_WITH_LEN("TABLE") };
-    LEX_CSTRING if_exists= { STRING_WITH_LEN("IF EXISTS") };
-
-    if (!add_keyword_to_query(thd, &built_query, &table, &if_exists))
-    {
-      query=        built_query.ptr();
-      query_length= built_query.length();
-    }
-  }
-  return write_bin_log(thd, clear_error, query, query_length, is_trans);
-}
-
-
-/*
  delete (drop) tables.
 
   SYNOPSIS
@@ -2211,87 +2179,6 @@ static uint32 comment_length(THD *thd, uint32 comment_pos,
 
 
 /**
-  Add keyword to existing query
-
-  @param thd      Thread handler
-  @param result   Store new query here
-  @param keyword  Add 'add' after this keyword, surrounded by space
-  @param add      Syntax to add to query
-
-  @retval 0 ok. New query in 'result'
-  @retval 1 Wrong allocation or can't find keyword
-*/
-
-bool add_keyword_to_query(THD *thd, String *result, const LEX_CSTRING *keyword,
-                          const LEX_CSTRING *add)
-{
-  const uchar *query= (uchar*) thd->query();
-  const uchar *query_end= (uchar*) query + thd->query_length();
-  CHARSET_INFO *ci= thd->charset();
-  const uchar *const state_map= ci->state_map;
-  uchar *res;
-  uint pos= 0;
-  bool in_comment= 0;
-
-  if (result->alloc(thd->query_length() + add->length + 3))
-    return 1;
-  res= (uchar*) result->ptr();
-
-  while (query < query_end)
-  {
-    if (in_comment)
-    {
-      if (*query == '*' && state_map[query[1]] == MY_LEX_LONG_COMMENT)
-      {
-        in_comment= 0;
-        *res++= *query++;
-        *res++= *query++;
-        continue;
-      }
-    }
-    if (state_map[*query] == MY_LEX_LONG_COMMENT && query != query_end &&
-        query[1] == '*' && query[2] != '!')
-    {
-      in_comment= 1;
-      *res++= *query++;
-      *res++= *query++;
-      continue;
-    }
-    if (my_tolower(ci, *query) == my_tolower(ci, keyword->str[pos]))
-    {
-      if (++pos == keyword->length)
-      {
-        /*
-          Keyword found. Skip to next non alphametric character
-          This is done to be able to handle things like TABLE and TABLES
-        */
-        while (query < query_end && state_map[*query] == MY_LEX_IDENT)
-          *res++= *query++;
-        /* Add keyword surrounded by spaces*/
-        *res++= ' ';
-        memcpy(res, add->str, add->length);
-        res+= add->length;
-        *res++= ' ';
-        /* Remove extra spaces from query */
-        while (query < query_end && state_map[*query] == MY_LEX_SKIP)
-          query++;
-        memcpy(res, query, (size_t) (query_end - query));
-        res+= (size_t) (query_end - query);
-        *res= 0;                                  // Safety
-        result->length((uint32) (res - (uchar*) result->ptr()));
-        return 0;
-      }
-    }
-    else
-      pos= 0;
-    *res++= *query++;
-  }
-  return 1;                                     // Didn't find keyword
-}
-
-
-
-/**
   Execute the drop of a normal or temporary table.
 
   @param  thd             Thread handler
@@ -2342,7 +2229,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
   bool trans_tmp_table_deleted= 0, non_trans_tmp_table_deleted= 0;
   bool non_tmp_table_deleted= 0;
   bool is_drop_tmp_if_exists_added= 0;
-  bool was_view= 0, was_table= 0, is_sequence, log_if_exists= if_exists;
+  bool was_view= 0, was_table= 0, is_sequence;
   const char *object_to_drop= (drop_sequence) ? "SEQUENCE" : "TABLE";
   String normal_tables;
   String built_trans_tmp_query, built_non_trans_tmp_query;
@@ -2591,10 +2478,6 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
       // Remove extension for delete
       *(end= path + path_length - reg_ext_length)= '\0';
 
-      if (table_type && table_type != view_pseudo_hton &&
-          table_type->flags & HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE)
-        log_if_exists= 1;
-
       if ((error= ha_delete_table(thd, table_type, path, &db,
                                   &table->table_name, !dont_log_query)))
       {
@@ -2755,7 +2638,7 @@ err:
         built_query.append("DROP ");
         built_query.append(object_to_drop);
         built_query.append(' ');
-        if (log_if_exists)
+        if (if_exists)
           built_query.append("IF EXISTS ");
 
         /* Preserve comment in original query */
@@ -5098,13 +4981,6 @@ int create_table_impl(THD *thd, const LEX_CSTRING &orig_db,
   }
   else
   {
-    if (ha_check_if_updates_are_ignored(thd, create_info->db_type, "CREATE"))
-    {
-      /* Don't create table. CREATE will still be logged in binary log */
-      error= 0;
-      goto err;
-    }
-
     if (!internal_tmp_table && ha_table_exists(thd, &db, &table_name))
     {
       if (options.or_replace())
@@ -5774,7 +5650,6 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   int res= 1;
   bool is_trans= FALSE;
   bool do_logging= FALSE;
-  bool force_generated_create;
   uint not_used;
   int create_res;
   DBUG_ENTER("mysql_create_like_table");
@@ -5926,16 +5801,7 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   if (thd->is_current_stmt_binlog_disabled())
     goto err;
 
-  /*
-    If we do a create based on a shared table, log the full create of the
-    resulting table.
-  */
-  force_generated_create=
-    (((src_table->table->s->db_type()->flags &
-       HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE) &&
-      src_table->table->s->db_type() != local_create_info.db_type));
-
-  if (thd->is_current_stmt_binlog_format_row() || force_generated_create)
+  if (thd->is_current_stmt_binlog_format_row())
   {
     /*
        Since temporary tables are not replicated under row-based
@@ -5951,14 +5817,12 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
                                     was created.
            3    temporary    normal Nothing
            4    temporary temporary Nothing
-           5       any       shared Generated statement if the table
-                                    was created if engine changed
            ==== ========= ========= ==============================
     */
-    if (!(create_info->tmp_table()) || force_generated_create)
+    if (!(create_info->tmp_table()))
     {
       // Case 2 & 5
-      if (src_table->table->s->tmp_table || force_generated_create)
+      if (src_table->table->s->tmp_table)
       {
         char buf[2048];
         String query(buf, sizeof(buf), system_charset_info);
@@ -9651,7 +9515,7 @@ bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db,
     mysql_prepare_create_table().
   */
   bool varchar= create_info->varchar, table_creation_was_logged= 0;
-  bool binlog_done= 0, log_if_exists= 0;
+  bool binlog_done= 0;
   uint tables_opened;
   handlerton *new_db_type, *old_db_type;
   ha_rows copied=0, deleted=0;
@@ -9700,8 +9564,9 @@ bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db,
 
   THD_STAGE_INFO(thd, stage_init_update);
 
-  /* Check if the new table type is a shared table */
-  if (ha_check_if_updates_are_ignored(thd, create_info->db_type, "ALTER"))
+  /* Check if new engine was explicitly specified and it has shared tables */
+  if (create_info->db_type &&
+      ha_check_if_updates_are_ignored(thd, create_info->db_type, "ALTER"))
   {
     /*
       Remove old local .frm file if it exists. We should use the new
@@ -9711,10 +9576,8 @@ bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db,
     table_list->mdl_request.type= MDL_EXCLUSIVE;
     /* This will only drop the .frm file and local tables, not shared ones */
     error= mysql_rm_table(thd, table_list, 1, 0, 0, 1);
-    if (write_bin_log(thd, true, thd->query(), thd->query_length()))
+    if (write_bin_log(thd, true, thd->query(), thd->query_length()) || error)
       DBUG_RETURN(true);
-    if (error)
-      DBUG_RETURN(error);
     my_ok(thd);
     DBUG_RETURN(0);
   }
@@ -9821,15 +9684,6 @@ bool mysql_alter_table(THD *thd, const LEX_CSTRING *new_db,
     quick_rm_table(thd, 0, &table_list->db, &table_list->table_name,
                    FRM_ONLY, 0);
     goto end_inplace;
-  }
-  if (!if_exists &&
-      (table->s->db_type()->flags & HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE))
-  {
-    /*
-      Table is a shared table that may not exist on the slave.
-      We add 'if_exists' to the query if it was not used
-    */
-    log_if_exists= 1;
   }
   table_creation_was_logged= table->s->table_creation_was_logged;
 
@@ -10083,7 +9937,7 @@ do_continue:;
     /* We don't replicate alter table statement on temporary tables */
     if (table_creation_was_logged)
     {
-      if (write_bin_log_with_if_exists(thd, true, false, log_if_exists))
+      if (write_bin_log(thd, true, thd->query(), thd->query_length()))
         DBUG_RETURN(true);
     }
 
@@ -10552,6 +10406,7 @@ do_continue:;
       /* Force row logging, even if the table was created as 'temporary' */
       new_table->s->can_do_row_logging= 1;
 
+      thd->binlog_start_trans_and_stmt();
       res= binlog_drop_table(thd, table) || binlog_create_table(thd, new_table);
       new_table->s->tmp_table= org_tmp_table;
       if (res)
@@ -10563,7 +10418,6 @@ do_continue:;
       binlog_done= 1;
       DBUG_ASSERT(new_table->file->row_logging);
       new_table->mark_columns_needed_for_insert();
-      thd->binlog_start_trans_and_stmt();
       thd->binlog_write_table_map(new_table, 1);
     }
     if (copy_data_between_tables(thd, table, new_table,
@@ -10618,7 +10472,7 @@ do_continue:;
     if (!thd->is_current_stmt_binlog_format_row() &&
         table_creation_was_logged &&
         !binlog_done &&
-        write_bin_log_with_if_exists(thd, true, false, log_if_exists))
+        write_bin_log(thd, true, thd->query(), thd->query_length()))
       DBUG_RETURN(true);
     my_free(const_cast<uchar*>(frm.str));
     goto end_temporary;
@@ -10800,11 +10654,8 @@ end_inplace:
   DBUG_ASSERT(!(mysql_bin_log.is_open() &&
                 thd->is_current_stmt_binlog_format_row() &&
                 (create_info->tmp_table())));
-  if (!binlog_done)
-  {
-    if (write_bin_log_with_if_exists(thd, true, false, log_if_exists))
-      DBUG_RETURN(true);
-  }
+  if (!binlog_done && write_bin_log(thd, 1, thd->query(), thd->query_length()))
+    DBUG_RETURN(true);
   table_list->table= NULL;			// For query cache
   query_cache_invalidate3(thd, table_list, false);
 
@@ -10865,7 +10716,7 @@ err_with_mdl_after_alter:
     expects that error is set
   */
   if (!binlog_done)
-    write_bin_log_with_if_exists(thd, FALSE, FALSE, log_if_exists);
+    write_bin_log(thd, FALSE, thd->query(), thd->query_length());
 
 err_with_mdl:
   /*

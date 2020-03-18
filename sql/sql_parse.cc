@@ -4271,6 +4271,10 @@ mysql_execute_command(THD *thd)
     if (check_rename_table(thd, first_table, all_tables))
       goto error;
 
+    if (thd->slave_thread && !thd->slave_expected_error &&
+        slave_ddl_exec_mode_options == SLAVE_EXEC_MODE_IDEMPOTENT)
+      lex->create_info.set(DDL_options_st::OPT_IF_EXISTS);
+
     WSREP_TO_ISOLATION_BEGIN(0, 0, first_table);
 
     if (mysql_rename_tables(thd, first_table, 0, lex->if_exists()))

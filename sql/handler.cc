@@ -4858,7 +4858,7 @@ handler::ha_rename_table(const char *from, const char *to)
 int
 handler::ha_delete_table(const char *name)
 {
-  if (ha_check_if_updates_are_ignored(current_thd, ht, "DROP"))
+  if (ha_check_if_updates_are_ignored(ha_thd(), ht, "DROP"))
     return 0;                                   // Simulate dropped
   mark_trx_read_write();
   return delete_table(name);
@@ -5772,7 +5772,7 @@ bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton,
                                      const char *op)
 {
   DBUG_ENTER("ha_check_if_updates_are_ignored");
-  if (!thd->slave_thread || !(hton= ha_checktype(thd, hton, 1)))
+  if (!thd->slave_thread)
     DBUG_RETURN(0);                                   // Not slave or no engine
   if (!(hton->flags & HTON_IGNORE_UPDATES))
     DBUG_RETURN(0);                                   // Not shared table
@@ -6795,12 +6795,11 @@ bool handler::prepare_for_row_logging()
       compatible behavior with the STMT based replication even when
       the table is not transactional. In other words, if the operation
       fails while executing the insert phase nothing is written to the
-      binlog.
+      binlog. The same is true for SQLCOM_ALTER_TABLE.
     */
-    row_logging_has_trans=
-      ((sql_command_flags[table->in_use->lex->sql_command] &
-        (CF_SCHEMA_CHANGE | CF_ADMIN_COMMAND)) ||
-       table->file->has_transactions());
+    row_logging_has_trans= ha_thd()->lex->sql_command == SQLCOM_CREATE_TABLE ||
+                           ha_thd()->lex->sql_command == SQLCOM_ALTER_TABLE ||
+                           has_transactions();
   }
   else
   {
