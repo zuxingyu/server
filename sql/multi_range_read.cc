@@ -24,7 +24,7 @@
 static ulonglong key_block_no(TABLE *table, uint keyno, ha_rows keyentry_pos)
 {
   size_t len= table->key_info[keyno].key_length + table->file->ref_length;
-  if (table->file->pk_is_clustering_key(keyno))
+  if (table->file->is_clustering_key(keyno))
     len= table->s->stored_rec_length;
   uint keys_per_block= (uint) (table->file->stats.block_size/2.0/len+1);
   ulonglong block_no= !keyentry_pos ? 0 :
@@ -284,7 +284,7 @@ ha_rows handler::multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
   cost->avg_io_cost= 1; /* assume random seeks */
 
   /* Produce the same cost as non-MRR code does */
-  if (!pk_is_clustering_key(keyno))
+  if (!is_clustering_key(keyno))
   {
     cost->idx_io_count=  n_ranges + keyread_time(keyno, 0, n_rows);
     cost->cpu_cost= cost->idx_cpu_cost=
