@@ -522,11 +522,11 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 
 	const page_id_t	page_id(space, offset);
 
-	rw_lock_t*	hash_lock = buf_page_hash_lock_get(page_id);
+	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(page_id);
 
 	rw_lock_x_lock(hash_lock);
 
-	bpage = buf_page_hash_get_low(page_id);
+	bpage = buf_pool.page_hash_get_low(page_id);
 
 	if (!bpage || bpage->zip.data != src) {
 		/* The block has probably been freshly
@@ -546,7 +546,7 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 		bpage = UT_LIST_GET_FIRST(buf_pool.LRU);
 		while (bpage != NULL) {
 			if (bpage->zip.data == src) {
-				hash_lock = buf_page_hash_lock_get(bpage->id);
+				hash_lock = buf_pool.hash_lock_get(bpage->id);
 				rw_lock_x_lock(hash_lock);
 				break;
 			}

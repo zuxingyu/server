@@ -143,8 +143,27 @@ public:
 
   bool operator==(const page_id_t& rhs) const { return m_id == rhs.m_id; }
   bool operator!=(const page_id_t& rhs) const { return m_id != rhs.m_id; }
-
   bool operator<(const page_id_t& rhs) const { return m_id < rhs.m_id; }
+  bool operator>(const page_id_t& rhs) const { return m_id > rhs.m_id; }
+  bool operator<=(const page_id_t& rhs) const { return m_id <= rhs.m_id; }
+  bool operator>=(const page_id_t& rhs) const { return m_id >= rhs.m_id; }
+  page_id_t &operator--() { ut_ad(page_no()); m_id--; return *this; }
+  page_id_t &operator++()
+  {
+    ut_ad(page_no() < 0xFFFFFFFFU);
+    m_id++;
+    return *this;
+  }
+  page_id_t operator-(uint32_t i) const
+  {
+    ut_ad(page_no() >= i);
+    return page_id_t(m_id - i);
+  }
+  page_id_t operator+(uint32_t i) const
+  {
+    ut_ad(page_no() < ~i);
+    return page_id_t(m_id + i);
+  }
 
   /** Retrieve the tablespace id.
   @return tablespace id */
@@ -170,6 +189,7 @@ public:
   void set_corrupt_id() { m_id= ~uint64_t{0}; }
 
 private:
+  page_id_t(uint64_t id) : m_id(id) {}
   /** The page identifier */
   uint64_t m_id;
 };

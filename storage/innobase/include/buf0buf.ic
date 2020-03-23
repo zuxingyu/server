@@ -556,12 +556,17 @@ buf_page_get_block(
 	buf_page_t*	bpage)	/*!< in: control block, or NULL */
 {
 	if (bpage != NULL) {
-		ut_ad(buf_page_hash_lock_held_s_or_x(bpage)
-		      || mutex_own(&buf_pool.mutex));
-		ut_ad(buf_page_in_file(bpage));
-
-		if (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE) {
-			return((buf_block_t*) bpage);
+		ut_ad(mutex_own(&buf_pool.mutex)
+		      || rw_lock_own_flagged(buf_pool.hash_lock_get(bpage->id),
+					     RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
+		switch (bpage->state) {
+		case BUF_BLOCK_FILE_PAGE:
+			return reinterpret_cast<buf_block_t*>(bpage);
+		case BUF_BLOCK_ZIP_PAGE:
+		case BUF_BLOCK_ZIP_DIRTY:
+			return nullptr;
+		default:
+			ut_ad(0);
 		}
 	}
 
@@ -779,37 +784,6 @@ buf_block_buf_fix_dec(
 }
 
 /** Returns the control block of a file page, NULL if not found.
-@param[in]	page_id		page id
-@return block, NULL if not found */
-inline buf_page_t *buf_page_hash_get_low(page_id_t page_id)
-{
-	buf_page_t*	bpage;
-
-#ifdef UNIV_DEBUG
-	rw_lock_t*	hash_lock;
-
-	hash_lock = hash_get_lock(buf_pool.page_hash, page_id.fold());
-	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X)
-	      || rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_DEBUG */
-
-	/* Look for the page in the hash table */
-
-	HASH_SEARCH(hash, buf_pool.page_hash, page_id.fold(), buf_page_t*,
-		    bpage,
-		    ut_ad(bpage->in_page_hash && !bpage->in_zip_hash
-			  && buf_page_in_file(bpage)),
-		    page_id == bpage->id);
-	if (bpage) {
-		ut_a(buf_page_in_file(bpage));
-		ut_ad(bpage->in_page_hash);
-		ut_ad(!bpage->in_zip_hash);
-	}
-
-	return(bpage);
-}
-
-/** Returns the control block of a file page, NULL if not found.
 If the block is found and lock is not NULL then the appropriate
 page_hash lock is acquired in the specified lock mode. Otherwise,
 mode value is ignored. It is up to the caller to release the
@@ -819,8 +793,7 @@ lock is released by this function.
 @param[in,out]	lock		lock of the page hash acquired if bpage is
 found, NULL otherwise. If NULL is passed then the hash_lock is released by
 this function.
-@param[in]	lock_mode	RW_LOCK_X or RW_LOCK_S. Ignored if
-lock == NULL
+@param[in]	lock_mode	RW_LOCK_X or RW_LOCK_S
 @param[in]	watch		if true, return watch sentinel also.
 @return pointer to the bpage or NULL; if NULL, lock is also NULL or
 a watch sentinel. */
@@ -832,38 +805,21 @@ buf_page_hash_get_locked(
 	ulint			lock_mode,
 	bool			watch)
 {
-	buf_page_t*	bpage = NULL;
-	rw_lock_t*	hash_lock;
-	ulint		mode = RW_LOCK_S;
+	ut_ad(lock_mode == RW_LOCK_X || lock_mode == RW_LOCK_S);
+	ut_ad(lock || lock_mode == RW_LOCK_S);
 
 	if (lock != NULL) {
 		*lock = NULL;
-		ut_ad(lock_mode == RW_LOCK_X
-		      || lock_mode == RW_LOCK_S);
-		mode = lock_mode;
 	}
 
-	hash_lock = hash_get_lock(buf_pool.page_hash, page_id.fold());
+	const ulint fold= page_id.fold();
+	rw_lock_t* hash_lock = lock_mode == RW_LOCK_S
+		? buf_pool.page_hash_lock_confirmed<false>(fold)
+		: buf_pool.page_hash_lock_confirmed<true>(fold);
 
-	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X)
-	      && !rw_lock_own(hash_lock, RW_LOCK_S));
+	buf_page_t* bpage = buf_pool.page_hash_get_low(page_id);
 
-	if (mode == RW_LOCK_S) {
-		rw_lock_s_lock(hash_lock);
-
-		/* If not own buf_pool_mutex, page_hash can be changed. */
-		hash_lock = hash_lock_s_confirm(
-			hash_lock, buf_pool.page_hash, page_id.fold());
-	} else {
-		rw_lock_x_lock(hash_lock);
-		/* If not own buf_pool_mutex, page_hash can be changed. */
-		hash_lock = hash_lock_x_confirm(
-			hash_lock, buf_pool.page_hash, page_id.fold());
-	}
-
-	bpage = buf_page_hash_get_low(page_id);
-
-	if (!bpage || buf_pool_watch_is_sentinel(bpage)) {
+	if (!bpage || buf_pool.watch_is_sentinel(*bpage)) {
 		if (!watch) {
 			bpage = NULL;
 		}
@@ -873,22 +829,19 @@ buf_page_hash_get_locked(
 	ut_ad(buf_page_in_file(bpage));
 	ut_ad(page_id == bpage->id);
 
-	if (lock == NULL) {
-		/* The caller wants us to release the page_hash lock */
-		goto unlock_and_exit;
-	} else {
+	if (lock) {
 		/* To be released by the caller */
 		*lock = hash_lock;
-		goto exit;
+		return bpage;
 	}
 
 unlock_and_exit:
-	if (mode == RW_LOCK_S) {
+	if (lock_mode == RW_LOCK_S) {
 		rw_lock_s_unlock(hash_lock);
 	} else {
 		rw_lock_x_unlock(hash_lock);
 	}
-exit:
+
 	return(bpage);
 }
 
