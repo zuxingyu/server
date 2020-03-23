@@ -82,8 +82,6 @@ IF(INNODB_COMPILER_HINTS)
    ADD_DEFINITIONS("-DCOMPILER_HINTS")
 ENDIF()
 
-SET(MUTEXTYPE "event" CACHE STRING "Mutex type: event, sys or futex")
-
 # Enable InnoDB's UNIV_DEBUG in debug builds
 SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DUNIV_DEBUG")
 
@@ -131,8 +129,9 @@ IF(NOT MSVC)
     SET_SOURCE_FILES_PROPERTIES(trx/trx0rec.cc PROPERTIES COMPILE_FLAGS -O1)
   ENDIF()
 
-# Only use futexes on Linux if GCC atomics are available
-IF(NOT MSVC AND NOT CMAKE_CROSSCOMPILING)
+SET(MUTEXTYPE "sys" CACHE STRING "Mutex type: event, sys or futex")
+
+IF(NOT MSVC AND NOT CMAKE_CROSSCOMPILING AND MUTEXTYPE MATCHES "futex")
   CHECK_C_SOURCE_RUNS(
   "
   #include <stdio.h>
@@ -178,8 +177,6 @@ CHECK_CXX_SOURCE_COMPILES("struct t1{ int a; char *b; }; struct t1 c= { .a=1, .b
 IF(HAVE_C99_INITIALIZERS)
   ADD_DEFINITIONS(-DHAVE_C99_INITIALIZERS)
 ENDIF()
-
-SET(MUTEXTYPE "event" CACHE STRING "Mutex type: event, sys or futex")
 
 IF(MUTEXTYPE MATCHES "event")
   ADD_DEFINITIONS(-DMUTEX_EVENT)
