@@ -112,7 +112,7 @@ handler::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
   if (table->file->is_clustering_key(keyno))
     len= table->s->stored_rec_length;
   /* Assume block is 75 % full */
-  uint avg_block_records= ((uint) (table->file->stats.block_size*3/4))/len + 1;
+  uint avg_block_records= ((uint) (stats.block_size*3/4))/len + 1;
   uint limit= thd->variables.eq_range_index_dive_limit;
   bool use_statistics_for_eq_range= eq_ranges_exceeds_limit(seq,
                                                             seq_init_param,
@@ -218,7 +218,7 @@ handler::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
             */
             prev_range_last_block_records+= rows;
             DBUG_ASSERT(prev_range_last_block_records <
-                        table->file->stats.block_size);
+                        stats.block_size);
           }
           else
 	  {
@@ -323,7 +323,7 @@ handler::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
       uint limited_ranges= (uint) MY_MIN((ulonglong) n_ranges, io_blocks);
       cost->cpu_cost= read_time(keyno, limited_ranges, total_rows);
     }
-    cost->cpu_cost+= ((double) total_rows / TIME_FOR_COMPARE +
+    cost->cpu_cost+= (rows2double(total_rows) / TIME_FOR_COMPARE +
                       MULTI_RANGE_READ_SETUP_COST);
   }
   DBUG_PRINT("statistics",
@@ -403,7 +403,7 @@ ha_rows handler::multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
   {
     cost->cpu_cost= read_time(keyno, n_ranges, (uint)n_rows);
   }
-  cost->cpu_cost+= (double) n_rows / TIME_FOR_COMPARE;
+  cost->cpu_cost+= rows2double(n_rows) / TIME_FOR_COMPARE;
   return 0;
 }
 
