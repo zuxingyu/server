@@ -80,7 +80,7 @@ release buf_pool.mutex.  Furthermore, the page frame will no longer be
 accessible via bpage.
 
 The caller must hold buf_pool.mutex and must not hold any
-buf_page_get_mutex() when calling this function.
+bpage->get_mutex() when calling this function.
 @return true if freed, false otherwise. */
 bool
 buf_LRU_free_page(
@@ -142,7 +142,7 @@ void
 buf_LRU_add_block(
 /*==============*/
 	buf_page_t*	bpage,	/*!< in: control block */
-	ibool		old);	/*!< in: TRUE if should be put to the old
+	bool		old);	/*!< in: true if should be put to the old
 				blocks in the LRU list, else put to the
 				start; if the LRU list is very short, added to
 				the start regardless of this parameter */

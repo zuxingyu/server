@@ -465,10 +465,8 @@ static bool buf_flush_or_remove_page(buf_page_t *bpage, bool flush)
 
 	}
 
-	BPageMutex*	block_mutex;
+	BPageMutex*	block_mutex = bpage->get_mutex();
 	bool		processed = false;
-
-	block_mutex = buf_page_get_mutex(bpage);
 
 	/* We have to release the flush_list_mutex to obey the
 	latching order. We are however guaranteed that the page
@@ -490,8 +488,7 @@ static bool buf_flush_or_remove_page(buf_page_t *bpage, bool flush)
 
 		processed = true;
 
-	} else if (buf_flush_ready_for_flush(bpage, BUF_FLUSH_SINGLE_PAGE)) {
-
+	} else if (bpage->ready_for_flush()) {
 		/* The following call will release the buffer pool
 		and block mutex. */
 		processed = buf_flush_page(
@@ -742,39 +739,33 @@ static bool buf_LRU_free_from_common_LRU_list(bool scan_all)
 	bool		freed = false;
 
 	for (buf_page_t* bpage = buf_pool.lru_scan_itr.start();
-	     bpage != NULL
-	     && !freed
-	     && (scan_all || scanned < BUF_LRU_SEARCH_SCAN_THRESHOLD);
+	     bpage && (scan_all || scanned < BUF_LRU_SEARCH_SCAN_THRESHOLD);
 	     ++scanned, bpage = buf_pool.lru_scan_itr.get()) {
-
 		buf_page_t*	prev = UT_LIST_GET_PREV(LRU, bpage);
-		BPageMutex*	mutex = buf_page_get_mutex(bpage);
-
 		buf_pool.lru_scan_itr.set(prev);
 
+		BPageMutex* mutex = bpage->get_mutex();
 		mutex_enter(mutex);
 
-		ut_ad(buf_page_in_file(bpage));
 		ut_ad(bpage->in_LRU_list);
 
-		unsigned	accessed = buf_page_is_accessed(bpage);
-
-		if (buf_flush_ready_for_replace(bpage)) {
-			mutex_exit(mutex);
+		const auto accessed = bpage->is_accessed();
+		freed = bpage->ready_for_replace();
+		mutex_exit(mutex);
+		if (freed) {
 			freed = buf_LRU_free_page(bpage, true);
-		} else {
-			mutex_exit(mutex);
-		}
+			if (!freed) {
+				continue;
+			}
 
-		if (freed && !accessed) {
-			/* Keep track of pages that are evicted without
-			ever being accessed. This gives us a measure of
-			the effectiveness of readahead */
-			++buf_pool.stat.n_ra_pages_evicted;
+			if (!accessed) {
+				/* Keep track of pages that are evicted without
+				ever being accessed. This gives us a measure of
+				the effectiveness of readahead */
+				++buf_pool.stat.n_ra_pages_evicted;
+				break;
+			}
 		}
-
-		ut_ad(mutex_own(&buf_pool.mutex));
-		ut_ad(!mutex_own(mutex));
 	}
 
 	if (scanned) {
@@ -1118,13 +1109,13 @@ static void buf_LRU_old_adjust_len()
 			ut_a(!LRU_old->old);
 #endif /* UNIV_LRU_DEBUG */
 			old_len = ++buf_pool.LRU_old_len;
-			buf_page_set_old(LRU_old, TRUE);
+			LRU_old->set_old(true);
 
 		} else if (old_len > new_len + BUF_LRU_OLD_TOLERANCE) {
 
 			buf_pool.LRU_old = UT_LIST_GET_NEXT(LRU, LRU_old);
 			old_len = --buf_pool.LRU_old_len;
-			buf_page_set_old(LRU_old, FALSE);
+			LRU_old->set_old(false);
 		} else {
 			return;
 		}
@@ -1150,8 +1141,8 @@ static void buf_LRU_old_init()
 		ut_ad(buf_page_in_file(bpage));
 
 		/* This loop temporarily violates the
-		assertions of buf_page_set_old(). */
-		bpage->old = TRUE;
+		assertions of buf_page_t::set_old(). */
+		bpage->old = true;
 	}
 
 	buf_pool.LRU_old = UT_LIST_GET_FIRST(buf_pool.LRU);
@@ -1217,7 +1208,7 @@ static inline void buf_LRU_remove_block(buf_page_t* bpage)
 		ut_a(!prev_bpage->old);
 #endif /* UNIV_LRU_DEBUG */
 		buf_pool.LRU_old = prev_bpage;
-		buf_page_set_old(prev_bpage, TRUE);
+		prev_bpage->set_old(true);
 
 		buf_pool.LRU_old_len++;
 	}
@@ -1239,8 +1230,8 @@ static inline void buf_LRU_remove_block(buf_page_t* bpage)
 		     bpage = UT_LIST_GET_NEXT(LRU, bpage)) {
 
 			/* This loop temporarily violates the
-			assertions of buf_page_set_old(). */
-			bpage->old = FALSE;
+			assertions of buf_page_t::set_old(). */
+			bpage->old = false;
 		}
 
 		buf_pool.LRU_old = NULL;
@@ -1252,8 +1243,7 @@ static inline void buf_LRU_remove_block(buf_page_t* bpage)
 	ut_ad(buf_pool.LRU_old);
 
 	/* Update the LRU_old_len field if necessary */
-	if (buf_page_is_old(bpage)) {
-
+	if (bpage->old) {
 		buf_pool.LRU_old_len--;
 	}
 
@@ -1286,12 +1276,10 @@ buf_unzip_LRU_add_block(
 Adds a block to the LRU list. Please make sure that the page_size is
 already set when invoking the function, so that we can get correct
 page_size from the buffer page when adding a block into LRU */
-UNIV_INLINE
 void
-buf_LRU_add_block_low(
-/*==================*/
+buf_LRU_add_block(
 	buf_page_t*	bpage,	/*!< in: control block */
-	ibool		old)	/*!< in: TRUE if should be put to the old blocks
+	bool		old)	/*!< in: true if should be put to the old blocks
 				in the LRU list, else put to the start; if the
 				LRU list is very short, the block is added to
 				the start, regardless of this parameter */
@@ -1332,7 +1320,7 @@ buf_LRU_add_block_low(
 
 		/* Adjust the length of the old block list if necessary */
 
-		buf_page_set_old(bpage, old);
+		bpage->set_old(old);
 		buf_LRU_old_adjust_len();
 
 	} else if (UT_LIST_GET_LEN(buf_pool.LRU) == BUF_LRU_OLD_MIN_LEN) {
@@ -1342,7 +1330,7 @@ buf_LRU_add_block_low(
 
 		buf_LRU_old_init();
 	} else {
-		buf_page_set_old(bpage, buf_pool.LRU_old != NULL);
+		bpage->set_old(buf_pool.LRU_old != NULL);
 	}
 
 	/* If this is a zipped block with decompressed frame as well
@@ -1350,23 +1338,6 @@ buf_LRU_add_block_low(
 	if (buf_page_belongs_to_unzip_LRU(bpage)) {
 		buf_unzip_LRU_add_block((buf_block_t*) bpage, old);
 	}
-}
-
-/******************************************************************//**
-Adds a block to the LRU list. Please make sure that the page_size is
-already set when invoking the function, so that we can get correct
-page_size from the buffer page when adding a block into LRU */
-void
-buf_LRU_add_block(
-/*==============*/
-	buf_page_t*	bpage,	/*!< in: control block */
-	ibool		old)	/*!< in: TRUE if should be put to the old
-				blocks in the LRU list, else put to the start;
-				if the LRU list is very short, the block is
-				added to the start, regardless of this
-				parameter */
-{
-	buf_LRU_add_block_low(bpage, old);
 }
 
 /******************************************************************//**
@@ -1383,7 +1354,7 @@ buf_LRU_make_block_young(
 	}
 
 	buf_LRU_remove_block(bpage);
-	buf_LRU_add_block_low(bpage, FALSE);
+	buf_LRU_add_block(bpage, false);
 }
 
 /******************************************************************//**
@@ -1395,7 +1366,7 @@ release buf_pool.mutex.  Furthermore, the page frame will no longer be
 accessible via bpage.
 
 The caller must hold buf_pool.mutex and must not hold any
-buf_page_get_mutex() when calling this function.
+bpage->get_mutex() when calling this function.
 @return true if freed, false otherwise. */
 bool
 buf_LRU_free_page(
@@ -1406,7 +1377,7 @@ buf_LRU_free_page(
 {
 	buf_page_t*	b = NULL;
 	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(bpage->id);
-	BPageMutex*	block_mutex = buf_page_get_mutex(bpage);
+	BPageMutex*	block_mutex = bpage->get_mutex();
 
 	ut_ad(mutex_own(&buf_pool.mutex));
 	ut_ad(buf_page_in_file(bpage));
@@ -1415,8 +1386,7 @@ buf_LRU_free_page(
 	rw_lock_x_lock(hash_lock);
 	mutex_enter(block_mutex);
 
-	if (!buf_page_can_relocate(bpage)) {
-
+	if (!bpage->can_relocate()) {
 		/* Do not free buffer fixed and I/O-fixed blocks. */
 		goto func_exit;
 	}
@@ -1453,7 +1423,7 @@ func_exit:
 			      bpage->id.space(), bpage->id.page_no()));
 
 	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X));
-	ut_ad(buf_page_can_relocate(bpage));
+	ut_ad(bpage->can_relocate());
 
 	if (!buf_LRU_block_remove_hashed(bpage, zip)) {
 		return(true);
@@ -1519,7 +1489,7 @@ func_exit:
 
 			incr_LRU_size_in_bytes(b);
 
-			if (buf_page_is_old(b)) {
+			if (b->is_old()) {
 				buf_pool.LRU_old_len++;
 				if (buf_pool.LRU_old
 				    == UT_LIST_GET_NEXT(LRU, b)) {
@@ -1544,11 +1514,11 @@ func_exit:
 #ifdef UNIV_LRU_DEBUG
 			/* Check that the "old" flag is consistent
 			in the block and its neighbours. */
-			buf_page_set_old(b, buf_page_is_old(b));
+			b->set_old(b->is_old());
 #endif /* UNIV_LRU_DEBUG */
 		} else {
 			ut_d(b->in_LRU_list = FALSE);
-			buf_LRU_add_block_low(b, buf_page_is_old(b));
+			buf_LRU_add_block(b, b->old);
 		}
 
 		if (b->state == BUF_BLOCK_ZIP_PAGE) {
@@ -2122,7 +2092,7 @@ void buf_LRU_validate()
 			break;
 		}
 
-		if (buf_page_is_old(bpage)) {
+		if (bpage->is_old()) {
 			const buf_page_t*	prev
 				= UT_LIST_GET_PREV(LRU, bpage);
 			const buf_page_t*	next
@@ -2131,10 +2101,10 @@ void buf_LRU_validate()
 			if (!old_len++) {
 				ut_a(buf_pool.LRU_old == bpage);
 			} else {
-				ut_a(!prev || buf_page_is_old(prev));
+				ut_a(!prev || prev->is_old());
 			}
 
-			ut_a(!next || buf_page_is_old(next));
+			ut_a(!next || next->is_old());
 		}
 	}
 
@@ -2170,16 +2140,16 @@ void buf_LRU_print()
 {
 	mutex_enter(&buf_pool.mutex);
 
-	for (const buf_page_t* bpage = UT_LIST_GET_FIRST(buf_pool.LRU);
+	for (buf_page_t* bpage = UT_LIST_GET_FIRST(buf_pool.LRU);
 	     bpage != NULL;
 	     bpage = UT_LIST_GET_NEXT(LRU, bpage)) {
-
-		mutex_enter(buf_page_get_mutex(bpage));
+		BPageMutex* block_mutex = bpage->get_mutex();
+		mutex_enter(block_mutex);
 
 		fprintf(stderr, "BLOCK space %u page %u ",
 			bpage->id.space(), bpage->id.page_no());
 
-		if (buf_page_is_old(bpage)) {
+		if (bpage->is_old()) {
 			fputs("old ", stderr);
 		}
 
@@ -2220,7 +2190,7 @@ void buf_LRU_print()
 			break;
 		}
 
-		mutex_exit(buf_page_get_mutex(bpage));
+		mutex_exit(block_mutex);
 	}
 
 	mutex_exit(&buf_pool.mutex);

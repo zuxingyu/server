@@ -101,7 +101,7 @@ inline bool buf_page_peek_if_too_old(const buf_page_t *bpage)
 		either the warm-up phase or an in-memory workload. */
 		return(FALSE);
 	} else if (buf_LRU_old_threshold_ms && bpage->old) {
-		unsigned	access_time = buf_page_is_accessed(bpage);
+		uint32_t access_time = bpage->is_accessed();
 
 		/* It is possible that the below comparison returns an
 		unexpected result. 2^32 milliseconds pass in about 50 days,
@@ -109,7 +109,7 @@ inline bool buf_page_peek_if_too_old(const buf_page_t *bpage)
 		is e.g. 50 days + 15 ms, then the below will behave as if
 		it is 15 ms. This is known and fixing it would require to
 		increase buf_page_t::access_time from 32 to 64 bits. */
-		if (access_time > 0
+		if (access_time
 		    && ((ib_uint32_t) (ut_time_ms() - access_time))
 		    >= buf_LRU_old_threshold_ms) {
 			return(TRUE);
@@ -228,33 +228,6 @@ buf_block_set_state(
 }
 
 /*********************************************************************//**
-Determines if a block is mapped to a tablespace.
-@return TRUE if mapped */
-UNIV_INLINE
-ibool
-buf_page_in_file(
-/*=============*/
-	const buf_page_t*	bpage)	/*!< in: pointer to control block */
-{
-	switch (buf_page_get_state(bpage)) {
-	case BUF_BLOCK_POOL_WATCH:
-		ut_error;
-		break;
-	case BUF_BLOCK_ZIP_PAGE:
-	case BUF_BLOCK_ZIP_DIRTY:
-	case BUF_BLOCK_FILE_PAGE:
-		return(TRUE);
-	case BUF_BLOCK_NOT_USED:
-	case BUF_BLOCK_READY_FOR_USE:
-	case BUF_BLOCK_MEMORY:
-	case BUF_BLOCK_REMOVE_HASH:
-		break;
-	}
-
-	return(FALSE);
-}
-
-/*********************************************************************//**
 Determines if a block should be on unzip_LRU list.
 @return TRUE if block belongs to unzip_LRU */
 UNIV_INLINE
@@ -267,27 +240,6 @@ buf_page_belongs_to_unzip_LRU(
 
 	return(bpage->zip.data
 	       && buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE);
-}
-
-/*********************************************************************//**
-Gets the mutex of a block.
-@return pointer to mutex protecting bpage */
-UNIV_INLINE
-BPageMutex*
-buf_page_get_mutex(
-/*===============*/
-	const buf_page_t*	bpage)	/*!< in: pointer to control block */
-{
-	switch (buf_page_get_state(bpage)) {
-	case BUF_BLOCK_POOL_WATCH:
-		ut_error;
-		return(NULL);
-	case BUF_BLOCK_ZIP_PAGE:
-	case BUF_BLOCK_ZIP_DIRTY:
-		return(&buf_pool.zip_mutex);
-	default:
-		return(&((buf_block_t*) bpage)->mutex);
-	}
 }
 
 /*********************************************************************//**
@@ -441,108 +393,6 @@ buf_page_unset_sticky(
 	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_PIN);
 
 	bpage->io_fix = BUF_IO_NONE;
-}
-
-/********************************************************************//**
-Determine if a buffer block can be relocated in memory.  The block
-can be dirty, but it must not be I/O-fixed or bufferfixed. */
-UNIV_INLINE
-ibool
-buf_page_can_relocate(
-/*==================*/
-	const buf_page_t*	bpage)	/*!< control block being relocated */
-{
-	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
-	ut_ad(buf_page_in_file(bpage));
-	ut_ad(bpage->in_LRU_list);
-
-	return(buf_page_get_io_fix(bpage) == BUF_IO_NONE
-	       && bpage->buf_fix_count == 0);
-}
-
-/*********************************************************************//**
-Determine if a block has been flagged old.
-@return TRUE if old */
-UNIV_INLINE
-ibool
-buf_page_is_old(
-/*============*/
-	const buf_page_t*	bpage)	/*!< in: control block */
-{
-	/* Buffer page mutex is not strictly required here for heuristic
-	purposes even if LRU mutex is not being held. Keep the assertion
-	for not since all the callers hold it. */
-	ut_ad(mutex_own(buf_page_get_mutex(bpage))
-	      || mutex_own(&buf_pool.mutex));
-	ut_ad(buf_page_in_file(bpage));
-
-	return(bpage->old);
-}
-
-/*********************************************************************//**
-Flag a block old. */
-UNIV_INLINE
-void
-buf_page_set_old(
-/*=============*/
-	buf_page_t*	bpage,	/*!< in/out: control block */
-	bool		old)	/*!< in: old */
-{
-	ut_a(buf_page_in_file(bpage));
-	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(bpage->in_LRU_list);
-
-#ifdef UNIV_LRU_DEBUG
-	ut_a((buf_pool.LRU_old_len == 0) == (buf_pool.LRU_old == NULL));
-	/* If a block is flagged "old", the LRU_old list must exist. */
-	ut_a(!old || buf_pool.LRU_old);
-
-	if (UT_LIST_GET_PREV(LRU, bpage) && UT_LIST_GET_NEXT(LRU, bpage)) {
-		const buf_page_t*	prev = UT_LIST_GET_PREV(LRU, bpage);
-		const buf_page_t*	next = UT_LIST_GET_NEXT(LRU, bpage);
-		if (prev->old == next->old) {
-			ut_a(prev->old == old);
-		} else {
-			ut_a(!prev->old);
-			ut_a(buf_pool.LRU_old == (old ? bpage : next));
-		}
-	}
-#endif /* UNIV_LRU_DEBUG */
-
-	bpage->old = old;
-}
-
-/*********************************************************************//**
-Determine the time of first access of a block in the buffer pool.
-@return ut_time_ms() at the time of first access, 0 if not accessed */
-UNIV_INLINE
-unsigned
-buf_page_is_accessed(
-/*=================*/
-	const buf_page_t*	bpage)	/*!< in: control block */
-{
-	ut_ad(buf_page_in_file(bpage));
-
-	return(bpage->access_time);
-}
-
-/*********************************************************************//**
-Flag a block accessed. */
-UNIV_INLINE
-void
-buf_page_set_accessed(
-/*==================*/
-	buf_page_t*	bpage)		/*!< in/out: control block */
-{
-	ut_ad(!mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
-	ut_a(buf_page_in_file(bpage));
-
-	if (bpage->access_time == 0) {
-		/* Make this the time of the first access. */
-		bpage->access_time = static_cast<uint>(ut_time_ms());
-	}
 }
 
 /*********************************************************************//**

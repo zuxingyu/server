@@ -573,11 +573,11 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 	contain uninitialized data. */
 	UNIV_MEM_ASSERT_W(src, size);
 
-	BPageMutex*	block_mutex = buf_page_get_mutex(bpage);
+	BPageMutex* block_mutex = bpage->get_mutex();
 
 	mutex_enter(block_mutex);
 
-	if (buf_page_can_relocate(bpage)) {
+	if (bpage->can_relocate()) {
 		/* Relocate the compressed page. */
 		const ulonglong ns = my_interval_timer();
 

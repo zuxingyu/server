@@ -1034,7 +1034,7 @@ fail:
 		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 		DBUG_ASSERT(block->page.status != buf_page_t::FREED);
 
-		buf_page_set_accessed(&block->page);
+		block->page.set_accessed();
 		buf_block_buf_fix_inc(block, __FILE__, __LINE__);
 		mutex_exit(&block->mutex);
 

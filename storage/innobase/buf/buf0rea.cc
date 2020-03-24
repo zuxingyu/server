@@ -297,7 +297,7 @@ buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
 	for (i = low; i < high; i++) {
 		if (const buf_page_t* bpage = buf_page_hash_get(
 			    page_id_t(page_id.space(), i))) {
-			if (buf_page_is_accessed(bpage)
+			if (bpage->is_accessed()
 			    && buf_page_peek_if_young(bpage)
 			    && ++recent_blocks
 			    >= 5 + buf_pool.read_ahead_area / 8) {
@@ -477,7 +477,6 @@ which could result in a deadlock if the OS does not support asynchronous io.
 ulint
 buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf)
 {
-	buf_page_t*	bpage;
 	buf_frame_t*	frame;
 	buf_page_t*	pred_bpage	= NULL;
 	ulint		pred_offset;
@@ -565,46 +564,50 @@ buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf)
 
 	fail_count = 0;
 
-	for (i = low; i < high; i++) {
-		bpage = buf_page_hash_get(page_id_t(page_id.space(), i));
+	for (i = low; i < high; ++i) {
+		buf_page_t* bpage= buf_page_hash_get(page_id_t(page_id.space(),
+							       i));
 
-		if (bpage == NULL || !buf_page_is_accessed(bpage)) {
-			/* Not accessed */
-			fail_count++;
-
-		} else if (pred_bpage) {
-			/* Note that buf_page_is_accessed() returns
-			the time of the first access.  If some blocks
-			of the extent existed in the buffer pool at
-			the time of a linear access pattern, the first
-			access times may be nonmonotonic, even though
-			the latest access times were linear.  The
-			threshold (srv_read_ahead_factor) should help
-			a little against this. */
-			int res = ut_ulint_cmp(
-				buf_page_is_accessed(bpage),
-				buf_page_is_accessed(pred_bpage));
-			/* Accesses not in the right order */
-			if (res != 0 && res != asc_or_desc) {
-				fail_count++;
+		if (!bpage) {
+failed:
+			if (++fail_count > threshold) {
+				/* Too many failures: return */
+				mutex_exit(&buf_pool.mutex);
+				return 0;
 			}
-		}
-
-		if (fail_count > threshold) {
-			/* Too many failures: return */
-			mutex_exit(&buf_pool.mutex);
-			return(0);
-		}
-
-		if (bpage && buf_page_is_accessed(bpage)) {
-			pred_bpage = bpage;
+		} else {
+			const auto is_accessed = bpage->is_accessed();
+			if (!is_accessed) {
+				goto failed;
+			}
+			if (pred_bpage) {
+				/* Note that buf_page_t::is_accessed()
+				returns the time of the first access.
+				If some blocks of the extent existed
+				in the buffer pool at the time of a
+				linear access pattern, the first
+				access times may be nonmonotonic, even
+				though the latest access times were
+				linear.  The threshold
+				(srv_read_ahead_factor) should help a
+				little against this. */
+				int res = ut_ulint_cmp(
+					is_accessed,
+					pred_bpage->is_accessed());
+				pred_bpage = bpage;
+				if (res != 0 && res != asc_or_desc) {
+					goto failed;
+				}
+			} else {
+				pred_bpage = bpage;
+			}
 		}
 	}
 
 	/* If we got this far, we know that enough pages in the area have
 	been accessed in the right order: linear read-ahead can be sensible */
 
-	bpage = buf_page_hash_get(page_id);
+	buf_page_t* bpage = buf_page_hash_get(page_id);
 
 	if (bpage == NULL) {
 		mutex_exit(&buf_pool.mutex);

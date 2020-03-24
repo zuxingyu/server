@@ -713,15 +713,9 @@ buf_block_set_state(
 /*================*/
 	buf_block_t*		block,	/*!< in/out: pointer to control block */
 	enum buf_page_state	state);	/*!< in: state */
-/*********************************************************************//**
-Determines if a block is mapped to a tablespace.
-@return TRUE if mapped */
-UNIV_INLINE
-ibool
-buf_page_in_file(
-/*=============*/
-	const buf_page_t*	bpage)	/*!< in: pointer to control block */
-	MY_ATTRIBUTE((warn_unused_result));
+
+#define buf_page_in_file(bpage) ((bpage)->in_file())
+#define buf_page_get_mutex(bpage) ((bpage)->get_mutex())
 
 /*********************************************************************//**
 Determines if a block should be on unzip_LRU list.
@@ -730,16 +724,6 @@ UNIV_INLINE
 ibool
 buf_page_belongs_to_unzip_LRU(
 /*==========================*/
-	const buf_page_t*	bpage)	/*!< in: pointer to control block */
-	MY_ATTRIBUTE((warn_unused_result));
-
-/*********************************************************************//**
-Gets the mutex of a block.
-@return pointer to mutex protecting bpage */
-UNIV_INLINE
-BPageMutex*
-buf_page_get_mutex(
-/*===============*/
 	const buf_page_t*	bpage)	/*!< in: pointer to control block */
 	MY_ATTRIBUTE((warn_unused_result));
 
@@ -825,50 +809,7 @@ void
 buf_page_unset_sticky(
 /*==================*/
 	buf_page_t*	bpage);	/*!< in/out: control block */
-/********************************************************************//**
-Determine if a buffer block can be relocated in memory.  The block
-can be dirty, but it must not be I/O-fixed or bufferfixed. */
-UNIV_INLINE
-ibool
-buf_page_can_relocate(
-/*==================*/
-	const buf_page_t*	bpage)	/*!< control block being relocated */
-	MY_ATTRIBUTE((warn_unused_result));
 
-/*********************************************************************//**
-Determine if a block has been flagged old.
-@return TRUE if old */
-UNIV_INLINE
-ibool
-buf_page_is_old(
-/*============*/
-	const buf_page_t*	bpage)	/*!< in: control block */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Flag a block old. */
-UNIV_INLINE
-void
-buf_page_set_old(
-/*=============*/
-	buf_page_t*	bpage,	/*!< in/out: control block */
-	bool		old);	/*!< in: old */
-/*********************************************************************//**
-Determine the time of first access of a block in the buffer pool.
-@return ut_time_ms() at the time of first access, 0 if not accessed */
-UNIV_INLINE
-unsigned
-buf_page_is_accessed(
-/*=================*/
-	const buf_page_t*	bpage)	/*!< in: control block */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Flag a block accessed. */
-UNIV_INLINE
-void
-buf_page_set_accessed(
-/*==================*/
-	buf_page_t*	bpage)		/*!< in/out: control block */
-	MY_ATTRIBUTE((nonnull));
 /*********************************************************************//**
 Gets the buf_block_t handle of a buffered file block if an uncompressed
 page frame exists, or NULL. Note: even though bpage is not declared a
@@ -1076,12 +1017,12 @@ for compressed and uncompressed frames */
 /** Number of bits used for buffer page states. */
 #define BUF_PAGE_STATE_BITS	3
 
-class buf_page_t {
+class buf_page_t
+{
 public:
 	/** @name General fields
 	None of these bit-fields must be modified without holding
-	buf_page_get_mutex() [buf_block_t::mutex or
-	buf_pool.zip_mutex], since they can be stored in the same
+	get_mutex(), since they can be stored in the same
 	machine word.  Some of these fields are additionally protected
 	by buf_pool.mutex. */
 	/* @{ */
@@ -1099,7 +1040,7 @@ public:
 	buf_pool.mutex for writes only */
 	buf_io_fix	io_fix;
 
-	/** Block state. @see buf_page_in_file */
+	/** Block state. @see in_file() */
 	buf_page_state	state;
 
 	unsigned	flush_type:2;	/*!< if this block is currently being
@@ -1222,8 +1163,7 @@ public:
 	unsigned	access_time;	/*!< time of first access, or
 					0 if the block was never accessed
 					in the buffer pool. Protected by
-					block mutex for buf_page_in_file()
-					blocks.
+					block mutex for in_file() blocks.
 
 					For state==BUF_BLOCK_MEMORY
 					blocks, this field can be repurposed
@@ -1272,6 +1212,47 @@ public:
   {
     return zip.ssize ? (UNIV_ZIP_SIZE_MIN >> 1) << zip.ssize : 0;
   }
+
+  /** @return whether the block is mapped to a data file */
+  bool in_file() const
+  {
+    switch (state) {
+    case BUF_BLOCK_POOL_WATCH:
+      break;
+    case BUF_BLOCK_ZIP_PAGE:
+    case BUF_BLOCK_ZIP_DIRTY:
+    case BUF_BLOCK_FILE_PAGE:
+      return true;
+    case BUF_BLOCK_NOT_USED:
+    case BUF_BLOCK_READY_FOR_USE:
+    case BUF_BLOCK_MEMORY:
+    case BUF_BLOCK_REMOVE_HASH:
+      return false;
+    }
+
+    ut_error;
+    return false;
+  }
+
+  /** @return the block mutex */
+  inline BPageMutex *get_mutex();
+
+  /** @return whether the block is modified and ready for flushing */
+  inline bool ready_for_flush() const;
+  /** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
+  inline bool ready_for_replace() const;
+  /** @return whether the block can be relocated in memory.
+  The block can be dirty, but it must not be I/O-fixed or bufferfixed. */
+  inline bool can_relocate() const;
+  /** @return whether the block has been flagged old in buf_pool.LRU */
+  inline bool is_old() const;
+  /** Set whether a block is old in buf_pool.LRU */
+  inline void set_old(bool old);
+  /** Flag a page accessed in buf_pool */
+  inline void set_accessed();
+  /** @return ut_time_ms() at the time of first access of a block in buf_pool
+  @retval 0 if not accessed */
+  unsigned is_accessed() const { ut_ad(in_file()); return access_time; }
 };
 
 /** The buffer control block structure */
@@ -1480,7 +1461,7 @@ public:
   void set(buf_page_t *bpage)
   {
     ut_ad(mutex_own(m_mutex));
-    ut_ad(!bpage || buf_page_in_file(bpage));
+    ut_ad(!bpage || bpage->in_file());
     m_hp= bpage;
   }
 
@@ -1887,7 +1868,7 @@ public:
     /* Look for the page in the hash table */
     HASH_SEARCH(hash, page_hash, id.fold(), buf_page_t*, bpage,
                 ut_ad(bpage->in_page_hash && !bpage->in_zip_hash &&
-                      buf_page_in_file(bpage)),
+                      bpage->in_file()),
                 id == bpage->id);
     return bpage;
   }
@@ -1944,7 +1925,7 @@ public:
   {
     ut_ad(rw_lock_own_flagged(hash_lock_get(bpage.id),
                               RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
-    ut_ad(buf_page_in_file(&bpage));
+    ut_ad(bpage.in_file());
 
     if (&bpage < &watch[0] || &bpage >= &watch[BUF_POOL_WATCH_SIZE])
     {
@@ -2053,8 +2034,8 @@ public:
 					the read-ahead algorithms read if
 					invoked */
 	hash_table_t*	page_hash;	/*!< hash table of buf_page_t or
-					buf_block_t file pages,
-					buf_page_in_file() == TRUE,
+					buf_block_t file pages
+					(buf_page_t::in_file() holds),
 					indexed by (space_id, offset).
 					page_hash is protected by an
 					array of mutexes.
@@ -2278,6 +2259,95 @@ private:
 
 /** The InnoDB buffer pool */
 extern buf_pool_t buf_pool;
+
+/** @return the block mutex */
+inline BPageMutex *buf_page_t::get_mutex()
+{
+  ut_ad (state != BUF_BLOCK_POOL_WATCH);
+  return UNIV_LIKELY(state >= BUF_BLOCK_NOT_USED)
+    ? &reinterpret_cast<buf_block_t*>(this)->mutex
+    : &buf_pool.zip_mutex;
+}
+
+/** @return whether the block is modified and ready for flushing */
+inline bool buf_page_t::ready_for_flush() const
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  ut_a(in_file());
+  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  return oldest_modification && io_fix == BUF_IO_NONE;
+}
+
+/** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
+inline bool buf_page_t::ready_for_replace() const
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  ut_a(in_file());
+  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  return !oldest_modification && !buf_fix_count && io_fix == BUF_IO_NONE;
+}
+
+/** @return whether the block can be relocated in memory.
+The block can be dirty, but it must not be I/O-fixed or bufferfixed. */
+inline bool buf_page_t::can_relocate() const
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  ut_ad(in_file());
+  ut_ad(in_LRU_list);
+  return io_fix == BUF_IO_NONE && buf_fix_count == 0;
+}
+
+/** @return whether the block has been flagged old in buf_pool.LRU */
+inline bool buf_page_t::is_old() const
+{
+  ut_ad(mutex_own(&buf_pool.mutex) ||
+	mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  ut_ad(in_file());
+  ut_ad(in_LRU_list);
+  return old;
+}
+
+/** Set whether a block is old in buf_pool.LRU */
+inline void buf_page_t::set_old(bool old)
+{
+  ut_ad(in_file());
+  ut_ad(mutex_own(&buf_pool.mutex));
+  ut_ad(in_LRU_list);
+
+#ifdef UNIV_LRU_DEBUG
+  ut_a((buf_pool.LRU_old_len == 0) == (buf_pool.LRU_old == nullptr));
+  /* If a block is flagged "old", the LRU_old list must exist. */
+  ut_a(!old || buf_pool.LRU_old);
+
+  if (UT_LIST_GET_PREV(LRU, this) && UT_LIST_GET_NEXT(LRU, this))
+  {
+    const buf_page_t *prev= UT_LIST_GET_PREV(LRU, this);
+    const buf_page_t *next = UT_LIST_GET_NEXT(LRU, this);
+    if (prev->old == next->old)
+      ut_a(prev->old == old);
+    else
+    {
+      ut_a(!prev->old);
+      ut_a(buf_pool.LRU_old == (old ? this : next));
+    }
+  }
+#endif /* UNIV_LRU_DEBUG */
+
+  this->old= old;
+}
+
+/** Flag a page accessed in buf_pool */
+inline void buf_page_t::set_accessed()
+{
+  ut_ad(!mutex_own(&buf_pool.mutex));
+  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  ut_ad(in_file());
+
+  if (!access_time)
+    /* Make this the time of the first access. */
+    access_time= static_cast<uint32_t>(ut_time_ms());
+}
 
 /** @name Accessors for buffer pool mutexes
 Use these instead of accessing buffer pool mutexes directly. */

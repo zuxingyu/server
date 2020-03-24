@@ -162,15 +162,6 @@ buf_flush_note_modification(
 					set of mtr's */
 	lsn_t		end_lsn);	/*!< in: end lsn of the last mtr in the
 					set of mtr's */
-/********************************************************************//**
-Returns TRUE if the file page block is immediately suitable for replacement,
-i.e., transition FILE_PAGE => NOT_USED allowed.
-@return TRUE if can replace immediately */
-ibool
-buf_flush_ready_for_replace(
-/*========================*/
-	buf_page_t*	bpage);	/*!< in: buffer control block, must be
-				buf_page_in_file(bpage) and in the LRU list */
 
 /** Initialize page_cleaner. */
 void buf_flush_page_cleaner_init();
@@ -208,18 +199,6 @@ returns true.
 @param[in]	sync		true if sync IO request
 @return whether the page was flushed */
 bool buf_flush_page(buf_page_t* bpage, buf_flush_t flush_type, bool sync);
-
-/** Check if the block is modified and ready for flushing.
-@param[in]	bpage		buffer control block, must be buf_page_in_file()
-@param[in]	flush_type	type of flush
-@return true if can flush immediately */
-bool
-buf_flush_ready_for_flush(
-/*======================*/
-	buf_page_t*	bpage,	/*!< in: buffer control block, must be
-				buf_page_in_file(bpage) */
-	buf_flush_t	flush_type)/*!< in: type of flush */
-	MY_ATTRIBUTE((warn_unused_result));
 
 /** Synchronously flush dirty blocks.
 NOTE: The calling thread is not allowed to hold any buffer page latches! */
