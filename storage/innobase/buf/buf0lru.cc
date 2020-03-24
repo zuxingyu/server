@@ -1405,7 +1405,7 @@ buf_LRU_free_page(
 				compressed page of an uncompressed page */
 {
 	buf_page_t*	b = NULL;
-	rw_lock_t*	hash_lock = buf_page_hash_lock_get(bpage->id);
+	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(bpage->id);
 	BPageMutex*	block_mutex = buf_page_get_mutex(bpage);
 
 	ut_ad(mutex_own(&buf_pool.mutex));
@@ -1477,7 +1477,7 @@ func_exit:
 
 		mutex_enter(block_mutex);
 
-		ut_a(!buf_page_hash_get_low(b->id));
+		ut_a(!buf_pool.page_hash_get_low(b->id));
 
 		b->state = b->oldest_modification
 			? BUF_BLOCK_ZIP_DIRTY
@@ -1733,7 +1733,7 @@ buf_LRU_block_remove_hashed(
 	ut_ad(mutex_own(&buf_pool.mutex));
 	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 
-	hash_lock = buf_page_hash_lock_get(bpage->id);
+	hash_lock = buf_pool.hash_lock_get(bpage->id);
 
         ut_ad(rw_lock_own(hash_lock, RW_LOCK_X));
 
@@ -1817,7 +1817,7 @@ buf_LRU_block_remove_hashed(
 		break;
 	}
 
-	hashed_bpage = buf_page_hash_get_low(bpage->id);
+	hashed_bpage = buf_pool.page_hash_get_low(bpage->id);
 	if (bpage != hashed_bpage) {
 		ib::error() << "Page " << bpage->id
 			<< " not found in the hash table";
@@ -1973,7 +1973,7 @@ buf_LRU_block_free_hashed_page(
 @param[in]	old_page_id	page number before bpage->id was invalidated */
 void buf_LRU_free_one_page(buf_page_t* bpage, page_id_t old_page_id)
 {
-	rw_lock_t*	hash_lock = buf_page_hash_lock_get(old_page_id);
+	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(old_page_id);
 	BPageMutex*	block_mutex = buf_page_get_mutex(bpage);
 
 	ut_ad(mutex_own(&buf_pool.mutex));

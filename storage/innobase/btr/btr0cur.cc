@@ -1678,11 +1678,11 @@ retry_page_get:
 				cursor->flag = BTR_CUR_DELETE_IBUF;
 			} else {
 				/* The purge could not be buffered. */
-				buf_pool_watch_unset(page_id);
+				buf_pool.watch_unset(page_id);
 				break;
 			}
 
-			buf_pool_watch_unset(page_id);
+			buf_pool.watch_unset(page_id);
 			goto func_exit;
 
 		default:

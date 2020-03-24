@@ -3309,7 +3309,7 @@ ibuf_insert_low(
 	const ulint physical_size = zip_size ? zip_size : srv_page_size;
 
 	if (op == IBUF_OP_DELETE
-	    && (min_n_recs < 2 || buf_pool_watch_occurred(page_id))) {
+	    && (min_n_recs < 2 || buf_pool.watch_occurred(page_id))) {
 		/* The page could become empty after the record is
 		deleted, or the page has been read in to the buffer
 		pool.  Refuse to buffer the operation. */
