@@ -278,15 +278,13 @@ the read requests for the whole area.
 
 #ifndef UNIV_INNOCHECKSUM
 /** Value in microseconds */
-static const int WAIT_FOR_READ	= 100;
-static const int WAIT_FOR_WRITE = 100;
+constexpr int WAIT_FOR_READ= 100;
+constexpr int WAIT_FOR_WRITE= 100;
 /** Number of attempts made to read in a page in the buffer pool */
-static const ulint	BUF_PAGE_READ_MAX_RETRIES = 100;
-/** Number of pages to read ahead */
-static const ulint	BUF_READ_AHEAD_PAGES = 64;
+constexpr ulint	BUF_PAGE_READ_MAX_RETRIES= 100;
 /** The maximum portion of the buffer pool that can be used for the
 read-ahead buffer.  (Divide buf_pool size by this amount) */
-static const ulint	BUF_READ_AHEAD_PORTION = 32;
+constexpr uint32_t BUF_READ_AHEAD_PORTION= 32;
 
 /** The InnoDB buffer pool */
 buf_pool_t buf_pool;
@@ -1561,17 +1559,19 @@ bool buf_pool_t::create()
 
   for (size_t i= 0; i < UT_ARR_SIZE(zip_free); ++i)
     UT_LIST_INIT(zip_free[i], &buf_buddy_free_t::list);
-
-  read_ahead_area= ut_min(BUF_READ_AHEAD_PAGES,
-                          ut_2_power_up(curr_size / BUF_READ_AHEAD_PORTION));
+  ulint s= curr_size;
+  old_size= s;
+  s/= BUF_READ_AHEAD_PORTION;
+  read_ahead_area= s >= READ_AHEAD_PAGES
+    ? READ_AHEAD_PAGES
+    : my_round_up_to_next_power(static_cast<uint32_t>(s));
   curr_pool_size= srv_buf_pool_size;
 
-  old_size= curr_size;
   n_chunks_new= n_chunks;
 
   /* Number of locks protecting page_hash must be a power of two */
-  srv_n_page_hash_locks= static_cast<ulong>
-    (ut_2_power_up(srv_n_page_hash_locks));
+  srv_n_page_hash_locks= my_round_up_to_next_power(static_cast<uint32_t>
+                                                   (srv_n_page_hash_locks));
   ut_a(srv_n_page_hash_locks != 0);
   ut_a(srv_n_page_hash_locks <= MAX_PAGE_HASH_LOCKS);
 
@@ -2382,13 +2382,15 @@ calc_buf_pool_size:
 
 	/* set size */
 	ut_ad(UT_LIST_GET_LEN(withdraw) == 0);
-	read_ahead_area = ut_min(
-		BUF_READ_AHEAD_PAGES,
-		ut_2_power_up(curr_size / BUF_READ_AHEAD_PORTION));
-	curr_pool_size = n_chunks * srv_buf_pool_chunk_unit;
-	srv_buf_pool_curr_size = curr_pool_size;/* FIXME: remove*/
-	old_size = curr_size;
-	innodb_set_buf_pool_size(buf_pool_size_align(srv_buf_pool_curr_size));
+  ulint s= curr_size;
+  old_size= s;
+  s/= BUF_READ_AHEAD_PORTION;
+  read_ahead_area= s >= READ_AHEAD_PAGES
+    ? READ_AHEAD_PAGES
+    : my_round_up_to_next_power(static_cast<uint32_t>(s));
+  curr_pool_size= n_chunks * srv_buf_pool_chunk_unit;
+  srv_buf_pool_curr_size= curr_pool_size;/* FIXME: remove*/
+  innodb_set_buf_pool_size(buf_pool_size_align(srv_buf_pool_curr_size));
 
 	const bool	new_size_too_diff
 		= srv_buf_pool_base_size > srv_buf_pool_size * 2

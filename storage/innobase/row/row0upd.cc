@@ -2577,8 +2577,7 @@ row_upd_clust_rec(
 
 	mtr_commit(mtr);
 
-	if (buf_LRU_buf_pool_running_out()) {
-
+	if (buf_pool.running_out()) {
 		err = DB_LOCK_TABLE_FULL;
 		goto func_exit;
 	}

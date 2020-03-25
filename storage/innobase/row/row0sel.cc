@@ -1241,11 +1241,9 @@ sel_set_rec_lock(
 
 	trx = thr_get_trx(thr);
 
-	if (UT_LIST_GET_LEN(trx->lock.trx_locks) > 10000) {
-		if (buf_LRU_buf_pool_running_out()) {
-
-			return(DB_LOCK_TABLE_FULL);
-		}
+	if (UT_LIST_GET_LEN(trx->lock.trx_locks) > 10000
+	    && buf_pool.running_out()) {
+		return DB_LOCK_TABLE_FULL;
 	}
 
 	if (dict_index_is_clust(index)) {

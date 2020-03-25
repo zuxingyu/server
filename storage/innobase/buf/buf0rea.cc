@@ -218,148 +218,74 @@ get read even if we return a positive value! */
 ulint
 buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
 {
-	ulint		recent_blocks	= 0;
-	ulint		ibuf_mode;
-	ulint		count;
-	ulint		low, high;
-	dberr_t		err = DB_SUCCESS;
-	ulint		i;
+  if (!srv_random_read_ahead)
+    return 0;
 
-	if (!srv_random_read_ahead) {
-		/* Disabled by user */
-		return(0);
-	}
+  if (srv_startup_is_before_trx_rollback_phase)
+    /* No read-ahead to avoid thread deadlocks */
+    return 0;
 
-	if (srv_startup_is_before_trx_rollback_phase) {
-		/* No read-ahead to avoid thread deadlocks */
-		return(0);
-	}
+  if (ibuf_bitmap_page(page_id, zip_size) || trx_sys_hdr_page(page_id))
+    /* If it is an ibuf bitmap page or trx sys hdr, we do no
+    read-ahead, as that could break the ibuf page access order */
+    return 0;
 
-	if (ibuf_bitmap_page(page_id, zip_size) || trx_sys_hdr_page(page_id)) {
+  if (buf_pool.n_pend_reads > buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT)
+    return 0;
 
-		/* If it is an ibuf bitmap page or trx sys hdr, we do
-		no read-ahead, as that could break the ibuf page access
-		order */
+  fil_space_t* space= fil_space_acquire(page_id.space());
+  if (!space)
+    return 0;
 
-		return(0);
-	}
+  const uint32_t buf_read_ahead_area= buf_pool.read_ahead_area;
+  ulint count= 5 + buf_read_ahead_area / 8;
+  const page_id_t low= page_id - (page_id.page_no() % buf_read_ahead_area);
+  page_id_t high= low + buf_read_ahead_area;
+  high.set_page_no(std::min(high.page_no(),
+                            static_cast<uint32_t>(space->size - 1)));
 
-	const ulint	buf_read_ahead_random_area
-		= buf_pool.read_ahead_area;
-	low  = (page_id.page_no() / buf_read_ahead_random_area)
-		* buf_read_ahead_random_area;
+  /* Count how many blocks in the area have been recently accessed,
+  that is, reside near the start of the LRU list. */
 
-	high = (page_id.page_no() / buf_read_ahead_random_area + 1)
-		* buf_read_ahead_random_area;
+  for (page_id_t i= low; i < high; ++i)
+  {
+    const ulint fold= i.fold();
+    rw_lock_t *hash_lock= buf_pool.page_hash_lock_confirmed<false>(fold);
+    const buf_page_t* bpage= buf_pool.page_hash_get_low(i);
+    bool found= bpage && bpage->is_accessed() && buf_page_peek_if_young(bpage);
+    rw_lock_s_unlock(hash_lock);
+    if (found && !--count)
+      goto read_ahead;
+  }
 
-	/* If DISCARD + IMPORT changes the actual .ibd file meanwhile, we
-	do not try to read outside the bounds of the tablespace! */
-	if (fil_space_t* space = fil_space_acquire(page_id.space())) {
-
-#ifdef UNIV_DEBUG
-		if (srv_file_per_table) {
-			ulint	size = 0;
-			const ulint physical_size = space->physical_size();
-
-			for (const fil_node_t*	node =
-				UT_LIST_GET_FIRST(space->chain);
-			     node != NULL;
-			     node = UT_LIST_GET_NEXT(chain, node)) {
-
-				size += ulint(os_file_get_size(node->handle)
-					/ physical_size);
-			}
-
-			ut_ad(size == space->size);
-		}
-#endif /* UNIV_DEBUG */
-
-		if (high > space->size) {
-			high = space->size;
-		}
-		space->release();
-	} else {
-		return(0);
-	}
-
-	mutex_enter(&buf_pool.mutex);
-
-	if (buf_pool.n_pend_reads
-	    > buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT) {
-		mutex_exit(&buf_pool.mutex);
-
-		return(0);
-	}
-
-	/* Count how many blocks in the area have been recently accessed,
-	that is, reside near the start of the LRU list. */
-
-	for (i = low; i < high; i++) {
-		if (const buf_page_t* bpage = buf_page_hash_get(
-			    page_id_t(page_id.space(), i))) {
-			if (bpage->is_accessed()
-			    && buf_page_peek_if_young(bpage)
-			    && ++recent_blocks
-			    >= 5 + buf_pool.read_ahead_area / 8) {
-				mutex_exit(&buf_pool.mutex);
-				goto read_ahead;
-			}
-		}
-	}
-
-	mutex_exit(&buf_pool.mutex);
-	/* Do nothing */
-	return(0);
+  space->release();
+  return 0;
 
 read_ahead:
-	/* Read all the suitable blocks within the area */
+  /* Read all the suitable blocks within the area */
+  const ulint ibuf_mode= ibuf ? BUF_READ_IBUF_PAGES_ONLY : BUF_READ_ANY_PAGE;
 
-	ibuf_mode = ibuf ? BUF_READ_IBUF_PAGES_ONLY : BUF_READ_ANY_PAGE;
-	count = 0;
+  for (page_id_t i= low; i < high; ++i)
+  {
+    if (ibuf_bitmap_page(i, zip_size))
+      continue;
+    dberr_t err;
+    count+= buf_read_page_low(&err, false, ibuf_mode, i, zip_size, false);
+  }
 
-	for (i = low; i < high; i++) {
-		/* It is only sensible to do read-ahead in the non-sync aio
-		mode: hence FALSE as the first parameter */
+  if (count)
+    DBUG_PRINT("ib_buf", ("random read-ahead %zu pages from %s: %u",
+			  count, space->chain.start->name,
+			  low.page_no()));
+  space->release();
 
-		const page_id_t	cur_page_id(page_id.space(), i);
+  /* Read ahead is considered one I/O operation for the purpose of
+  LRU policy decision. */
+  buf_LRU_stat_inc_io();
 
-		if (!ibuf_bitmap_page(cur_page_id, zip_size)) {
-			count += buf_read_page_low(
-				&err, false,
-				ibuf_mode,
-				cur_page_id, zip_size, false);
-
-			switch (err) {
-			case DB_SUCCESS:
-			case DB_ERROR:
-				break;
-			case DB_TABLESPACE_DELETED:
-				ib::info() << "Random readahead trying to"
-					" access page " << cur_page_id
-					<< " in nonexisting or"
-					" being-dropped tablespace";
-				break;
-			default:
-				ut_error;
-			}
-		}
-	}
-
-
-	if (count) {
-		DBUG_PRINT("ib_buf", ("random read-ahead %u pages, %u:%u",
-				      (unsigned) count,
-				      (unsigned) page_id.space(),
-				      (unsigned) page_id.page_no()));
-	}
-
-	/* Read ahead is considered one I/O operation for the purpose of
-	LRU policy decision. */
-	buf_LRU_stat_inc_io();
-
-	buf_pool.stat.n_ra_pages_read_rnd += count;
-	srv_stats.buf_pool_reads.add(count);
-	return(count);
+  buf_pool.stat.n_ra_pages_read_rnd+= count;
+  srv_stats.buf_pool_reads.add(count);
+  return count;
 }
 
 /** High-level function which reads a page asynchronously from a file to the
@@ -477,249 +403,156 @@ which could result in a deadlock if the OS does not support asynchronous io.
 ulint
 buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf)
 {
-	buf_frame_t*	frame;
-	buf_page_t*	pred_bpage	= NULL;
-	ulint		pred_offset;
-	ulint		succ_offset;
-	int		asc_or_desc;
-	ulint		new_offset;
-	ulint		fail_count;
-	ulint		low, high;
-	dberr_t		err = DB_SUCCESS;
-	ulint		i;
-	ulint		threshold;
+  /* check if readahead is disabled */
+  if (!srv_read_ahead_threshold)
+    return 0;
 
-	/* check if readahead is disabled */
-	if (!srv_read_ahead_threshold) {
-		return(0);
-	}
+  if (srv_startup_is_before_trx_rollback_phase)
+    /* No read-ahead to avoid thread deadlocks */
+    return 0;
 
-	if (srv_startup_is_before_trx_rollback_phase) {
-		/* No read-ahead to avoid thread deadlocks */
-		return(0);
-	}
+  if (buf_pool.n_pend_reads > buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT)
+    return 0;
 
-	const ulint	buf_read_ahead_linear_area
-		= buf_pool.read_ahead_area;
-	low  = (page_id.page_no() / buf_read_ahead_linear_area)
-		* buf_read_ahead_linear_area;
-	high = (page_id.page_no() / buf_read_ahead_linear_area + 1)
-		* buf_read_ahead_linear_area;
+  const uint32_t buf_read_ahead_area= buf_pool.read_ahead_area;
+  const page_id_t low= page_id - (page_id.page_no() % buf_read_ahead_area);
+  const page_id_t high_1= low + (buf_read_ahead_area - 1);
 
-	if ((page_id.page_no() != low) && (page_id.page_no() != high - 1)) {
-		/* This is not a border page of the area: return */
+  /* We will check that almost all pages in the area have been accessed
+  in the desired order. */
+  const bool descending= page_id == low;
 
-		return(0);
-	}
+  if (!descending && page_id != high_1)
+    /* This is not a border page of the area */
+    return 0;
 
-	if (ibuf_bitmap_page(page_id, zip_size) || trx_sys_hdr_page(page_id)) {
+  if (ibuf_bitmap_page(page_id, zip_size) || trx_sys_hdr_page(page_id))
+    /* If it is an ibuf bitmap page or trx sys hdr, we do no
+    read-ahead, as that could break the ibuf page access order */
+    return 0;
 
-		/* If it is an ibuf bitmap page or trx sys hdr, we do
-		no read-ahead, as that could break the ibuf page access
-		order */
+  fil_space_t *space= fil_space_acquire(page_id.space());
+  if (!space)
+    return 0;
+  if (high_1.page_no() >= space->size)
+  {
+    /* The area is not whole. */
+    space->release();
+    return 0;
+  }
 
-		return(0);
-	}
+  /* How many out of order accessed pages can we ignore
+  when working out the access pattern for linear readahead */
+  ulint count= std::min<ulint>(buf_pool_t::READ_AHEAD_PAGES -
+                               srv_read_ahead_threshold,
+                               uint32_t{buf_pool.read_ahead_area});
+  page_id_t new_low= low, new_high_1= high_1;
+  unsigned prev_accessed= 0;
+  for (page_id_t i= low; i != high_1; ++i)
+  {
+    const ulint fold= i.fold();
+    rw_lock_t *hash_lock= buf_pool.page_hash_lock_confirmed<false>(fold);
+    const buf_page_t* bpage= buf_pool.page_hash_get_low(i);
+    if (i == page_id)
+    {
+      /* Read the natural predecessor and successor page addresses from
+      the page; NOTE that because the calling thread may have an x-latch
+      on the page, we do not acquire an s-latch on the page, this is to
+      prevent deadlocks. The hash_lock is only protecting the
+      buf_pool.page_hash for page i, not the bpage contents itself. */
+      if (!bpage)
+      {
+hard_fail:
+        rw_lock_s_unlock(hash_lock);
+        space->release();
+        return 0;
+      }
+      const byte *f;
+      switch (UNIV_EXPECT(bpage->state, BUF_BLOCK_FILE_PAGE)) {
+      case BUF_BLOCK_FILE_PAGE:
+        f= reinterpret_cast<const buf_block_t*>(bpage)->frame;
+        break;
+      case BUF_BLOCK_ZIP_PAGE:
+      case BUF_BLOCK_ZIP_DIRTY:
+        f= bpage->zip.data;
+        break;
+      default:
+        goto hard_fail;
+      }
 
-	/* Remember the tablespace version before we ask te tablespace size
-	below: if DISCARD + IMPORT changes the actual .ibd file meanwhile, we
-	do not try to read outside the bounds of the tablespace! */
-	ulint	space_size;
+      uint32_t prev= mach_read_from_4(my_assume_aligned<4>(f + FIL_PAGE_PREV));
+      uint32_t next= mach_read_from_4(my_assume_aligned<4>(f + FIL_PAGE_NEXT));
+      if (prev == FIL_NULL || next == FIL_NULL)
+        goto hard_fail;
+      page_id_t id= page_id;
+      if (descending && next - 1 == page_id.page_no())
+        id.set_page_no(prev);
+      else if (!descending && prev + 1 == page_id.page_no())
+        id.set_page_no(next);
+      else
+        goto hard_fail; /* Successor or predecessor not in the right order */
 
-	if (fil_space_t* space = fil_space_acquire(page_id.space())) {
-		space_size = space->size;
-		space->release();
+      new_low= id - (id.page_no() % buf_read_ahead_area);
+      new_high_1= new_low + (buf_read_ahead_area - 1);
 
-		if (high > space_size) {
-			/* The area is not whole */
-			return(0);
-		}
-	} else {
-		return(0);
-	}
-
-	mutex_enter(&buf_pool.mutex);
-
-	if (buf_pool.n_pend_reads
-	    > buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT) {
-		mutex_exit(&buf_pool.mutex);
-
-		return(0);
-	}
-
-	/* Check that almost all pages in the area have been accessed; if
-	offset == low, the accesses must be in a descending order, otherwise,
-	in an ascending order. */
-
-	asc_or_desc = 1;
-
-	if (page_id.page_no() == low) {
-		asc_or_desc = -1;
-	}
-
-	/* How many out of order accessed pages can we ignore
-	when working out the access pattern for linear readahead */
-	threshold = ut_min(static_cast<ulint>(64 - srv_read_ahead_threshold),
-			   buf_pool.read_ahead_area);
-
-	fail_count = 0;
-
-	for (i = low; i < high; ++i) {
-		buf_page_t* bpage= buf_page_hash_get(page_id_t(page_id.space(),
-							       i));
-
-		if (!bpage) {
+      if (id != new_low && id != new_high_1)
+        /* This is not a border page of the area: return */
+        goto hard_fail;
+      if (new_high_1.page_no() >= space->size)
+        /* The area is not whole */
+        goto hard_fail;
+    }
+    else if (!bpage)
+    {
 failed:
-			if (++fail_count > threshold) {
-				/* Too many failures: return */
-				mutex_exit(&buf_pool.mutex);
-				return 0;
-			}
-		} else {
-			const auto is_accessed = bpage->is_accessed();
-			if (!is_accessed) {
-				goto failed;
-			}
-			if (pred_bpage) {
-				/* Note that buf_page_t::is_accessed()
-				returns the time of the first access.
-				If some blocks of the extent existed
-				in the buffer pool at the time of a
-				linear access pattern, the first
-				access times may be nonmonotonic, even
-				though the latest access times were
-				linear.  The threshold
-				(srv_read_ahead_factor) should help a
-				little against this. */
-				int res = ut_ulint_cmp(
-					is_accessed,
-					pred_bpage->is_accessed());
-				pred_bpage = bpage;
-				if (res != 0 && res != asc_or_desc) {
-					goto failed;
-				}
-			} else {
-				pred_bpage = bpage;
-			}
-		}
-	}
+      rw_lock_s_unlock(hash_lock);
+      if (--count)
+        continue;
+      space->release();
+      return 0;
+    }
 
-	/* If we got this far, we know that enough pages in the area have
-	been accessed in the right order: linear read-ahead can be sensible */
+    const unsigned accessed= bpage->is_accessed();
+    if (!accessed)
+      goto failed;
+    /* Note that buf_page_t::is_accessed() returns the time of the
+    first access. If some blocks of the extent existed in the buffer
+    pool at the time of a linear access pattern, the first access
+    times may be nonmonotonic, even though the latest access times
+    were linear. The threshold (srv_read_ahead_factor) should help a
+    little against this. */
+    bool fail= prev_accessed &&
+      (descending ? prev_accessed > accessed : prev_accessed < accessed);
+    prev_accessed= accessed;
+    if (fail)
+      goto failed;
+    rw_lock_s_unlock(hash_lock);
+  }
 
-	buf_page_t* bpage = buf_page_hash_get(page_id);
+  /* If we got this far, read-ahead can be sensible: do it */
+  count= 0;
+  for (ulint ibuf_mode= ibuf ? BUF_READ_IBUF_PAGES_ONLY : BUF_READ_ANY_PAGE;
+       new_low != new_high_1; ++new_low)
+  {
+    if (ibuf_bitmap_page(new_low, zip_size))
+      continue;
+    dberr_t err;
+    count+= buf_read_page_low(&err, false, ibuf_mode, new_low, zip_size,
+                              false);
+  }
 
-	if (bpage == NULL) {
-		mutex_exit(&buf_pool.mutex);
+  if (count)
+    DBUG_PRINT("ib_buf", ("random read-ahead %zu pages from %s: %u",
+                          count, space->chain.start->name,
+                          new_low.page_no()));
+  space->release();
 
-		return(0);
-	}
+  /* Read ahead is considered one I/O operation for the purpose of
+  LRU policy decision. */
+  buf_LRU_stat_inc_io();
 
-	switch (buf_page_get_state(bpage)) {
-	case BUF_BLOCK_ZIP_PAGE:
-		frame = bpage->zip.data;
-		break;
-	case BUF_BLOCK_FILE_PAGE:
-		frame = ((buf_block_t*) bpage)->frame;
-		break;
-	default:
-		ut_error;
-		break;
-	}
-
-	/* Read the natural predecessor and successor page addresses from
-	the page; NOTE that because the calling thread may have an x-latch
-	on the page, we do not acquire an s-latch on the page, this is to
-	prevent deadlocks. Even if we read values which are nonsense, the
-	algorithm will work. */
-
-	pred_offset = fil_page_get_prev(frame);
-	succ_offset = fil_page_get_next(frame);
-
-	mutex_exit(&buf_pool.mutex);
-
-	if ((page_id.page_no() == low)
-	    && (succ_offset == page_id.page_no() + 1)) {
-
-		/* This is ok, we can continue */
-		new_offset = pred_offset;
-
-	} else if ((page_id.page_no() == high - 1)
-		   && (pred_offset == page_id.page_no() - 1)) {
-
-		/* This is ok, we can continue */
-		new_offset = succ_offset;
-	} else {
-		/* Successor or predecessor not in the right order */
-
-		return(0);
-	}
-
-	low  = (new_offset / buf_read_ahead_linear_area)
-		* buf_read_ahead_linear_area;
-	high = (new_offset / buf_read_ahead_linear_area + 1)
-		* buf_read_ahead_linear_area;
-
-	if ((new_offset != low) && (new_offset != high - 1)) {
-		/* This is not a border page of the area: return */
-
-		return(0);
-	}
-
-	if (high > space_size) {
-		/* The area is not whole, return */
-
-		return(0);
-	}
-
-	ulint	count = 0;
-
-	/* If we got this far, read-ahead can be sensible: do it */
-
-	ulint ibuf_mode = ibuf ? BUF_READ_IBUF_PAGES_ONLY : BUF_READ_ANY_PAGE;
-
-	for (i = low; i < high; i++) {
-		/* It is only sensible to do read-ahead in the non-sync
-		aio mode: hence FALSE as the first parameter */
-
-		const page_id_t	cur_page_id(page_id.space(), i);
-
-		if (!ibuf_bitmap_page(cur_page_id, zip_size)) {
-			count += buf_read_page_low(
-				&err, false,
-				ibuf_mode, cur_page_id, zip_size, false);
-
-			switch (err) {
-			case DB_SUCCESS:
-			case DB_TABLESPACE_DELETED:
-			case DB_ERROR:
-				break;
-			case DB_PAGE_CORRUPTED:
-			case DB_DECRYPTION_FAILED:
-				ib::error() << "linear readahead failed to"
-					" read or decrypt "
-					<< page_id_t(page_id.space(), i);
-				break;
-			default:
-				ut_error;
-			}
-		}
-	}
-
-	if (count) {
-		DBUG_PRINT("ib_buf", ("linear read-ahead " ULINTPF " pages, "
-				      "%u:%u",
-				      count,
-				      page_id.space(),
-				      page_id.page_no()));
-	}
-
-	/* Read ahead is considered one I/O operation for the purpose of
-	LRU policy decision. */
-	buf_LRU_stat_inc_io();
-
-	buf_pool.stat.n_ra_pages_read += count;
-	return(count);
+  buf_pool.stat.n_ra_pages_read+= count;
+  return count;
 }
 
 /** Issues read requests for pages which recovery wants to read in.

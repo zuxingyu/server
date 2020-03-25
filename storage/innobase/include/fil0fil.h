@@ -1425,27 +1425,6 @@ Checks the consistency of the tablespace cache.
 bool
 fil_validate(void);
 /*==============*/
-/********************************************************************//**
-Returns true if file address is undefined.
-@return true if undefined */
-bool
-fil_addr_is_null(
-/*=============*/
-	fil_addr_t	addr);	/*!< in: address */
-/********************************************************************//**
-Get the predecessor of a file page.
-@return FIL_PAGE_PREV */
-ulint
-fil_page_get_prev(
-/*==============*/
-	const byte*	page);	/*!< in: file page */
-/********************************************************************//**
-Get the successor of a file page.
-@return FIL_PAGE_NEXT */
-ulint
-fil_page_get_next(
-/*==============*/
-	const byte*	page);	/*!< in: file page */
 /*********************************************************************//**
 Sets the file page type. */
 void

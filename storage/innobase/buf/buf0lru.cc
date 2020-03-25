@@ -791,15 +791,6 @@ bool buf_LRU_scan_and_free_block(bool scan_all)
 	       || buf_LRU_free_from_common_LRU_list(scan_all));
 }
 
-/** @return whether less than 1/4 of the buffer pool is available */
-bool buf_LRU_buf_pool_running_out()
-{
-	return !recv_recovery_is_on()
-		&& UT_LIST_GET_LEN(buf_pool.free)
-		+ UT_LIST_GET_LEN(buf_pool.LRU)
-		< ut_min(buf_pool.curr_size, buf_pool.old_size) / 4;
-}
-
 /** @return a buffer block from the buf_pool.free list
 @retval	NULL	if the free list is empty */
 buf_block_t* buf_LRU_get_free_only()

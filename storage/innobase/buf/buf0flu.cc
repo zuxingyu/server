@@ -1315,9 +1315,10 @@ static page_id_t buf_flush_check_neighbors(const fil_space_t &space,
   ut_ad(flush == BUF_FLUSH_LRU || flush == BUF_FLUSH_LIST);
   /* When flushed, dirty blocks are searched in neighborhoods of this
   size, and flushed along with the original page. */
-  const uint32_t buf_flush_area= static_cast<uint32_t>
-    (std::min(std::min(buf_pool.read_ahead_area, buf_pool.curr_size / 16),
-              ulint{std::numeric_limits<uint32_t>::max()}));
+  const ulint s= buf_pool.curr_size / 16;
+  const uint32_t read_ahead= buf_pool.read_ahead_area;
+  const uint32_t buf_flush_area= read_ahead > s
+    ? static_cast<uint32_t>(s) : read_ahead;
   page_id_t low= id - (id.page_no() % buf_flush_area);
   page_id_t high= low + buf_flush_area;
   high.set_page_no(std::min(high.page_no(),

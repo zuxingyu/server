@@ -34,10 +34,6 @@ Created 11/5/1995 Heikki Tuuri
 struct trx_t;
 struct fil_space_t;
 
-/** @return whether less than 1/4 of the buffer pool is available */
-bool
-buf_LRU_buf_pool_running_out();
-
 /*#######################################################################
 These are low-level functions
 #########################################################################*/

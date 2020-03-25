@@ -1868,9 +1868,7 @@ public:
                               RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
     buf_page_t* bpage;
     /* Look for the page in the hash table */
-    HASH_SEARCH(hash, page_hash, id.fold(), buf_page_t*, bpage,
-                ut_ad(bpage->in_page_hash && !bpage->in_zip_hash &&
-                      bpage->in_file()),
+    HASH_SEARCH(hash, page_hash, id.fold(), buf_page_t*, bpage,,
                 id == bpage->id);
     return bpage;
   }
@@ -2006,6 +2004,14 @@ public:
   @param watch   sentinel */
   inline void watch_remove(buf_page_t *watch);
 
+  /** @return whether less than 1/4 of the buffer pool is available */
+  bool running_out() const
+  {
+    return !recv_recovery_is_on() &&
+      UNIV_UNLIKELY(UT_LIST_GET_LEN(free) + UT_LIST_GET_LEN(LRU) <
+                    std::min(curr_size, old_size) / 4);
+  }
+
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
   /** Validate the buffer pool. */
   void validate();
@@ -2014,6 +2020,9 @@ public:
   /** Write information of the buf_pool to the error log. */
   void print();
 #endif /* UNIV_DEBUG_PRINT || UNIV_DEBUG || UNIV_BUF_DEBUG */
+
+  /** Number of pages to read ahead */
+  static constexpr uint32_t READ_AHEAD_PAGES= 64;
 
 	/** @name General fields */
 	/* @{ */
@@ -2039,11 +2048,12 @@ public:
 	chunk_t*	chunks;		/*!< buffer pool chunks */
 	chunk_t*	chunks_old;	/*!< old buffer pool chunks to be freed
 					after resizing buffer pool */
-	ulint		curr_size;	/*!< current pool size in pages */
-	ulint		old_size;	/*!< previous pool size in pages */
-	ulint		read_ahead_area;/*!< size in pages of the area which
-					the read-ahead algorithms read if
-					invoked */
+	/** current pool size in pages */
+	Atomic_counter<ulint> curr_size;
+	/** previous pool size in pages */
+	Atomic_counter<ulint> old_size;
+	/** read-ahead request size in pages */
+	Atomic_counter<uint32_t> read_ahead_area;
 	hash_table_t*	page_hash;	/*!< hash table of buf_page_t or
 					buf_block_t file pages
 					(buf_page_t::in_file() holds),
@@ -2061,8 +2071,8 @@ public:
 					whose frames are allocated to the
 					zip buddy system,
 					indexed by block->frame */
-	ulint		n_pend_reads;	/*!< number of pending read
-					operations */
+	/** number of pending read operations */
+	Atomic_counter<ulint> n_pend_reads;
 	Atomic_counter<ulint>
 			n_pend_unzip;	/*!< number of pending decompressions */
 
