@@ -1098,6 +1098,7 @@ End SQL_MODE_ORACLE_SPECIFIC */
 %token  <kwd>  TIME_SYM                      /* SQL-2003-R, Oracle-R */
 %token  <kwd>  TRANSACTION_SYM
 %token  <kwd>  TRANSACTIONAL_SYM
+%token  <kwd>  THREADS_SYM
 %token  <kwd>  TRIGGERS_SYM
 %token  <kwd>  TRIM_ORACLE
 %token  <kwd>  TRUNCATE_SYM
@@ -7098,10 +7099,11 @@ alter:
               MYSQL_YYABORT;
             DBUG_ASSERT(!Lex->m_sql_cmd);
           }
-          alter_options TABLE_SYM table_ident opt_lock_wait_timeout
+          alter_options TABLE_SYM opt_if_exists table_ident opt_lock_wait_timeout
           {
+            Lex->create_info.set($5);
             if (!Lex->first_select_lex()->
-                 add_table_to_list(thd, $5, NULL, TL_OPTION_UPDATING,
+                 add_table_to_list(thd, $6, NULL, TL_OPTION_UPDATING,
                                    TL_READ_NO_INSERT, MDL_SHARED_UPGRADABLE))
               MYSQL_YYABORT;
             Lex->first_select_lex()->db=
@@ -8298,9 +8300,10 @@ opt_no_write_to_binlog:
         ;
 
 rename:
-          RENAME table_or_tables
+          RENAME table_or_tables opt_if_exists
           {
             Lex->sql_command= SQLCOM_RENAME_TABLE;
+            Lex->create_info.set($3);
             if (Lex->main_select_push())
               MYSQL_YYABORT;
           }
@@ -14083,6 +14086,8 @@ flush_option:
           { Lex->type|= REFRESH_USER_RESOURCES; }
         | SSL_SYM
           { Lex->type|= REFRESH_SSL;}
+        | THREADS_SYM
+          { Lex->type|= REFRESH_THREADS;}        
         | IDENT_sys remember_tok_start
            {
              Lex->type|= REFRESH_GENERIC;
@@ -15739,6 +15744,7 @@ keyword_sp_var_and_label:
         | THAN_SYM
         | TRANSACTION_SYM    %prec PREC_BELOW_CONTRACTION_TOKEN2
         | TRANSACTIONAL_SYM
+        | THREADS_SYM
         | TRIGGERS_SYM
         | TRIM_ORACLE
         | TIMESTAMP_ADD

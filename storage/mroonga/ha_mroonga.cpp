@@ -16411,38 +16411,6 @@ void ha_mroonga::change_table_ptr(TABLE *table_arg, TABLE_SHARE *share_arg)
   DBUG_VOID_RETURN;
 }
 
-bool ha_mroonga::wrapper_primary_key_is_clustered()
-{
-  MRN_DBUG_ENTER_METHOD();
-  bool is_clustered;
-  MRN_SET_WRAP_SHARE_KEY(share, table->s);
-  MRN_SET_WRAP_TABLE_KEY(this, table);
-  is_clustered = wrap_handler->primary_key_is_clustered();
-  MRN_SET_BASE_SHARE_KEY(share, table->s);
-  MRN_SET_BASE_TABLE_KEY(this, table);
-  DBUG_RETURN(is_clustered);
-}
-
-bool ha_mroonga::storage_primary_key_is_clustered()
-{
-  MRN_DBUG_ENTER_METHOD();
-  bool is_clustered = handler::primary_key_is_clustered();
-  DBUG_RETURN(is_clustered);
-}
-
-bool ha_mroonga::primary_key_is_clustered()
-{
-  MRN_DBUG_ENTER_METHOD();
-  bool is_clustered;
-  if (share && share->wrapper_mode)
-  {
-    is_clustered = wrapper_primary_key_is_clustered();
-  } else {
-    is_clustered = storage_primary_key_is_clustered();
-  }
-  DBUG_RETURN(is_clustered);
-}
-
 bool ha_mroonga::wrapper_is_fk_defined_on_table_or_index(uint index)
 {
   MRN_DBUG_ENTER_METHOD();
@@ -17023,34 +16991,39 @@ void ha_mroonga::unbind_psi()
   DBUG_VOID_RETURN;
 }
 
-void ha_mroonga::wrapper_rebind_psi()
+int ha_mroonga::wrapper_rebind()
 {
   MRN_DBUG_ENTER_METHOD();
   MRN_SET_WRAP_SHARE_KEY(share, table->s);
   MRN_SET_WRAP_TABLE_KEY(this, table);
-  wrap_handler->rebind_psi();
+  int error= wrap_handler->rebind();
   MRN_SET_BASE_SHARE_KEY(share, table->s);
   MRN_SET_BASE_TABLE_KEY(this, table);
-  DBUG_VOID_RETURN;
+  DBUG_RETURN(error);
 }
 
-void ha_mroonga::storage_rebind_psi()
+void ha_mroonga::storage_rebind()
 {
   MRN_DBUG_ENTER_METHOD();
   DBUG_VOID_RETURN;
 }
 
-void ha_mroonga::rebind_psi()
+int ha_mroonga::rebind()
 {
   MRN_DBUG_ENTER_METHOD();
-  handler::rebind_psi();
+  if (int error= handler::rebind())
+    DBUG_RETURN(error);
   if (share->wrapper_mode)
   {
-    wrapper_rebind_psi();
+    if (int error= wrapper_rebind())
+    {
+      handler::unbind_psi();
+      DBUG_RETURN(error);
+    }
   } else {
-    storage_rebind_psi();
+    storage_rebind();
   }
-  DBUG_VOID_RETURN;
+  DBUG_RETURN(0);
 }
 #endif
 

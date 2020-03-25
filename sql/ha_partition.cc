@@ -319,7 +319,6 @@ ha_partition::ha_partition(handlerton *hton, TABLE_SHARE *share,
   m_clone_mem_root= clone_mem_root_arg;
   part_share= clone_arg->part_share;
   m_tot_parts= clone_arg->m_tot_parts;
-  m_pkey_is_clustered= clone_arg->primary_key_is_clustered();
   DBUG_VOID_RETURN;
 }
 
@@ -349,7 +348,6 @@ void ha_partition::init_handler_variables()
   m_reorged_parts= 0;
   m_added_file= NULL;
   m_tot_parts= 0;
-  m_pkey_is_clustered= 0;
   m_part_spec.start_part= NO_CURRENT_PART_ID;
   m_scan_value= 2;
   m_ref_length= 0;
@@ -504,8 +502,7 @@ ha_partition::~ha_partition()
      The flag HA_READ_ORDER will be reset for the time being to indicate no
      ordered output is available from partition handler indexes. Later a merge
      sort will be performed using the underlying handlers.
-  5) primary_key_is_clustered and has_transactions are
-     calculated here.
+  5) has_transactions are calculated here.
 
 */
 
@@ -540,19 +537,15 @@ bool ha_partition::initialize_partition(MEM_ROOT *mem_root)
     We create all underlying table handlers here. We do it in this special
     method to be able to report allocation errors.
 
-    Set up primary_key_is_clustered and
-    has_transactions since they are called often in all kinds of places,
+    Set up has_transactions since they are called often in all kinds of places,
     other parameters are calculated on demand.
     Verify that all partitions have the same table_flags.
   */
   check_table_flags= m_file[0]->ha_table_flags();
-  m_pkey_is_clustered= TRUE;
   file_array= m_file;
   do
   {
     file= *file_array;
-    if (!file->primary_key_is_clustered())
-      m_pkey_is_clustered= FALSE;
     if (check_table_flags != file->ha_table_flags())
     {
       my_error(ER_MIX_HANDLER_ERROR, MYF(0));
@@ -2131,12 +2124,10 @@ int ha_partition::copy_partitions(ulonglong * const copied,
       }
       else
       {
-        THD *thd= ha_thd();
         /* Copy record to new handler */
         (*copied)++;
-        tmp_disable_binlog(thd); /* Do not replicate the low-level changes. */
+        DBUG_ASSERT(!m_new_file[new_part]->row_logging);
         result= m_new_file[new_part]->ha_write_row(m_rec0);
-        reenable_binlog(thd);
         if (result)
           goto error;
       }
@@ -3715,18 +3706,25 @@ void ha_partition::unbind_psi()
   DBUG_VOID_RETURN;
 }
 
-void ha_partition::rebind_psi()
+int ha_partition::rebind()
 {
   uint i;
 
-  DBUG_ENTER("ha_partition::rebind_psi");
-  handler::rebind_psi();
+  DBUG_ENTER("ha_partition::rebind");
+  if (int error= handler::rebind())
+    DBUG_RETURN(error);
   for (i= 0; i < m_tot_parts; i++)
   {
     DBUG_ASSERT(m_file[i] != NULL);
-    m_file[i]->rebind_psi();
+    if (int error= m_file[i]->rebind())
+    {
+      while (i)
+        m_file[--i]->unbind_psi();
+      handler::unbind_psi();
+      DBUG_RETURN(error);
+    }
   }
-  DBUG_VOID_RETURN;
+  DBUG_RETURN(0);
 }
 #endif /* HAVE_M_PSI_PER_PARTITION */
 
@@ -4337,7 +4335,6 @@ int ha_partition::write_row(const uchar * buf)
       thd->variables.sql_mode|= MODE_NO_AUTO_VALUE_ON_ZERO;
     }
   }
-
   old_map= dbug_tmp_use_all_columns(table, table->read_set);
   error= m_part_info->get_partition_id(m_part_info, &part_id, &func_value);
   dbug_tmp_restore_column_map(table->read_set, old_map);
@@ -4355,13 +4352,23 @@ int ha_partition::write_row(const uchar * buf)
   }
   m_last_part= part_id;
   DBUG_PRINT("info", ("Insert in partition %u", part_id));
+  /*
+    We have to call prepare_for_insert() if we have an update handler
+    in the underlying table (to clone the handler). This is because for
+    INSERT's prepare_for_insert() is only called for the main table,
+    not for all partitions. This is to reduce the huge overhead of cloning
+    a possible not needed handler if there are many partitions.
+  */
+  if (table->s->long_unique_table &&
+      m_file[part_id]->update_handler == m_file[part_id] && inited == RND)
+    m_file[part_id]->prepare_for_insert(0);
+
   start_part_bulk_insert(thd, part_id);
 
-  tmp_disable_binlog(thd); /* Do not replicate the low-level changes. */
+  DBUG_ASSERT(!m_file[part_id]->row_logging);
   error= m_file[part_id]->ha_write_row(buf);
   if (have_auto_increment && !table->s->next_number_keypart)
     set_auto_increment_if_higher(table->next_number_field);
-  reenable_binlog(thd);
 
 exit:
   table->auto_increment_field_not_null= saved_auto_inc_field_not_null;
@@ -4440,12 +4447,11 @@ int ha_partition::update_row(const uchar *old_data, const uchar *new_data)
 
   m_last_part= new_part_id;
   start_part_bulk_insert(thd, new_part_id);
+  DBUG_ASSERT(!m_file[new_part_id]->row_logging);
   if (new_part_id == old_part_id)
   {
     DBUG_PRINT("info", ("Update in partition %u", (uint) new_part_id));
-    tmp_disable_binlog(thd); /* Do not replicate the low-level changes. */
     error= m_file[new_part_id]->ha_update_row(old_data, new_data);
-    reenable_binlog(thd);
     goto exit;
   }
   else
@@ -4464,16 +4470,12 @@ int ha_partition::update_row(const uchar *old_data, const uchar *new_data)
     table->next_number_field= NULL;
     DBUG_PRINT("info", ("Update from partition %u to partition %u",
 			(uint) old_part_id, (uint) new_part_id));
-    tmp_disable_binlog(thd); /* Do not replicate the low-level changes. */
     error= m_file[new_part_id]->ha_write_row((uchar*) new_data);
-    reenable_binlog(thd);
     table->next_number_field= saved_next_number_field;
     if (unlikely(error))
       goto exit;
 
-    tmp_disable_binlog(thd); /* Do not replicate the low-level changes. */
     error= m_file[old_part_id]->ha_delete_row(old_data);
-    reenable_binlog(thd);
     if (unlikely(error))
       goto exit;
   }
@@ -4575,9 +4577,8 @@ int ha_partition::delete_row(const uchar *buf)
   if (!bitmap_is_set(&(m_part_info->lock_partitions), m_last_part))
     DBUG_RETURN(HA_ERR_NOT_IN_LOCK_PARTITIONS);
 
-  tmp_disable_binlog(thd);
+  DBUG_ASSERT(!m_file[m_last_part]->row_logging);
   error= m_file[m_last_part]->ha_delete_row(buf);
-  reenable_binlog(thd);
   DBUG_RETURN(error);
 }
 
@@ -5426,7 +5427,7 @@ int ha_partition::index_init(uint inx, bool sorted)
   m_ordered= sorted;
   m_ordered_scan_ongoing= FALSE;
   m_curr_key_info[0]= table->key_info+inx;
-  if (m_pkey_is_clustered && table->s->primary_key != MAX_KEY)
+  if (pk_is_clustering_key(table->s->primary_key))
   {
     /*
       if PK is clustered, then the key cmp must use the pk to

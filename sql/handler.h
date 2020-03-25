@@ -610,6 +610,7 @@ given at all. */
 #define HA_CREATE_USED_SEQUENCE           (1UL << 25)
 
 typedef ulonglong alter_table_operations;
+typedef bool Log_func(THD*, TABLE*, bool, const uchar*, const uchar*);
 
 /*
   These flags are set by the parser and describes the type of
@@ -1727,6 +1728,20 @@ handlerton *ha_default_tmp_handlerton(THD *thd);
 
 /* can be replicated by wsrep replication provider plugin */
 #define HTON_WSREP_REPLICATION (1 << 13)
+
+/* Shared storage on slave. Ignore on slave any CREATE TABLE, DROP or updates */
+#define HTON_IGNORE_UPDATES (1 << 14)
+
+/*
+  The table may not exists on the slave. The effects of having this flag are:
+  - ALTER TABLE that changes engine from this table to another engine will
+    be replicated as CREATE + INSERT
+  - CREATE ... LIKE shared_table will be replicated as a full CREATE TABLE
+  - ALTER TABLE for this engine will have "IF EXISTS" added.
+  - RENAME TABLE for this engine will have "IF EXISTS" added.
+  - DROP TABLE for this engine will have "IF EXISTS" added.
+*/
+#define HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE (1 << 15)
 
 class Ha_trx_info;
 
@@ -3036,8 +3051,6 @@ public:
   bool mark_trx_read_write_done;           /* mark_trx_read_write was called */
   bool check_table_binlog_row_based_done; /* check_table_binlog.. was called */
   bool check_table_binlog_row_based_result; /* cached check_table_binlog... */
-  /* Set to 1 if handler logged last insert/update/delete operation */
-  bool row_already_logged;
   /* 
     TRUE <=> the engine guarantees that returned records are within the range
     being scanned.
@@ -3051,6 +3064,7 @@ public:
   /** Length of ref (1-8 or the clustered key length) */
   uint ref_length;
   FT_INFO *ft_handler;
+  handler *update_handler;  /* Handler used in case of update */
   enum init_stat { NONE=0, INDEX, RND };
   init_stat inited, pre_inited;
 
@@ -3160,7 +3174,7 @@ private:
 
 public:
   virtual void unbind_psi();
-  virtual void rebind_psi();
+  virtual int rebind();
   /**
     Put the handler in 'batch' mode when collecting
     table io instrumented events.
@@ -3177,9 +3191,15 @@ public:
   void end_psi_batch_mode();
 
   bool set_top_table_fields;
+
   struct TABLE *top_table;
   Field **top_table_field;
   uint top_table_fields;
+
+  /* If we have row logging enabled for this table */
+  bool row_logging, row_logging_init;
+  /* If the row logging should be done in transaction cache */
+  bool row_logging_has_trans;
 
 private:
   /**
@@ -3198,7 +3218,6 @@ private:
   /** Stores next_insert_id for handling duplicate key errors. */
   ulonglong m_prev_insert_id;
 
-
 public:
   handler(handlerton *ht_arg, TABLE_SHARE *share_arg)
     :table_share(share_arg), table(0),
@@ -3208,7 +3227,6 @@ public:
     mark_trx_read_write_done(0),
     check_table_binlog_row_based_done(0),
     check_table_binlog_row_based_result(0),
-    row_already_logged(0),
     in_range_check_pushed_down(FALSE), errkey(-1),
     key_used_on_scan(MAX_KEY),
     active_index(MAX_KEY), keyread(MAX_KEY),
@@ -3227,6 +3245,7 @@ public:
     m_psi_locker(NULL),
     set_top_table_fields(FALSE), top_table(0),
     top_table_field(0), top_table_fields(0),
+    row_logging(0), row_logging_init(0),
     m_lock_type(F_UNLCK), ha_share(NULL), m_prev_insert_id(0)
   {
     DBUG_PRINT("info",
@@ -3240,6 +3259,8 @@ public:
     DBUG_ASSERT(inited == NONE);
   }
   virtual handler *clone(const char *name, MEM_ROOT *mem_root);
+  bool clone_handler_for_update();
+  void delete_update_handler();
   /** This is called after create to allow us to set up cached variables */
   void init()
   {
@@ -4008,6 +4029,7 @@ public:
   virtual void set_part_info(partition_info *part_info) {return;}
   virtual void return_record_by_parent() { return; }
 
+  /* Information about index. Both index and part starts from 0 */
   virtual ulong index_flags(uint idx, uint part, bool all_parts) const =0;
 
   uint max_record_length() const
@@ -4147,30 +4169,52 @@ public:
   }
 
  /*
-   Check if the primary key (if there is one) is a clustered and a
-   reference key. This means:
+   Check if the key is a clustering key
 
    - Data is stored together with the primary key (no secondary lookup
      needed to find the row data). The optimizer uses this to find out
      the cost of fetching data.
-   - The primary key is part of each secondary key and is used
+
+     Note that in many cases a clustered key is also a reference key.
+     This means that:
+
+   - The key is part of each secondary key and is used
      to find the row data in the primary index when reading trough
      secondary indexes.
    - When doing a HA_KEYREAD_ONLY we get also all the primary key parts
      into the row. This is critical property used by index_merge.
 
    All the above is usually true for engines that store the row
-   data in the primary key index (e.g. in a b-tree), and use the primary
+   data in the primary key index (e.g. in a b-tree), and use the key
    key value as a position().  InnoDB is an example of such an engine.
 
-   For such a clustered primary key, the following should also hold:
+   For a clustered (primary) key, the following should also hold:
    index_flags() should contain HA_CLUSTERED_INDEX
    table_flags() should contain HA_TABLE_SCAN_ON_INDEX
+
+   For a reference key the following should also hold:
+   table_flags() should contain HA_PRIMARY_KEY_IS_READ_INDEX.
 
    @retval TRUE   yes
    @retval FALSE  No.
  */
- virtual bool primary_key_is_clustered() { return FALSE; }
+
+ /* The following code is for primary keys */
+ bool pk_is_clustering_key(uint index) const
+ {
+   /*
+     We have to check for MAX_INDEX as table->s->primary_key can be
+     MAX_KEY in the case where there is no primary key.
+   */
+   return index != MAX_KEY && is_clustering_key(index);
+ }
+ /* Same as before but for other keys, in which case we can skip the check */
+ bool is_clustering_key(uint index) const
+ {
+   DBUG_ASSERT(index != MAX_KEY);
+   return (index_flags(index, 0, 1) & HA_CLUSTERED_INDEX);
+ }
+
  virtual int cmp_ref(const uchar *ref1, const uchar *ref2)
  {
    return memcmp(ref1, ref2, ref_length);
@@ -4581,12 +4625,17 @@ protected:
   virtual int delete_table(const char *name);
 
 public:
-  bool check_table_binlog_row_based(bool binlog_row);
+  bool check_table_binlog_row_based();
+  bool prepare_for_row_logging();
+  int prepare_for_insert(bool force_update_handler= 0);
+  int binlog_log_row(TABLE *table,
+                     const uchar *before_record,
+                     const uchar *after_record,
+                     Log_func *log_func);
 
   inline void clear_cached_table_binlog_row_based_flag()
   {
     check_table_binlog_row_based_done= 0;
-    check_table_binlog_row_based_result= 0;
   }
 private:
   /* Cache result to avoid extra calls */
@@ -4601,7 +4650,7 @@ private:
 
 private:
   void mark_trx_read_write_internal();
-  bool check_table_binlog_row_based_internal(bool binlog_row);
+  bool check_table_binlog_row_based_internal();
 
 protected:
   /*
@@ -4895,8 +4944,6 @@ public:
   virtual void update_partition(uint	part_id)
   {}
 
-  virtual bool is_clustering_key(uint index) { return false; }
-
   /**
     Some engines can perform column type conversion with ALGORITHM=INPLACE.
     These functions check for such possibility.
@@ -4917,6 +4964,8 @@ public:
   {
     return false;
   }
+  /* If the table is using sql level unique constraints on some column */
+  inline bool has_long_unique();
 
   /* Used for ALTER TABLE.
   Some engines can handle some differences in indexes by themself. */
@@ -5036,7 +5085,7 @@ public:
      INFORMATION_SCHEMA.TABLES without ORDER BY.
   */
   void sort_desc();
-#endif
+#endif /* DBUG_OFF */
 };
 
 int ha_discover_table(THD *thd, TABLE_SHARE *share);
@@ -5044,7 +5093,8 @@ int ha_discover_table_names(THD *thd, LEX_CSTRING *db, MY_DIR *dirp,
                             Discovered_table_list *result, bool reusable);
 bool ha_table_exists(THD *thd, const LEX_CSTRING *db, const LEX_CSTRING *table_name,
                      handlerton **hton= 0, bool *is_sequence= 0);
-#endif
+bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton, const char *op);
+#endif /* MYSQL_SERVER */
 
 /* key cache */
 extern "C" int ha_init_key_cache(const char *name, KEY_CACHE *key_cache, void *);
@@ -5181,7 +5231,6 @@ int binlog_log_row(TABLE* table,
     if (unlikely(this_tracker)) \
       tracker->stop_tracking(table->in_use); \
   }
-
 void print_keydup_error(TABLE *table, KEY *key, const char *msg, myf errflag);
 void print_keydup_error(TABLE *table, KEY *key, myf errflag);
 

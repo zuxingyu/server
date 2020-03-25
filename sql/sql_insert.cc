@@ -77,6 +77,7 @@
 #include "sql_audit.h"
 #include "sql_derived.h"                        // mysql_handle_derived
 #include "sql_prepare.h"
+#include "rpl_filter.h"                         // binlog_filter
 #include <my_bit.h>
 
 #include "debug_sync.h"
@@ -95,6 +96,8 @@ pthread_handler_t handle_delayed_insert(void *arg);
 static void unlink_blobs(TABLE *table);
 #endif
 static bool check_view_insertability(THD *thd, TABLE_LIST *view);
+static int binlog_show_create_table(THD *thd, TABLE *table,
+                                    Table_specification_st *create_info);
 
 /*
   Check that insert/update fields are from the same single table of a view.
@@ -879,9 +882,12 @@ bool mysql_insert(THD *thd, TABLE_LIST *table_list,
     if (duplic != DUP_ERROR || ignore)
     {
       table->file->extra(HA_EXTRA_IGNORE_DUP_KEY);
-      if (table->file->ha_table_flags() & HA_DUPLICATE_POS &&
-          table->file->ha_rnd_init_with_error(0))
-        goto abort;
+      if (table->file->ha_table_flags() & HA_DUPLICATE_POS)
+      {
+        if (table->file->ha_rnd_init_with_error(0))
+          goto abort;
+        table->file->prepare_for_insert();
+      }
     }
     /**
       This is a simple check for the case when the table has a trigger
@@ -953,6 +959,7 @@ bool mysql_insert(THD *thd, TABLE_LIST *table_list,
     goto values_loop_end;
 
   THD_STAGE_INFO(thd, stage_update);
+  thd->decide_logging_format_low(table);
   do
   {
     DBUG_PRINT("info", ("iteration %llu", iteration));
@@ -1065,7 +1072,6 @@ bool mysql_insert(THD *thd, TABLE_LIST *table_list,
         break;
       }
 
-      thd->decide_logging_format_low(table);
 #ifndef EMBEDDED_LIBRARY
       if (lock_type == TL_WRITE_DELAYED)
       {
@@ -2538,6 +2544,11 @@ TABLE *Delayed_insert::get_local_table(THD* client_thd)
   uchar *bitmap;
   char *copy_tmp;
   uint bitmaps_used;
+  KEY_PART_INFO *key_part, *end_part;
+  Field **default_fields, **virtual_fields;
+  KEY *keys;
+  KEY_PART_INFO *key_parts;
+  uchar *record;
   DBUG_ENTER("Delayed_insert::get_local_table");
 
   /* First request insert thread to get a lock */
@@ -2584,18 +2595,32 @@ TABLE *Delayed_insert::get_local_table(THD* client_thd)
   share= table->s;
 
   /*
-    Allocate memory for the TABLE object, the field pointers array, and
-    one record buffer of reclength size. Normally a table has three
-    record buffers of rec_buff_length size, which includes alignment
-    bytes. Since the table copy is used for creating one record only,
-    the other record buffers and alignment are unnecessary.
+    Allocate memory for the TABLE object, the field pointers array,
+    and one record buffer of reclength size.
+    Normally a table has three record buffers of rec_buff_length size,
+    which includes alignment bytes. Since the table copy is used for
+    creating one record only, the other record buffers and alignment
+    are unnecessary.
+    As the table will also need to calculate default values and
+    expresions, we have to allocate own version of fields. keys and key
+    parts. The key and key parts are needed as parse_vcol_defs() changes
+    them in case of long hash keys.
   */
   THD_STAGE_INFO(client_thd, stage_allocating_local_table);
-  copy_tmp= (char*) client_thd->alloc(sizeof(*copy)+
-                                      (share->fields+1)*sizeof(Field**)+
-                                      share->reclength +
-                                      share->column_bitmap_size*4);
-  if (!copy_tmp)
+  if (!multi_alloc_root(client_thd->mem_root,
+                        &copy_tmp, sizeof(*table),
+                        &field, (uint) (share->fields+1)*sizeof(Field**),
+                        &default_fields,
+                        (share->default_fields +
+                         share->default_expressions + 1) * sizeof(Field*),
+                        &virtual_fields,
+                        (share->virtual_fields + 1) * sizeof(Field*),
+                        &keys, share->keys * sizeof(KEY),
+                        &key_parts,
+                        share->ext_key_parts * sizeof(KEY_PART_INFO),
+                        &record, (uint) share->reclength,
+                        &bitmap, (uint) share->column_bitmap_size*4,
+                        NullS))
     goto error;
 
   /* Copy the TABLE object. */
@@ -2604,27 +2629,21 @@ TABLE *Delayed_insert::get_local_table(THD* client_thd)
 
   /* We don't need to change the file handler here */
   /* Assign the pointers for the field pointers array and the record. */
-  field= copy->field= (Field**) (copy + 1);
-  bitmap= (uchar*) (field + share->fields + 1);
-  copy->record[0]= (bitmap + share->column_bitmap_size*4);
+  copy->field= field;
+  copy->record[0]= record;
   memcpy((char*) copy->record[0], (char*) table->record[0], share->reclength);
   if (share->default_fields || share->default_expressions)
-  {
-    copy->default_field= (Field**)
-      client_thd->alloc((share->default_fields +
-                         share->default_expressions + 1)*
-                        sizeof(Field*));
-    if (!copy->default_field)
-      goto error;
-  }
-
+    copy->default_field= default_fields;
   if (share->virtual_fields)
-  {
-    copy->vfield= (Field **) client_thd->alloc((share->virtual_fields+1)*
-                                               sizeof(Field*));
-    if (!copy->vfield)
-      goto error;
-  }
+    copy->vfield= virtual_fields;
+  copy->key_info= keys;
+  copy->base_key_part= key_parts;
+
+  /* Copy key and key parts from original table */
+  memcpy(keys, table->key_info, sizeof(KEY) * share->keys);
+  memcpy(key_parts, table->base_key_part,
+         sizeof(KEY_PART_INFO) *share->ext_key_parts);
+
   copy->expr_arena= NULL;
 
   /* Ensure we don't use the table list of the original table */
@@ -2646,6 +2665,8 @@ TABLE *Delayed_insert::get_local_table(THD* client_thd)
     (*field)->unireg_check= (*org_field)->unireg_check;
     (*field)->orig_table= copy;			// Remove connection
     (*field)->move_field_offset(adjust_ptrs);	// Point at copy->record[0]
+    (*field)->flags|= ((*org_field)->flags & LONG_UNIQUE_HASH_FIELD);
+    (*field)->invisible= (*org_field)->invisible;
     memdup_vcol(client_thd, (*field)->vcol_info);
     memdup_vcol(client_thd, (*field)->default_value);
     memdup_vcol(client_thd, (*field)->check_constraint);
@@ -2653,6 +2674,35 @@ TABLE *Delayed_insert::get_local_table(THD* client_thd)
       (*field)->table->found_next_number_field= *field;
   }
   *field=0;
+
+  /* The following is needed for long hash key */
+  key_part= copy->base_key_part;
+  for (KEY *key= copy->key_info, *end_key= key + share->keys ;
+       key < end_key;
+       key++)
+  {
+    key->key_part= key_part;
+    key_part+= key->ext_key_parts;
+    if (key->algorithm == HA_KEY_ALG_LONG_HASH)
+      key_part++;
+  }
+
+  for (key_part= copy->base_key_part,
+         end_part= key_part + share->ext_key_parts ;
+       key_part < end_part ;
+       key_part++)
+  {
+    Field *field= key_part->field= copy->field[key_part->fieldnr - 1];
+
+    /* Fix partial fields, like in open_table_from_share() */
+    if (field->key_length() != key_part->length &&
+        !(field->flags & BLOB_FLAG))
+    {
+      field= key_part->field= field->make_new_field(client_thd->mem_root,
+                                                    copy, 0);
+      field->field_length= key_part->length;
+    }
+  }
 
   if (share->virtual_fields || share->default_expressions ||
       share->default_fields)
@@ -3001,6 +3051,8 @@ bool Delayed_insert::open_and_lock_table()
     return TRUE;
   }
   table->copy_blobs= 1;
+
+  table->file->prepare_for_row_logging();
   return FALSE;
 }
 
@@ -3060,6 +3112,8 @@ pthread_handler_t handle_delayed_insert(void *arg)
       at which rows are inserted cannot be determined in mixed mode.
     */
     thd->set_current_stmt_binlog_format_row_if_mixed();
+    /* Don't annotate insert delayed binlog events */
+    thd->variables.binlog_annotate_row_events= 0;
 
     /*
       Clone tickets representing protection against GRL and the lock on
@@ -3256,10 +3310,27 @@ pthread_handler_t handle_delayed_insert(void *arg)
         di->table->file->ha_release_auto_increment();
         mysql_unlock_tables(thd, lock);
         trans_commit_stmt(thd);
+        /*
+          We have to delete update handler as we need to create a new one
+          for the next lock table to ensure they have both the same read
+          view.
+        */
+        di->table->file->delete_update_handler();
         di->group_count=0;
         mysql_audit_release(thd);
+        /*
+          Reset binlog. We can't call ha_reset() for the table as this will
+          reset the table maps we have calculated earlier.
+        */
         mysql_mutex_lock(&di->mutex);
       }
+
+      /*
+        Reset binlog. We can't call ha_reset() for the table as this will
+        reset the table maps we have calculated earlier.
+      */
+      thd->reset_binlog_for_next_statement();
+
       if (di->tables_in_use)
         mysql_cond_broadcast(&di->cond_client); // If waiting clients
     }
@@ -3351,9 +3422,7 @@ bool Delayed_insert::handle_inserts(void)
 {
   int error;
   ulong max_rows;
-  bool has_trans = TRUE;
-  bool using_ignore= 0, using_opt_replace= 0,
-       using_bin_log= mysql_bin_log.is_open();
+  bool using_ignore= 0, using_opt_replace= 0, using_bin_log;
   delayed_row *row;
   DBUG_ENTER("handle_inserts");
 
@@ -3387,6 +3456,13 @@ bool Delayed_insert::handle_inserts(void)
 
   if (table->file->ha_rnd_init_with_error(0))
     goto err;
+  /*
+    We have to call prepare_for_row_logging() as the second call to
+    handler_writes() will not have called decide_logging_format.
+  */
+  table->file->prepare_for_row_logging();
+  table->file->prepare_for_insert();
+  using_bin_log= table->file->row_logging;
 
   /*
     We can't use row caching when using the binary log because if
@@ -3395,6 +3471,7 @@ bool Delayed_insert::handle_inserts(void)
   */
   if (!using_bin_log)
     table->file->extra(HA_EXTRA_WRITE_CACHE);
+
   mysql_mutex_lock(&mutex);
 
   while ((row=rows.get()))
@@ -3423,8 +3500,8 @@ bool Delayed_insert::handle_inserts(void)
         Guaranteed that the INSERT DELAYED STMT will not be here
         in SBR when mysql binlog is enabled.
       */
-      DBUG_ASSERT(!(mysql_bin_log.is_open() &&
-                  !thd.is_current_stmt_binlog_format_row()));
+      DBUG_ASSERT(!mysql_bin_log.is_open() ||
+                  thd.is_current_stmt_binlog_format_row());
 
       /*
         This is the first value of an INSERT statement.
@@ -3582,10 +3659,9 @@ bool Delayed_insert::handle_inserts(void)
 
     TODO: Move the logging to last in the sequence of rows.
   */
-  has_trans= thd.lex->sql_command == SQLCOM_CREATE_TABLE ||
-              table->file->has_transactions();
-  if (thd.is_current_stmt_binlog_format_row() &&
-      thd.binlog_flush_pending_rows_event(TRUE, has_trans))
+  if (table->file->row_logging &&
+      thd.binlog_flush_pending_rows_event(TRUE,
+                                          table->file->row_logging_has_trans))
     goto err;
 
   if (unlikely((error=table->file->extra(HA_EXTRA_NO_CACHE))))
@@ -3873,9 +3949,12 @@ select_insert::prepare(List<Item> &values, SELECT_LEX_UNIT *u)
   if (info.ignore || info.handle_duplicates != DUP_ERROR)
   {
     table->file->extra(HA_EXTRA_IGNORE_DUP_KEY);
-    if (table->file->ha_table_flags() & HA_DUPLICATE_POS &&
-        table->file->ha_rnd_init_with_error(0))
-      DBUG_RETURN(1);
+    if (table->file->ha_table_flags() & HA_DUPLICATE_POS)
+    {
+      if (table->file->ha_rnd_init_with_error(0))
+        DBUG_RETURN(1);
+      table->file->prepare_for_insert();
+    }
   }
   if (info.handle_duplicates == DUP_REPLACE &&
       (!table->triggers || !table->triggers->has_delete_triggers()))
@@ -4488,6 +4567,18 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     /* purecov: end */
   }
   table->s->table_creation_was_logged= save_table_creation_was_logged;
+  if (!table->s->tmp_table)
+    table->file->prepare_for_row_logging();
+
+  /*
+    If slave is converting a statement event to row events, log the original
+    create statement as an annotated row
+  */
+#ifdef HAVE_REPLICATION
+  if (thd->slave_thread && opt_replicate_annotate_row_events &&
+      thd->is_current_stmt_binlog_format_row())
+    thd->variables.binlog_annotate_row_events= 1;
+#endif
   DBUG_RETURN(table);
 }
 
@@ -4545,13 +4636,9 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
         return error;
 
       TABLE const *const table = *tables;
-      if (thd->is_current_stmt_binlog_format_row()  &&
+      if (thd->is_current_stmt_binlog_format_row() &&
           !table->s->tmp_table)
-      {
-        int error;
-        if (unlikely((error= ptr->binlog_show_create_table(tables, count))))
-          return error;
-      }
+        return binlog_show_create_table(thd, *tables, ptr->create_info);
       return 0;
     }
     select_create *ptr;
@@ -4629,9 +4716,12 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
   if (info.ignore || info.handle_duplicates != DUP_ERROR)
   {
     table->file->extra(HA_EXTRA_IGNORE_DUP_KEY);
-    if (table->file->ha_table_flags() & HA_DUPLICATE_POS &&
-        table->file->ha_rnd_init_with_error(0))
-      DBUG_RETURN(1);
+    if (table->file->ha_table_flags() & HA_DUPLICATE_POS)
+    {
+      if (table->file->ha_rnd_init_with_error(0))
+        DBUG_RETURN(1);
+      table->file->prepare_for_insert();
+    }
   }
   if (info.handle_duplicates == DUP_REPLACE &&
       (!table->triggers || !table->triggers->has_delete_triggers()))
@@ -4650,8 +4740,9 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
   DBUG_RETURN(0);
 }
 
-int
-select_create::binlog_show_create_table(TABLE **tables, uint count)
+
+static int binlog_show_create_table(THD *thd, TABLE *table,
+                                    Table_specification_st *create_info)
 {
   /*
     Note 1: In RBR mode, we generate a CREATE TABLE statement for the
@@ -4670,14 +4761,12 @@ select_create::binlog_show_create_table(TABLE **tables, uint count)
     statement transaction cache.
   */
   DBUG_ASSERT(thd->is_current_stmt_binlog_format_row());
-  DBUG_ASSERT(tables && *tables && count > 0);
-
   StringBuffer<2048> query(system_charset_info);
   int result;
   TABLE_LIST tmp_table_list;
 
   tmp_table_list.reset();
-  tmp_table_list.table = *tables;
+  tmp_table_list.table = table;
 
   result= show_create_table(thd, &tmp_table_list, &query,
                             create_info, WITH_DB_NAME);
@@ -4706,6 +4795,78 @@ select_create::binlog_show_create_table(TABLE **tables, uint count)
   return result;
 }
 
+
+/**
+   Log CREATE TABLE to binary log
+
+   @param thd   Thread handler
+   @param table Log create statement for this table
+
+   This function is called from ALTER TABLE for a shared table converted
+   to a not shared table.
+*/
+
+bool binlog_create_table(THD *thd, TABLE *table)
+{
+  /* Don't log temporary tables in row format */
+  if (thd->variables.binlog_format == BINLOG_FORMAT_ROW &&
+      table->s->tmp_table)
+    return 0;
+  if (!mysql_bin_log.is_open() ||
+      !(thd->variables.option_bits & OPTION_BIN_LOG) ||
+      (thd->wsrep_binlog_format() == BINLOG_FORMAT_STMT &&
+       !binlog_filter->db_ok(table->s->db.str)))
+    return 0;
+
+  /*
+    We have to use ROW format to ensure that future row inserts will be
+    logged
+  */
+  thd->set_current_stmt_binlog_format_row();
+  table->file->prepare_for_row_logging();
+  return binlog_show_create_table(thd, table, 0) != 0;
+}
+
+
+/**
+   Log DROP TABLE to binary log
+
+   @param thd   Thread handler
+   @param table Log create statement for this table
+
+   This function is called from ALTER TABLE for a shared table converted
+   to a not shared table.
+*/
+
+bool binlog_drop_table(THD *thd, TABLE *table)
+{
+  StringBuffer<2048> query(system_charset_info);
+  /* Don't log temporary tables in row format */
+  if (!table->s->table_creation_was_logged)
+    return 0;
+  if (!mysql_bin_log.is_open() ||
+      !(thd->variables.option_bits & OPTION_BIN_LOG) ||
+      (thd->wsrep_binlog_format() == BINLOG_FORMAT_STMT &&
+       !binlog_filter->db_ok(table->s->db.str)))
+    return 0;
+
+  query.append("DROP ");
+  if (table->s->tmp_table)
+    query.append("TEMPORARY ");
+  query.append("TABLE IF EXISTS ");
+  append_identifier(thd, &query, &table->s->db);
+  query.append(".");
+  append_identifier(thd, &query, &table->s->table_name);
+
+  return thd->binlog_query(THD::STMT_QUERY_TYPE,
+                           query.ptr(), query.length(),
+                           /* is_trans */ TRUE,
+                           /* direct */ FALSE,
+                           /* suppress_use */ TRUE,
+                           0) > 0;
+}
+
+
 void select_create::store_values(List<Item> &values)
 {
   fill_record_n_invoke_before_triggers(thd, table, field, values, 1,
@@ -4724,6 +4885,9 @@ bool select_create::send_eof()
   */
   if (table->s->tmp_table)
     thd->transaction.stmt.mark_created_temp_table();
+
+  if (thd->slave_thread)
+    thd->variables.binlog_annotate_row_events= 0;
 
   if (prepare_eof())
   {
