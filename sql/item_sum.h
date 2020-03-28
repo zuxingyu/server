@@ -589,6 +589,7 @@ public:
 
   bool with_sum_func() const { return true; }
   virtual void set_partition_row_count(ulonglong count) { DBUG_ASSERT(0); }
+  bool packing_is_allowed(TABLE* table, uint* total_length);
 };
 
 
@@ -681,7 +682,7 @@ class Aggregator_distinct : public Aggregator
 public:
   Aggregator_distinct (Item_sum *sum) :
     Aggregator(sum), table(NULL), tmp_table_param(NULL), tree(NULL),
-    always_null(false), use_distinct_values(false) {}
+    always_null(false), use_distinct_values(false){}
   virtual ~Aggregator_distinct ();
   Aggregator_type Aggrtype() { return DISTINCT_AGGREGATOR; }
 
@@ -695,7 +696,9 @@ public:
 
   bool unique_walk_function(void *element);
   bool unique_walk_function_for_count(void *element);
+  bool is_distinct_packed();
   static int composite_key_cmp(void* arg, uchar* key1, uchar* key2);
+  static int composite_packed_key_cmp(void* arg, uchar* key1, uchar* key2);
 };
 
 
@@ -1841,6 +1844,9 @@ public:
 C_MODE_START
 int group_concat_key_cmp_with_distinct(void* arg, const void* key1,
                                        const void* key2);
+int group_concat_packed_key_cmp_with_distinct(void *arg,
+                                              const void *key1,
+                                              const void *key2);
 int group_concat_key_cmp_with_order(void* arg, const void* key1,
                                     const void* key2);
 int dump_leaf_key(void* key_arg,
@@ -1905,6 +1911,9 @@ protected:
 
   friend int group_concat_key_cmp_with_distinct(void* arg, const void* key1,
                                                 const void* key2);
+  friend int group_concat_packed_key_cmp_with_distinct(void *arg,
+                                                       const void *key1,
+                                                       const void *key2);
   friend int group_concat_key_cmp_with_order(void* arg, const void* key1,
 					     const void* key2);
   friend int dump_leaf_key(void* key_arg,
@@ -1985,6 +1994,9 @@ public:
     { context= (Name_resolution_context *)cntx; return FALSE; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_group_concat>(thd, this); }
+  bool is_distinct_packed();
+  // TODO varun: this can be moved to Item_sum
+  bool packing_is_allowed(uint* total_length);
 };
 
 #endif /* ITEM_SUM_INCLUDED */

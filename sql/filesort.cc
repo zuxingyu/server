@@ -35,6 +35,7 @@
 #include "filesort_utils.h"
 #include "sql_select.h"
 #include "debug_sync.h"
+#include "uniques.h"
 
 	/* functions defined in this file */
 
@@ -1721,7 +1722,8 @@ ulong read_to_buffer(IO_CACHE *fromfile, Merge_chunk *buffpek,
         uint res_length= param->get_result_length(plen);
         if (plen + res_length > buffpek->buffer_end())
           break;                                // Incomplete record.
-        DBUG_ASSERT(res_length > 0);
+        DBUG_ASSERT((param->sort_keys == NULL && res_length == 0)||
+                     res_length > 0);
         DBUG_ASSERT(sort_length + res_length <= param->rec_length);
         record+= sort_length;
         record+= res_length;
@@ -1825,7 +1827,6 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
   bool check_dupl_count= flag && min_dupl_count;
   offset= (rec_length-
            (flag && min_dupl_count ? sizeof(dupl_count) : 0)-res_length);
-  uint wr_len= flag ? res_length : rec_length;
   uint wr_offset= flag ? offset : 0;
 
   const bool using_packed_sortkeys= param->using_packed_sortkeys();
@@ -1877,11 +1878,15 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
        Store it also in 'to_file'.
     */
     buffpek= (Merge_chunk*) queue_top(&queue);
-    memcpy(unique_buff, buffpek->current_key(), rec_length);
+    uint rec_len= using_packed_sortkeys ?
+                  Unique::read_packed_length(buffpek->current_key()) :
+                  rec_length;
+
+    memcpy(unique_buff, buffpek->current_key(), rec_len);
     if (min_dupl_count)
-      memcpy(&dupl_count, unique_buff+dupl_count_ofs, 
+      memcpy(&dupl_count, unique_buff + rec_len - sizeof(element_count),
              sizeof(dupl_count));
-    buffpek->advance_current_key(rec_length);
+    buffpek->advance_current_key(rec_len);
     buffpek->decrement_mem_count();
     if (buffpek->mem_count() == 0)
     {
@@ -1889,7 +1894,7 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
                                                 param, packed_format))))
       {
         (void) queue_remove_top(&queue);
-        reuse_freed_buff(&queue, buffpek, rec_length);
+        reuse_freed_buff(&queue, buffpek, rec_len);
       }
       else if (unlikely(bytes_read == (ulong) -1))
         goto err;                        /* purecov: inspected */ 
@@ -1911,19 +1916,23 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
       if (cmp)                                        // Remove duplicates
       {
         uchar *current_key= buffpek->current_key();
+        uint rec_len= using_packed_sortkeys ?
+                      Unique::read_packed_length(buffpek->current_key()) :
+                      rec_length;
         if (!(*cmp)(first_cmp_arg, &unique_buff, &current_key))
         {
           if (min_dupl_count)
           {
             element_count cnt;
-            memcpy(&cnt, buffpek->current_key() + dupl_count_ofs, sizeof(cnt));
+            memcpy(&cnt, buffpek->current_key() +
+                   rec_len - sizeof(element_count), sizeof(cnt));
             dupl_count+= cnt;
           }
           goto skip_duplicate;
         }
         if (min_dupl_count)
         {
-          memcpy(unique_buff+dupl_count_ofs, &dupl_count,
+          memcpy(unique_buff + rec_len - sizeof(element_count), &dupl_count,
                  sizeof(dupl_count));
         }
         src= unique_buff;
@@ -1955,7 +1964,8 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
         {
           memcpy(unique_buff, buffpek->current_key(), rec_length);
           if (min_dupl_count)
-            memcpy(&dupl_count, unique_buff+dupl_count_ofs,
+            memcpy(&dupl_count,
+                   unique_buff + rec_length - sizeof(element_count),
                    sizeof(dupl_count));
         }
         if (!--max_rows)
@@ -1995,12 +2005,19 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
   if (cmp)
   {
     uchar *current_key= buffpek->current_key();
+    param->get_rec_and_res_len(buffpek->current_key(),
+                               &rec_length, &res_length);
+    const uint bytes_to_write= (flag == 0) ? rec_length : res_length;
+
+
     if (!(*cmp)(first_cmp_arg, &unique_buff, &current_key))
     {
       if (min_dupl_count)
       {
         element_count cnt;
-        memcpy(&cnt, buffpek->current_key() + dupl_count_ofs, sizeof(cnt));
+        memcpy(&cnt,
+               buffpek->current_key() + rec_length - sizeof(element_count),
+               sizeof(cnt));
         dupl_count+= cnt;
       }
       buffpek->advance_current_key(rec_length);
@@ -2008,13 +2025,17 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
     }
 
     if (min_dupl_count)
-      memcpy(unique_buff+dupl_count_ofs, &dupl_count,
+      memcpy(unique_buff + rec_length - sizeof(element_count), &dupl_count,
              sizeof(dupl_count));
 
     if (!check_dupl_count || dupl_count >= min_dupl_count)
     {
       src= unique_buff;
-      if (my_b_write(to_file, src+wr_offset, wr_len))
+      if (my_b_write(to_file,
+                        src + (offset_for_packing ?
+                               rec_length - res_length :  // sort length
+                               wr_offset),
+                        bytes_to_write))
         goto err;                             /* purecov: inspected */
       if (!--max_rows)
         goto end;                             
@@ -2894,10 +2915,30 @@ int compare_packed_sort_keys(void *sort_param,
   uchar *a= *a_ptr;
   uchar *b= *b_ptr;
 
-  a+= Sort_keys::size_of_length_field;
-  b+= Sort_keys::size_of_length_field;
-  for (SORT_FIELD *sort_field= sort_keys->begin();
-       sort_field != sort_keys->end(); sort_field++)
+  if ((retval= sort_keys->compare_keys(a + Sort_keys::size_of_length_field,
+                                       b + Sort_keys::size_of_length_field)))
+    return retval;
+
+  /*
+    this comparison is done for the case when the sort keys is appended with
+    the ROW_ID pointer. For such cases we don't have addon fields
+    so we can make a memcmp check over both the sort keys
+  */
+  if (!param->using_addon_fields())
+  {
+    a+= Sort_keys::read_sortkey_length(a);
+    b+= Sort_keys::read_sortkey_length(b);
+    retval= memcmp(a, b, param->res_length);
+  }
+  return retval;
+}
+
+
+int Sort_keys::compare_keys(uchar *a, uchar *b)
+{
+  int retval= 0;
+  size_t a_len, b_len;
+  for (SORT_FIELD *sort_field= begin(); sort_field != end(); sort_field++)
   {
     retval= sort_field->is_variable_sized() ?
             sort_field->compare_packed_varstrings(a, &a_len, b, &b_len) :
@@ -2908,18 +2949,9 @@ int compare_packed_sort_keys(void *sort_param,
 
     a+= a_len;
     b+= b_len;
-
   }
-  /*
-    this comparison is done for the case when the sort keys is appended with
-    the ROW_ID pointer. For such cases we don't have addon fields
-    so we can make a memcmp check over both the sort keys
-  */
-  if (!param->using_addon_fields())
-    retval= memcmp(a, b, param->res_length);
   return retval;
 }
-
 
 /*
   @brief
