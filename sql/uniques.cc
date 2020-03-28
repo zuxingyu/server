@@ -877,23 +877,32 @@ Unique::setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count)
     if (!field)
       continue;
 
-    /*
-      TODO varun: maybe we can introduce a function to do this initialization
-      for fields
-    */
-    pos->field= field;
-    pos->reverse= false;
-    pos->original_length= pos->length= field->sort_length();
-    pos->cs= field->sort_charset();
-    pos->suffix_length= field->sort_suffix_length();
-    pos->type= field->is_packable() ?
-               SORT_FIELD_ATTR::VARIABLE_SIZE :
-               SORT_FIELD_ATTR::FIXED_SIZE;
-    pos->maybe_null= false;
-    if (pos->is_variable_sized())
-      pos->length_bytes= number_storage_requirement(pos->length);
+    pos->setup(field);
     pos++;
   }
+  return false;
+}
+
+
+bool Unique::setup(THD *thd, Field *field)
+{
+  if (!packed)   // no packing so don't create the sortorder list
+    return false;
+
+  SORT_FIELD *sort,*pos;
+  if (sortorder)
+    return false;
+  DBUG_ASSERT(sort_keys == NULL);
+  sortorder= (SORT_FIELD*) thd->alloc(sizeof(SORT_FIELD));
+  pos= sort= sortorder;
+  if (!pos)
+    return true;
+  sort_keys= new Sort_keys(sortorder, 1);
+  if (!sort_keys)
+    return true;
+  sort=pos= sortorder;
+  pos->setup(field);
+
   return false;
 }
 

@@ -2779,6 +2779,23 @@ bool SORT_FIELD_ATTR::check_if_packing_possible(THD *thd) const
 }
 
 
+void SORT_FIELD::setup(Field *fld)
+{
+  field= fld;
+  item= NULL;
+  reverse= false;   // for unique needs to be set to false but we can use a parameter for this
+  original_length= length= field->sort_length();
+  cs= field->sort_charset();
+  suffix_length= field->sort_suffix_length();
+  type= field->is_packable() ?
+        SORT_FIELD_ATTR::VARIABLE_SIZE :
+        SORT_FIELD_ATTR::FIXED_SIZE;
+  maybe_null= false;   // for JSON_ARRAGG this may be set to true
+  length_bytes= is_variable_sized() ?
+                number_storage_requirement(length) : 0;
+}
+
+
 /*
   Compare function used for packing sort keys
 */

@@ -141,6 +141,7 @@ public:
   size_t get_max_in_memory_size() const { return max_in_memory_size; }
   uchar *get_packed_rec_ptr() { return packed_rec_ptr; }
   bool setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count);
+  bool setup(THD *thd, Field *field);
   Sort_keys *get_keys() { return sort_keys; }
   SORT_FIELD *get_sortorder() { return sortorder; }
   int compare_packed_keys(uchar *a, uchar *b);

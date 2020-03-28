@@ -4513,9 +4513,10 @@ bool Item_sum::packing_is_allowed(TABLE *table, uint* total_length)
   if (size_of_packable_fields == 0)
     return false;
 
-  if ((tot_length + table->s->null_bytes) < (128 + Unique::size_of_length_field +
-                                             size_of_packable_fields))
-    return false;
+  /*
+    TODO varun: null_byte only need to be included for GROUP_CONCAT, so move
+    it to GROUP concat implementation
+  */
   *total_length= tot_length + table->s->null_bytes;
   /*
     Unique::size_of_lengt_field is the lengty bytes to store the packed length
