@@ -114,6 +114,12 @@ public:
   {
     return size_of_length_field + uint4korr(p);
   }
+
+  // returns the length of the key without the length bytes stored for the key
+  static uint read_key_length(uchar *p)
+  {
+    return uint4korr(p);
+  }
   
   static const uint size_of_length_field= 4;
   /* Cost of searching for an element in the tree */
