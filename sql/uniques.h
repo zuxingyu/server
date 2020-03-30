@@ -49,17 +49,27 @@ class Unique :public Sql_alloc
     FALSE :the value stored is of fixed size
   */
   bool packed;
+  /*
+    size in bytes used for storing keys in the Unique tree
+  */
   size_t memory_used;
   /*
     Packed record ptr for a record of the table, this will be stored in
     the unique object
   */
   uchar* packed_rec_ptr;
+
+  /*
+    Array of SORT_FIELD structure storing the information about the key parts
+    in the sort key of the Unique tree
+  */
   SORT_FIELD *sortorder;
   Sort_keys *sort_keys;
 
   bool merge(TABLE *table, uchar *buff, size_t size, bool without_last_merge);
   bool flush();
+
+  // return the amount of unused memory in the Unique tree
   size_t space_left()
   {
     DBUG_ASSERT(max_in_memory_size >= memory_used);
@@ -67,6 +77,8 @@ class Unique :public Sql_alloc
   }
   bool is_full(size_t record_size)
   {
+    if (!tree.elements_in_tree)  // Atleast insert one element in the tree
+      return false;
     return record_size > space_left();
   }
 
@@ -105,23 +117,7 @@ public:
   void close_for_expansion() { tree.flag= TREE_ONLY_DUPS; }
 
   bool get(TABLE *table);
-  bool is_packed() { return packed; }
-  static void store_packed_length(uchar *p, uint sz)
-  {
-    int4store(p, sz - size_of_length_field);
-  }
-  static uint read_packed_length(uchar *p)
-  {
-    return size_of_length_field + uint4korr(p);
-  }
 
-  // returns the length of the key without the length bytes stored for the key
-  static uint read_key_length(uchar *p)
-  {
-    return uint4korr(p);
-  }
-  
-  static const uint size_of_length_field= 4;
   /* Cost of searching for an element in the tree */
   inline static double get_search_cost(ulonglong tree_elems, uint compare_factor)
   {
@@ -146,11 +142,32 @@ public:
   uint get_full_size() const { return full_size; }
   size_t get_max_in_memory_size() const { return max_in_memory_size; }
   uchar *get_packed_rec_ptr() { return packed_rec_ptr; }
-  bool setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count);
-  bool setup(THD *thd, Field *field);
   Sort_keys *get_keys() { return sort_keys; }
   SORT_FIELD *get_sortorder() { return sortorder; }
+
+  // returns TRUE if the unique tree stores packed values
+  bool is_packed() { return packed; }
+
+  static void store_packed_length(uchar *p, uint sz)
+  {
+    int4store(p, sz - size_of_length_field);
+  }
+  static uint read_packed_length(uchar *p)
+  {
+    return size_of_length_field + uint4korr(p);
+  }
+
+  // returns the length of the key without the length bytes stored for the key
+  static uint read_key_length(uchar *p)
+  {
+    return uint4korr(p);
+  }
+
+  bool setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count);
+  bool setup(THD *thd, Field *field);
   int compare_packed_keys(uchar *a, uchar *b);
+
+  static const uint size_of_length_field= 4;
 
   friend int unique_write_to_file(uchar* key, element_count count, Unique *unique);
   friend int unique_write_to_ptrs(uchar* key, element_count count, Unique *unique);
