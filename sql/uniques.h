@@ -105,10 +105,12 @@ public:
     DBUG_PRINT("info", ("tree %u - %lu", tree.elements_in_tree, max_elements));
     TREE_ELEMENT *res;
     size_t rec_size= packed_size + sizeof(TREE_ELEMENT) + tree.size_of_element;
+
     if (!(tree.flag & TREE_ONLY_DUPS) && is_full(rec_size) && flush())
       DBUG_RETURN(1);
+    uint count= tree.elements_in_tree;
     res= tree_insert(&tree, ptr, packed_size, tree.custom_arg);
-    if (res)
+    if (tree.elements_in_tree != count)
       memory_used+= rec_size;
     DBUG_RETURN(!res);
   }

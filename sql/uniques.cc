@@ -763,7 +763,10 @@ bool Unique::merge(TABLE *table, uchar *buff, size_t buff_size,
   sort_param.set_packed_format(is_packed());
 
   sort_param.unique_buff= buff +(sort_param.max_keys_per_buffer *
-				       sort_param.sort_length);
+				                         sort_param.sort_length);
+
+  size_t remaining_buff_size;
+  remaining_buff_size= sort_param.max_keys_per_buffer * sort_param.sort_length;
 
   sort_param.compare= (qsort2_cmp) buffpek_compare;
   sort_param.cmp_context.key_compare= tree.compare;
@@ -771,7 +774,7 @@ bool Unique::merge(TABLE *table, uchar *buff, size_t buff_size,
 
   /* Merge the buffers to one file, removing duplicates */
   if (merge_many_buff(&sort_param,
-                      Bounds_checked_array<uchar>(buff, buff_size),
+                      Bounds_checked_array<uchar>(buff, remaining_buff_size),
                       file_ptr,&maxbuffer,&file))
     goto err;
   if (flush_io_cache(&file) ||
@@ -784,7 +787,8 @@ bool Unique::merge(TABLE *table, uchar *buff, size_t buff_size,
     file_ptrs.elements= maxbuffer+1;
     return 0;
   }
-  if (merge_index(&sort_param, Bounds_checked_array<uchar>(buff, buff_size),
+  if (merge_index(&sort_param,
+                  Bounds_checked_array<uchar>(buff, remaining_buff_size),
                   file_ptr, maxbuffer, &file, outfile))
     goto err;
   error= 0;
