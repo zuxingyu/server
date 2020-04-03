@@ -2014,8 +2014,6 @@ bool merge_buffers(Sort_param *param, IO_CACHE *from_file,
     uchar *current_key= buffpek->current_key();
     param->get_rec_and_res_len(buffpek->current_key(),
                                &rec_length, &res_length);
-    const uint bytes_to_write= (flag == 0) ? rec_length : res_length;
-
 
     if (!(*cmp)(first_cmp_arg, &unique_buff, &current_key))
     {
@@ -2935,7 +2933,6 @@ int compare_packed_sort_keys(void *sort_param,
                              unsigned char **a_ptr, unsigned char **b_ptr)
 {
   int retval= 0;
-  size_t a_len, b_len;
   Sort_param *param= (Sort_param*)sort_param;
   Sort_keys *sort_keys= param->sort_keys;
   uchar *a= *a_ptr;
