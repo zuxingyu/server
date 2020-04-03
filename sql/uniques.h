@@ -45,8 +45,8 @@ class Unique :public Sql_alloc
                             always 0 for unions, > 0 for intersections */
   bool with_counters;
   /*
-    TRUE  :the value stored is of variable size
-    FALSE :the value stored is of fixed size
+    TRUE  :  Value stored is of variable size
+    FALSE :  Value value stored is of fixed size
   */
   bool packed;
   /*
@@ -54,14 +54,15 @@ class Unique :public Sql_alloc
   */
   size_t memory_used;
   /*
-    Packed record ptr for a record of the table, this will be stored in
-    the unique object
+    Packed record ptr for a record of the table, the value in this records is
+    added to the unique tree
   */
   uchar* packed_rec_ptr;
 
   /*
     Array of SORT_FIELD structure storing the information about the key parts
     in the sort key of the Unique tree
+    @see Unique::setup()
   */
   SORT_FIELD *sortorder;
   Sort_keys *sort_keys;
@@ -75,6 +76,7 @@ class Unique :public Sql_alloc
     DBUG_ASSERT(max_in_memory_size >= memory_used);
     return max_in_memory_size - memory_used;
   }
+
   bool is_full(size_t record_size)
   {
     if (!tree.elements_in_tree)  // Atleast insert one element in the tree
@@ -111,7 +113,13 @@ public:
     uint count= tree.elements_in_tree;
     res= tree_insert(&tree, ptr, packed_size, tree.custom_arg);
     if (tree.elements_in_tree != count)
+    {
+      /*
+        increment memory used only when a unique element is inserted
+        in the tree
+      */
       memory_used+= rec_size;
+    }
     DBUG_RETURN(!res);
   }
 
@@ -154,9 +162,10 @@ public:
   {
     int4store(p, sz - size_of_length_field);
   }
+  // returns the length of the key along with the length bytes for the key
   static uint read_packed_length(uchar *p)
   {
-    return size_of_length_field + uint4korr(p);
+    return size_of_length_field + read_key_length(p);
   }
 
   // returns the length of the key without the length bytes stored for the key
@@ -165,10 +174,17 @@ public:
     return uint4korr(p);
   }
 
-  bool setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count);
+  bool setup(THD *thd, Item_sum *item, uint non_const_args,
+             uint arg_count, bool exclude_nulls);
   bool setup(THD *thd, Field *field);
   int compare_packed_keys(uchar *a, uchar *b);
 
+  /*
+    TODO varun:
+    Currently the size_of_length_field is set to 4 but we can also use 2 here,
+    as fields are always inserted in the unique tree either from the base table
+    or from the temp table
+  */
   static const uint size_of_length_field= 4;
 
   friend int unique_write_to_file(uchar* key, element_count count, Unique *unique);

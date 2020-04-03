@@ -432,6 +432,10 @@ Unique::reset()
     reinit_io_cache(&file, WRITE_CACHE, 0L, 0, 1);
   }
   my_free(sort.record_pointers);
+  /*
+    TODO varun: this can be avoided too, currently done just to make sure
+    that the buffer is zeroed
+  */
   if (packed_rec_ptr)
     memset(packed_rec_ptr, 0, size);
   elements= 0;
@@ -540,7 +544,7 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
   // read_to_buffer() needs only rec_length.
   Sort_param sort_param;
   sort_param.rec_length= key_length;
-  sort_param.sort_length= key_length;  // added to avoid hitting assert in read_to_buffer
+  sort_param.sort_length= key_length;
   DBUG_ASSERT(!sort_param.using_addon_fields());
   sort_param.set_using_packed_keys(packed);
 
@@ -576,18 +580,18 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
       read next key from the cache or from the file and push it to the
       queue; this gives new top.
     */
-    uint key_len= packed ?
-                  Unique::read_packed_length((uchar*)old_key) :
-                  key_length;
+    key_length= packed ?
+                Unique::read_packed_length((uchar*)old_key) :
+                key_length;
 
-    top->advance_current_key(key_len);
+    top->advance_current_key(key_length);
     top->decrement_mem_count();
     if (top->mem_count())
       queue_replace_top(&queue);
     else /* next piece should be read */
     {
       /* save old_key not to overwrite it in read_to_buffer */
-      memcpy(save_key_buff, old_key, key_len);
+      memcpy(save_key_buff, old_key, key_length);
       old_key= save_key_buff;
       bytes_read= read_to_buffer(file, top, &sort_param, packed);
       if (unlikely(bytes_read == (ulong) -1))
@@ -634,10 +638,10 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
            get_counter_from_merged_element(top->current_key(), cnt_ofs) : 1;
       if (walk_action(top->current_key(), cnt, walk_action_arg))
         goto end;
-      uint key_len= packed ?
-                    Unique::read_packed_length(top->current_key()) :
-                    key_length;
-      top->advance_current_key(key_len);
+      key_length= packed ?
+                  Unique::read_packed_length(top->current_key()) :
+                  key_length;
+      top->advance_current_key(key_length);
     }
     while (top->decrement_mem_count());
     bytes_read= read_to_buffer(file, top, &sort_param, packed);
@@ -854,9 +858,24 @@ err:
   DBUG_RETURN(rc);
 }
 
+/*
+  @brief
+    Setup the structures that are used when Unique stores packed values
 
+  @param thd                   thread structure
+  @param item                  item of aggregate function
+  @param non_const_args        number of non constant arguments
+  @param arg_count             total number of arguments
+  @param exclude_nulls         TRUE:  NULLS should be excluded
+                               FALSE: otherwise
+
+  @retval
+    TRUE  error
+    FALSE setup successful
+*/
 bool
-Unique::setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count)
+Unique::setup(THD *thd, Item_sum *item, uint non_const_args,
+              uint arg_count, bool exclude_nulls)
 {
   if (!packed)   // no packing so don't create the sortorder list
     return false;
@@ -881,13 +900,23 @@ Unique::setup(THD *thd, Item_sum *item, uint non_const_args, uint arg_count)
     if (!field)
       continue;
 
-    pos->setup(field);
+    pos->setup(field, exclude_nulls);
     pos++;
   }
   return false;
 }
 
+/*
+  @brief
+    Setup the structures that are used when Unique stores packed values
 
+  @param thd                   thread structure
+  @param field                 field structure
+
+  @retval
+    TRUE  error
+    FALSE setup successful
+*/
 bool Unique::setup(THD *thd, Field *field)
 {
   if (!packed)   // no packing so don't create the sortorder list
@@ -905,14 +934,28 @@ bool Unique::setup(THD *thd, Field *field)
   if (!sort_keys)
     return true;
   sort=pos= sortorder;
-  pos->setup(field);
+  pos->setup(field, TRUE);  // Nulls are always excluded
 
   return false;
 }
 
 
-int Unique::compare_packed_keys(uchar *a, uchar *b)
+/*
+  @brief
+    Compare two packed keys inside the Unique tree
+
+  @param a_ptr             packed sort key
+  @param b_ptr             packed sort key
+
+  @retval
+    >0   key a_ptr greater than b_ptr
+    =0   key a_ptr equal to b_ptr
+    <0   key a_ptr less than b_ptr
+
+*/
+
+int Unique::compare_packed_keys(uchar *a_ptr, uchar *b_ptr)
 {
-  return sort_keys->compare_keys(a + Unique::size_of_length_field,
-                                 b + Unique::size_of_length_field);
+  return sort_keys->compare_keys(a_ptr + Unique::size_of_length_field,
+                                 b_ptr + Unique::size_of_length_field);
 }

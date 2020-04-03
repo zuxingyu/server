@@ -34,7 +34,6 @@
 #include "sp.h"
 #include "sql_parse.h"
 #include "sp_head.h"
-#include "sql_sort.h"
 
 /**
   Calculate the affordable RAM limit for structures like TREE or Unique
@@ -702,7 +701,25 @@ int Aggregator_distinct::composite_key_cmp(void* arg, uchar* key1, uchar* key2)
 }
 
 
-int Aggregator_distinct::composite_packed_key_cmp(void* arg, uchar* key1, uchar* key2)
+/**
+  Correctly compare composite keys.
+
+  Used by the Unique class to compare packed keys. Will do correct comparisons
+  for composite keys with various field types.
+
+  @param arg     Pointer to the relevant Aggregator_distinct instance
+  @param key1    left key image
+  @param key2    right key image
+
+  @return        comparison result
+    @retval <0       if key1 < key2
+    @retval =0       if key1 = key2
+    @retval >0       if key1 > key2
+*/
+
+int
+Aggregator_distinct::composite_packed_key_cmp(void* arg,
+                                              uchar* key1, uchar* key2)
 {
   Aggregator_distinct *aggr= (Aggregator_distinct *) arg;
   DBUG_ASSERT(aggr->tree);
@@ -768,7 +785,6 @@ bool Aggregator_distinct::setup(THD *thd)
   if (item_sum->sum_func() == Item_sum::COUNT_FUNC || 
       item_sum->sum_func() == Item_sum::COUNT_DISTINCT_FUNC)
   {
-    DBUG_ASSERT(item_sum->sum_func() != Item_sum::COUNT_FUNC);
     List<Item> list;
     SELECT_LEX *select_lex= thd->lex->current_select;
 
@@ -896,7 +912,8 @@ bool Aggregator_distinct::setup(THD *thd)
         the server with a DoS attack
       */
       if (!tree || tree->setup(thd, item_sum,
-                               non_const_items, item_sum->get_arg_count()))
+                               non_const_items, item_sum->get_arg_count(),
+                               TRUE))
         return TRUE;
     }
     return FALSE;
@@ -1827,6 +1844,15 @@ bool Aggregator_distinct::unique_walk_function_for_count(void *element)
   return 0;
 }
 
+
+/*
+  @brief
+    Checks whether the unique tree is packed or not
+
+  @retval
+    TRUE    tree stored packed values
+    FALSE   othherwise
+*/
 
 bool Aggregator_distinct::is_distinct_packed()
 {
@@ -4401,7 +4427,7 @@ bool Item_func_group_concat::setup(THD *thd)
                                ram_limitation(thd), 0, allow_packing);
 
     if (!unique_filter || unique_filter->setup(thd, this, non_const_items,
-                                               arg_count_field))
+                                               arg_count_field, TRUE))
       DBUG_RETURN(TRUE);
   }
   if ((row_limit && row_limit->cmp_type() != INT_RESULT) ||
@@ -4459,7 +4485,12 @@ String* Item_func_group_concat::val_str(String* str)
 
 
 /*
-  Checks if distinct uses packed values or not
+  @brief
+    Checks whether the unique tree is packed or not
+
+  @retval
+    TRUE    tree stored packed values
+    FALSE   othherwise
 */
 
 bool Item_func_group_concat::is_distinct_packed()
@@ -4469,8 +4500,8 @@ bool Item_func_group_concat::is_distinct_packed()
 
 
 /*
-
-  Checks if one can pack the values when using a Unique tree for distinct
+  @brief
+    Checks if one can pack the values when using a Unique tree for distinct
 
   @param
     total_length   [OUT] length of the key in the tree
@@ -4482,11 +4513,26 @@ bool Item_func_group_concat::is_distinct_packed()
 
 bool Item_func_group_concat::packing_is_allowed(uint* total_length)
 {
+  /*
+    TODO varun:
+    Currently Unique is not packed if ORDER BY clause is used
+    This needs to be implemented when MDEV-22089 is fixed
+  */
   if (!distinct || arg_count_order)
     return false;
 
   return Item_sum::packing_is_allowed(table, total_length);
 }
+
+
+/*
+  @brief
+    Check if storing packed values inside the Unique tree is allowed
+
+  @param table           Table structure
+  @total_length     [OUT] max length of the packed key(takes into account
+                          the length bytes also)
+*/
 
 
 bool Item_sum::packing_is_allowed(TABLE *table, uint* total_length)

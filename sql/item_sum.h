@@ -682,7 +682,7 @@ class Aggregator_distinct : public Aggregator
 public:
   Aggregator_distinct (Item_sum *sum) :
     Aggregator(sum), table(NULL), tmp_table_param(NULL), tree(NULL),
-    always_null(false), use_distinct_values(false){}
+    always_null(false), use_distinct_values(false) {}
   virtual ~Aggregator_distinct ();
   Aggregator_type Aggrtype() { return DISTINCT_AGGREGATOR; }
 
@@ -1995,7 +1995,6 @@ public:
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_group_concat>(thd, this); }
   bool is_distinct_packed();
-  // TODO varun: this can be moved to Item_sum
   bool packing_is_allowed(uint* total_length);
 };
 

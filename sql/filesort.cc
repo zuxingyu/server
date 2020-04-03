@@ -2786,7 +2786,7 @@ bool SORT_FIELD_ATTR::check_if_packing_possible(THD *thd) const
 }
 
 
-void SORT_FIELD::setup(Field *fld)
+void SORT_FIELD::setup(Field *fld, bool exclude_nulls)
 {
   field= fld;
   item= NULL;
@@ -2797,7 +2797,7 @@ void SORT_FIELD::setup(Field *fld)
   type= field->is_packable() ?
         SORT_FIELD_ATTR::VARIABLE_SIZE :
         SORT_FIELD_ATTR::FIXED_SIZE;
-  maybe_null= false;   // for JSON_ARRAGG this may be set to true
+  maybe_null= exclude_nulls ? false  : field->maybe_null();
   length_bytes= is_variable_sized() ?
                 number_storage_requirement(length) : 0;
 }
@@ -2975,6 +2975,7 @@ int Sort_keys::compare_keys(uchar *a, uchar *b)
   }
   return retval;
 }
+
 
 /*
   @brief
