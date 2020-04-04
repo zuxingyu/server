@@ -1566,8 +1566,12 @@ public:
     if (count > bucket_capacity * (curr_bucket + 1))
     {
       if (column->is_packable())
-        column->store_field_value((uchar*)elem + Unique::size_of_length_field,
-                                   Unique::read_key_length((uchar*)elem));
+      {
+        uchar *start= (uchar*)elem + Unique::size_of_length_field;
+        // unpacking the value to the Field::ptr
+        column->unpack(column->ptr, start,
+                       start + Unique::read_packed_length((uchar*)elem), 0);
+      }
       else
         column->store_field_value((uchar *) elem, col_length);
       histogram->set_value(curr_bucket,
@@ -1696,15 +1700,15 @@ public:
   */
   virtual bool add()
   {
-    uchar *orig_to= table_field->ptr, *to= NULL;
+    uchar *orig_to= table_field->ptr;
     uint packed_length= 0;
     if (tree->is_packed())
     {
+      uchar *to;
       orig_to= to= tree->get_packed_rec_ptr();
       to+= Unique::size_of_length_field;
       uchar* end= table_field->pack(to, table_field->ptr);
-      to+=  static_cast<uint>(end - to);
-      packed_length= static_cast<uint>(to - orig_to);
+      packed_length= static_cast<uint>(end - orig_to);
       Unique::store_packed_length(orig_to, packed_length);
     }
     return tree->unique_add(orig_to, packed_length);
