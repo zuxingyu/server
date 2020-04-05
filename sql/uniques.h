@@ -154,6 +154,7 @@ public:
   uchar *get_packed_rec_ptr() { return packed_rec_ptr; }
   Sort_keys *get_keys() { return sort_keys; }
   SORT_FIELD *get_sortorder() { return sortorder; }
+  bool is_count_stored() { return with_counters; }
 
   // returns TRUE if the unique tree stores packed values
   bool is_packed() { return packed; }

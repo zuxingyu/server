@@ -1703,6 +1703,8 @@ ulong read_to_buffer(IO_CACHE *fromfile, Merge_chunk *buffpek,
 
       uint size_of_sort_length= param->using_packed_sortkeys() ?
                                 Sort_keys::size_of_length_field : 0;
+      uint size_of_dupl_count= param->min_dupl_count ?
+                               sizeof(element_count) : 0;
 
       for (; ix < count; ++ix)
       {
@@ -1718,15 +1720,17 @@ ulong read_to_buffer(IO_CACHE *fromfile, Merge_chunk *buffpek,
             buffpek->buffer_end())
           break;                                // Incomplete record.
 
-        uchar *plen= record + sort_length;
+        uchar *plen= record + sort_length + size_of_dupl_count;
+
         uint res_length= param->get_result_length(plen);
         if (plen + res_length > buffpek->buffer_end())
           break;                                // Incomplete record.
-        DBUG_ASSERT((param->sort_keys == NULL && res_length == 0)||
+        DBUG_ASSERT((param->sort_keys == NULL)||
                      res_length > 0);
         DBUG_ASSERT(sort_length + res_length <= param->rec_length);
         record+= sort_length;
         record+= res_length;
+        record+= size_of_dupl_count;
       }
       DBUG_ASSERT(ix > 0);
       count= ix;

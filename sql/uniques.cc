@@ -518,7 +518,8 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
                        uint key_length, Merge_chunk *begin, Merge_chunk *end,
                        tree_walk_action walk_action, void *walk_action_arg,
                        qsort_cmp2 compare, void *compare_arg,
-                       IO_CACHE *file, bool with_counters, bool packed= false)
+                       IO_CACHE *file, bool with_counters,
+                       uint min_dupl_count, bool packed)
 {
   BUFFPEK_COMPARE_CONTEXT compare_context = { compare, compare_arg };
   QUEUE queue;
@@ -545,8 +546,10 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
   Sort_param sort_param;
   sort_param.rec_length= key_length;
   sort_param.sort_length= key_length;
+  sort_param.min_dupl_count= min_dupl_count;
   DBUG_ASSERT(!sort_param.using_addon_fields());
   sort_param.set_using_packed_keys(packed);
+  uint size_of_dupl_count= min_dupl_count ? sizeof(element_count) : 0;
 
   /*
     Invariant: queue must contain top element from each tree, until a tree
@@ -581,9 +584,10 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
       queue; this gives new top.
     */
     key_length= packed ?
-                Unique::read_packed_length((uchar*)old_key) :
+                Unique::read_packed_length((uchar*)old_key) + size_of_dupl_count:
                 key_length;
 
+    cnt_ofs= key_length - (with_counters ? sizeof(element_count) : 0);
     top->advance_current_key(key_length);
     top->decrement_mem_count();
     if (top->mem_count())
@@ -633,14 +637,15 @@ static bool merge_walk(uchar *merge_buffer, size_t merge_buffer_size,
   {
     do
     {
-      
+      key_length= packed ?
+                  Unique::read_packed_length(top->current_key()) + size_of_dupl_count:
+                  key_length;
+      cnt_ofs= key_length - (with_counters ? sizeof(element_count) : 0);
       cnt= with_counters ?
            get_counter_from_merged_element(top->current_key(), cnt_ofs) : 1;
       if (walk_action(top->current_key(), cnt, walk_action_arg))
         goto end;
-      key_length= packed ?
-                  Unique::read_packed_length(top->current_key()) :
-                  key_length;
+
       top->advance_current_key(key_length);
     }
     while (top->decrement_mem_count());
@@ -711,7 +716,7 @@ bool Unique::walk(TABLE *table, tree_walk_action action, void *walk_action_arg)
                     (Merge_chunk *) file_ptrs.buffer + file_ptrs.elements,
                     action, walk_action_arg,
                     tree.compare, tree.custom_arg, &file, with_counters,
-                    is_packed());
+                    min_dupl_count,is_packed());
   }
   my_free(merge_buffer);
   return res;
@@ -759,7 +764,7 @@ bool Unique::merge(TABLE *table, uchar *buff, size_t buff_size,
   sort_param.rec_length= sort_param.sort_length= sort_param.ref_length=
    full_size;
   sort_param.min_dupl_count= min_dupl_count;
-  sort_param.res_length= 0;
+  sort_param.res_length= min_dupl_count ? sizeof(min_dupl_count) : 0;
   sort_param.max_keys_per_buffer=
     (uint) MY_MAX((max_in_memory_size / sort_param.sort_length), MERGEBUFF2);
   sort_param.not_killable= 1;

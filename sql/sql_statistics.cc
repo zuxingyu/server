@@ -1684,9 +1684,19 @@ public:
     }
     else
     {
-      tree_key_length= table_field->pack_length();
-      tree= new Unique((qsort_cmp2) simple_str_key_cmp, (void*) table_field,
-                       tree_key_length, max_heap_table_size, 1, FALSE);
+      if (table_field->type() == MYSQL_TYPE_BIT)
+      {
+        tree_key_length= sizeof(ulonglong);
+        tree= new Unique((qsort_cmp2) simple_ulonglong_key_cmp,
+                         (void*) &tree_key_length,
+                         tree_key_length, max_heap_table_size, 1, FALSE);
+      }
+      else
+      {
+        tree_key_length= table_field->pack_length();
+        tree= new Unique((qsort_cmp2) simple_str_key_cmp, (void*) table_field,
+                         tree_key_length, max_heap_table_size, 1, FALSE);
+      }
     }
     if (!tree)
       return true;  // OOM
@@ -1768,12 +1778,13 @@ public:
   }
 
   static int simple_packed_str_key_cmp(void* arg, uchar* key1, uchar* key2);
+  static int simple_ulonglong_key_cmp(void* arg, uchar* key1, uchar* key2);
 
 };
 
 
-static
-int simple_ulonglong_key_cmp(void* arg, uchar* key1, uchar* key2)
+int Count_distinct_field::simple_ulonglong_key_cmp(void* arg,
+                                                   uchar* key1, uchar* key2)
 {
   ulonglong *val1= (ulonglong *) key1;
   ulonglong *val2= (ulonglong *) key2;
@@ -1781,7 +1792,8 @@ int simple_ulonglong_key_cmp(void* arg, uchar* key1, uchar* key2)
 }
 
 
-int Count_distinct_field::simple_packed_str_key_cmp(void* arg, uchar* key1, uchar* key2)
+int Count_distinct_field::simple_packed_str_key_cmp(void* arg,
+                                                    uchar* key1, uchar* key2)
 {
   Count_distinct_field *compare_arg= (Count_distinct_field*)arg;
   return compare_arg->tree->compare_packed_keys(key1, key2);
@@ -1798,15 +1810,7 @@ class Count_distinct_field_bit: public Count_distinct_field
 {
 public:
 
-  Count_distinct_field_bit(Field *field, size_t max_heap_table_size)
-  {
-    table_field= field;
-    tree_key_length= sizeof(ulonglong);
-
-    tree= new Unique((qsort_cmp2) simple_ulonglong_key_cmp,
-                     (void*) &tree_key_length,
-                     tree_key_length, max_heap_table_size, 1);
-  }
+  Count_distinct_field_bit(Field *field): Count_distinct_field(field){}
 
   bool add()
   {
@@ -2479,7 +2483,7 @@ void Column_statistics_collected::init(THD *thd, Field *table_field)
   {
     count_distinct=
       table_field->type() == MYSQL_TYPE_BIT ?
-      new Count_distinct_field_bit(table_field, max_heap_table_size) :
+      new Count_distinct_field_bit(table_field) :
       new Count_distinct_field(table_field);
 
     if (count_distinct && count_distinct->setup(thd, max_heap_table_size))
