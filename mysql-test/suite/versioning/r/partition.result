@@ -291,20 +291,6 @@ x
 6
 7
 8
-# Auto-create history partitions
-create or replace table t1 (x int) with system versioning
-partition by system_time limit 1000 auto_increment;
-lock tables t1 write;
-insert into t1 values (1);
-update t1 set x= x + 1;
-unlock tables;
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `x` int(11) DEFAULT NULL
-) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
- PARTITION BY SYSTEM_TIME LIMIT 1000 AUTO_INCREMENT
-PARTITIONS 3
 #
 # Rotation by INTERVAL
 #
@@ -320,7 +306,7 @@ partition by system_time interval 10 year partitions 3;
 ERROR 22003: TIMESTAMP value is out of range in 'INTERVAL'
 # INTERVAL and ALTER TABLE
 create or replace table t1 (i int) with system versioning
-partition by system_time interval 59 minute;
+partition by system_time interval 1 hour;
 set @ts=(select partition_description from information_schema.partitions
 where table_schema='test' and table_name='t1' and partition_name='p0');
 alter table t1 add column b int;
@@ -334,16 +320,16 @@ alter table t1 add partition (partition p1 history, partition p2 history);
 select partition_name,partition_ordinal_position,partition_method,timediff(partition_description, @ts) from information_schema.partitions where table_schema='test' and table_name='t1';
 partition_name	partition_ordinal_position	partition_method	timediff(partition_description, @ts)
 p0	1	SYSTEM_TIME	00:00:00.000000
-p1	2	SYSTEM_TIME	00:59:00.000000
-p2	3	SYSTEM_TIME	01:58:00.000000
+p1	2	SYSTEM_TIME	01:00:00.000000
+p2	3	SYSTEM_TIME	02:00:00.000000
 pn	4	SYSTEM_TIME	NULL
 Warnings:
 Warning	1292	Incorrect time value: 'CURRENT'
 alter table t1 drop partition p0;
 select partition_name,partition_ordinal_position,partition_method,timediff(partition_description, @ts) from information_schema.partitions where table_schema='test' and table_name='t1';
 partition_name	partition_ordinal_position	partition_method	timediff(partition_description, @ts)
-p1	1	SYSTEM_TIME	00:59:00.000000
-p2	2	SYSTEM_TIME	01:58:00.000000
+p1	1	SYSTEM_TIME	01:00:00.000000
+p2	2	SYSTEM_TIME	02:00:00.000000
 pn	3	SYSTEM_TIME	NULL
 Warnings:
 Warning	1292	Incorrect time value: 'CURRENT'
@@ -351,8 +337,8 @@ alter table t1 drop partition p2;
 ERROR HY000: Can only drop oldest partitions when rotating by INTERVAL
 select partition_name,partition_ordinal_position,partition_method,timediff(partition_description, @ts) from information_schema.partitions where table_schema='test' and table_name='t1';
 partition_name	partition_ordinal_position	partition_method	timediff(partition_description, @ts)
-p1	1	SYSTEM_TIME	00:59:00.000000
-p2	2	SYSTEM_TIME	01:58:00.000000
+p1	1	SYSTEM_TIME	01:00:00.000000
+p2	2	SYSTEM_TIME	02:00:00.000000
 pn	3	SYSTEM_TIME	NULL
 Warnings:
 Warning	1292	Incorrect time value: 'CURRENT'
@@ -371,12 +357,12 @@ Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out o
 delete from t1;
 Warnings:
 Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of INTERVAL, need more HISTORY partitions
-select subpartition_name, partition_description from information_schema.partitions where table_schema='test' and table_name='t1';
-subpartition_name	partition_description
-p1sp0	2001-02-04 00:00:00
-p1sp1	2001-02-04 00:00:00
-pnsp0	CURRENT
-pnsp1	CURRENT
+select subpartition_name, partition_description, table_rows from information_schema.partitions where table_schema='test' and table_name='t1';
+subpartition_name	partition_description	table_rows
+p1sp0	2001-02-04 00:00:00	1
+p1sp1	2001-02-04 00:00:00	1
+pnsp0	CURRENT	0
+pnsp1	CURRENT	0
 select * from t1 partition (p1);
 i
 1
@@ -387,16 +373,16 @@ set timestamp=unix_timestamp('2001-02-04 10:30:00');
 insert t1 values (4),(5);
 set timestamp=unix_timestamp('2001-02-04 10:30:10');
 update t1 set i=6 where i=5;
-select subpartition_name, partition_description from information_schema.partitions where table_schema='test' and table_name='t1';
-subpartition_name	partition_description
-p1sp0	2001-02-04 00:00:00
-p1sp1	2001-02-04 00:00:00
-p0sp0	2001-02-05 00:00:00
-p0sp1	2001-02-05 00:00:00
-p2sp0	2001-02-06 00:00:00
-p2sp1	2001-02-06 00:00:00
-pnsp0	CURRENT
-pnsp1	CURRENT
+select subpartition_name, partition_description, table_rows from information_schema.partitions where table_schema='test' and table_name='t1';
+subpartition_name	partition_description	table_rows
+p1sp0	2001-02-04 00:00:00	1
+p1sp1	2001-02-04 00:00:00	0
+p0sp0	2001-02-05 00:00:00	1
+p0sp1	2001-02-05 00:00:00	1
+p2sp0	2001-02-06 00:00:00	0
+p2sp1	2001-02-06 00:00:00	0
+pnsp0	CURRENT	0
+pnsp1	CURRENT	2
 select * from t1 partition (p1);
 i
 1
@@ -886,7 +872,7 @@ ERROR HY000: Can not DROP SYSTEM VERSIONING for table `t` partitioned BY SYSTEM_
 create or replace table t1 (i int) with system versioning;
 insert into t1 values (1), (2);
 update t1 set i= 3;
-alter table t1 partition by system_time interval 59 minute (partition p1 history, partition pn current);
+alter table t1 partition by system_time interval 1 month (partition p1 history, partition pn current);
 lock table t1 write;
 alter table t1 add partition (partition p2 history);
 insert into t1 values (4);
@@ -1295,6 +1281,27 @@ t1	CREATE TABLE `t1` (
 affected rows: 1
 unlock tables;
 affected rows: 0
+# One more LOCK TABLES case
+create or replace table t1 (x int) with system versioning
+partition by system_time limit 1000 auto_increment;
+affected rows: 0
+lock tables t1 write;
+affected rows: 0
+insert into t1 values (1);
+affected rows: 1
+update t1 set x= x + 1;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 0
+unlock tables;
+affected rows: 0
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `x` int(11) DEFAULT NULL
+) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
+ PARTITION BY SYSTEM_TIME LIMIT 1000 AUTO_INCREMENT
+PARTITIONS 3
+affected rows: 1
 # Test VIEW, LOCK TABLES
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 affected rows: 0
