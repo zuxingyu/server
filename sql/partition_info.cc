@@ -814,8 +814,13 @@ bool partition_info::has_unique_name(partition_element *element)
     vers_info->interval   Limit by fixed time interval
     vers_info->hist_part  (out) Working history partition
 */
-void partition_info::vers_set_hist_part(THD *thd)
+uint partition_info::vers_set_hist_part(THD *thd, bool auto_inc)
 {
+  DBUG_ASSERT(!thd->lex->last_table()->vers_conditions.delete_history);
+
+  uint create_count= 0;
+  auto_inc= auto_inc && vers_info->auto_inc;
+
   if (vers_info->limit)
   {
     DBUG_ASSERT(!vers_info->interval.is_set());
@@ -837,84 +842,65 @@ void partition_info::vers_set_hist_part(THD *thd)
     {
       if (next == vers_info->now_part)
       {
-        my_error(WARN_VERS_PART_FULL, MYF(ME_WARNING|ME_ERROR_LOG),
-                table->s->db.str, table->s->table_name.str,
-                vers_info->hist_part->partition_name, "LIMIT");
+        if (auto_inc)
+          create_count= 1;
+        else
+          my_error(WARN_VERS_PART_FULL, MYF(ME_WARNING|ME_ERROR_LOG),
+                  table->s->db.str, table->s->table_name.str,
+                  vers_info->hist_part->partition_name, "LIMIT");
       }
       else
         vers_info->hist_part= next;
     }
+    // reserve at least one history partition
+    if (auto_inc && create_count == 0 &&
+        vers_info->hist_part->id + 1 == vers_info->now_part->id)
+      create_count= 1;
   }
-  else if (vers_info->interval.is_set())
+  else if (vers_info->interval.is_set() &&
+           vers_info->hist_part->range_value <= thd->query_start())
   {
-    if (vers_info->hist_part->range_value <= thd->query_start())
-    {
-      partition_element *next= NULL;
-      bool error= true;
-      List_iterator<partition_element> it(partitions);
-      while (next != vers_info->hist_part)
-        next= it++;
+    partition_element *next= NULL;
+    bool error= true;
+    List_iterator<partition_element> it(partitions);
+    while (next != vers_info->hist_part)
+      next= it++;
 
-      while ((next= it++) != vers_info->now_part)
+    while ((next= it++) != vers_info->now_part)
+    {
+      vers_info->hist_part= next;
+      if (next->range_value > thd->query_start())
       {
-        vers_info->hist_part= next;
-        if (next->range_value > thd->query_start())
-        {
-          error= false;
-          break;
-        }
-      }
-      if (error)
-        my_error(WARN_VERS_PART_FULL, MYF(ME_WARNING|ME_ERROR_LOG),
-                 table->s->db.str, table->s->table_name.str,
-                 vers_info->hist_part->partition_name, "INTERVAL");
-    }
-  }
-
-  if (!vers_info->auto_inc ||
-      vers_info->hist_part->id + VERS_MIN_EMPTY < vers_info->now_part->id)
-    return;
-
-  switch (thd->lex->sql_command)
-  {
-  case SQLCOM_DELETE:
-    if (thd->lex->last_table()->vers_conditions.delete_history)
-      break;
-    /* fallthrough */
-  case SQLCOM_UPDATE:
-  case SQLCOM_INSERT:
-  case SQLCOM_INSERT_SELECT:
-  case SQLCOM_LOAD:
-  case SQLCOM_REPLACE:
-  case SQLCOM_REPLACE_SELECT:
-  case SQLCOM_DELETE_MULTI:
-  case SQLCOM_UPDATE_MULTI:
-  {
-    TABLE_SHARE *share;
-    List_iterator_fast<TABLE_SHARE> it(thd->vers_auto_part_tables);
-    while ((share= it++))
-    {
-      if (table->s == share)
+        error= false;
         break;
+      }
     }
-    if (share)
-      break;
-    /* Prevent spawning multiple instances of vers_add_auto_parts() */
-    bool altering;
-    mysql_mutex_lock(&table->s->LOCK_share);
-    altering= table->s->vers_auto_part;
-    if (!altering)
-      table->s->vers_auto_part= true;
-    mysql_mutex_unlock(&table->s->LOCK_share);
-    if (altering)
-      break;
-    if (thd->vers_auto_part_tables.push_back(table->s))
+    if (error)
     {
-      my_error(ER_OUT_OF_RESOURCES, MYF(0));
+      if (auto_inc)
+      {
+        DBUG_ASSERT(thd->query_start() >= vers_info->hist_part->range_value);
+        my_time_t diff= thd->query_start() - vers_info->hist_part->range_value;
+        if (diff > 0)
+        {
+          size_t delta= vers_info->interval.seconds();
+          create_count= diff / delta;
+          if (diff % delta)
+            create_count++;
+        }
+        else
+          create_count= 1;
+      }
+      else
+      {
+        my_error(WARN_VERS_PART_FULL, MYF(ME_WARNING|ME_ERROR_LOG),
+                table->s->db.str, table->s->table_name.str,
+                vers_info->hist_part->partition_name, "INTERVAL");
+      }
     }
   }
-  default:;
-  }
+
+  return create_count;
 }
 
 
@@ -922,12 +908,11 @@ void partition_info::vers_set_hist_part(THD *thd)
   @brief Run fast_alter_partition_table() to add new history partitions
          for tables requiring them.
 */
-void vers_add_auto_parts(THD *thd)
+void vers_add_auto_parts(THD *thd, TABLE_LIST* tl, uint num_parts)
 {
   HA_CREATE_INFO create_info;
   Alter_info alter_info;
   String query;
-  TABLE_LIST *table_list= NULL;
   partition_info *save_part_info= thd->work_part_info;
   Query_tables_list save_query_tables;
   Reprepare_observer *save_reprepare_observer= thd->m_reprepare_observer;
@@ -939,38 +924,14 @@ void vers_add_auto_parts(THD *thd)
   thd->lex->reset_n_backup_query_tables_list(&save_query_tables);
   thd->in_sub_stmt|= SUB_STMT_AUTO_HIST;
   thd->lex->no_write_to_binlog= !thd->is_current_stmt_binlog_format_row();
-  TABLE_LIST *tl;
-
-  DBUG_ASSERT(!thd->vers_auto_part_tables.is_empty());
-
-  for (TABLE_SHARE &share: thd->vers_auto_part_tables)
-  {
-    tl= (TABLE_LIST *) thd->alloc(sizeof(TABLE_LIST));
-    tl->init_one_table(&share.db, &share.table_name, NULL, TL_READ_NO_INSERT);
-    tl->open_type= OT_BASE_ONLY;
-    tl->i_s_requested_object= OPEN_TABLE_ONLY;
-    tl->next_global= table_list;
-    table_list= tl;
-  }
-
-  /* NB: mysql_execute_command() can be recursive because of PS/SP.
-     Don't duplicate any processing including error messages. */
-  thd->vers_auto_part_tables.empty();
+  TABLE *table= tl->table;
 
   DBUG_ASSERT(!thd->is_error());
   /* NB: we have to preserve m_affected_rows, m_row_count_func, m_last_insert_id, etc */
   thd->set_stmt_da(&new_stmt_da);
   new_stmt_da.set_overwrite_status(true);
 
-  DDL_options_st ddl_opts_none;
-  ddl_opts_none.init();
-  if (open_and_lock_tables(thd, ddl_opts_none, table_list, false, 0))
-    goto open_err;
-
-  for (tl= table_list; tl; tl= tl->next_global)
   {
-    TABLE *table= tl->table;
-    DBUG_ASSERT(table);
     DBUG_ASSERT(table->s->get_table_ref_type() == TABLE_REF_BASE_TABLE);
     DBUG_ASSERT(table->versioned());
     DBUG_ASSERT(table->part_info);
@@ -981,10 +942,12 @@ void vers_add_auto_parts(THD *thd)
     create_info.alter_info= &alter_info;
     Alter_table_ctx alter_ctx(thd, tl, 1, &table->s->db, &table->s->table_name);
 
-    if (thd->mdl_context.upgrade_shared_lock(table->mdl_ticket,
-                                             MDL_SHARED_NO_WRITE,
-                                             thd->variables.lock_wait_timeout))
+    MDL_REQUEST_INIT(&tl->mdl_request, MDL_key::TABLE, tl->db.str,
+                    tl->table_name.str, MDL_SHARED_NO_WRITE, MDL_TRANSACTION);
+    if (thd->mdl_context.acquire_lock(&tl->mdl_request,
+                                      thd->variables.lock_wait_timeout))
       goto exit;
+    table->mdl_ticket= tl->mdl_request.ticket;
 
     create_info.db_type= table->s->db_type();
     create_info.options|= HA_VERSIONED_TABLE;
@@ -1001,7 +964,7 @@ void vers_add_auto_parts(THD *thd)
     }
     part_info->use_default_num_partitions= false;
     part_info->use_default_num_subpartitions= false;
-    part_info->num_parts= 1;
+    part_info->num_parts= num_parts;
     part_info->num_subparts= table->part_info->num_subparts;
     part_info->subpart_type= table->part_info->subpart_type;
     if (unlikely(part_info->vers_init_info(thd)))
@@ -1009,39 +972,13 @@ void vers_add_auto_parts(THD *thd)
       my_error(ER_OUT_OF_RESOURCES, MYF(0));
       goto exit;
     }
-    /* Choose first non-occupied name suffix */
-    uint32 suffix= table->part_info->num_parts - 1;
-    DBUG_ASSERT(suffix > 0);
-    char part_name[MAX_PART_NAME_SIZE + 1];
-    if (make_partition_name(part_name, suffix))
-    {
-vers_make_name_err:
-      push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
-                          WARN_VERS_HIST_PART_ERROR,
-                          "Auto-increment history partition: "
-                          "name generation failed for suffix %d", suffix);
-      my_error(WARN_VERS_HIST_PART_ERROR, MYF(ME_WARNING),
-              table->s->db.str, table->s->table_name.str, 0);
-      goto exit;
-    }
-    List_iterator_fast<partition_element> it(table->part_info->partitions);
-    partition_element *el;
-    while ((el= it++))
-    {
-      if (0 == my_strcasecmp(&my_charset_latin1, el->partition_name, part_name))
-      {
-        if (make_partition_name(part_name, ++suffix))
-          goto vers_make_name_err;
-        it.rewind();
-      }
-    }
 
     // NB: set_ok_status() requires DA_EMPTY
     thd->get_stmt_da()->reset_diagnostics_area();
 
     thd->work_part_info= part_info;
-    if (part_info->set_up_defaults_for_partitioning(thd, table->file,
-                                                    NULL, suffix))
+    if (part_info->set_up_defaults_for_partitioning(thd, table->file, NULL,
+                                    table->part_info->next_part_no(num_parts)))
     {
       push_warning(thd, Sql_condition::WARN_LEVEL_WARN,
                    WARN_VERS_HIST_PART_ERROR,
@@ -1086,9 +1023,9 @@ vers_make_name_err:
       if (query.append(table->s->db) ||
           query.append(STRING_WITH_LEN("`.`")) ||
           query.append(table->s->table_name) ||
-          query.append("` ADD PARTITION (PARTITION `") ||
-          query.append(part_name) ||
-          query.append("` HISTORY) AUTO_INCREMENT"))
+          query.append("` ADD PARTITION PARTITIONS ") ||
+          query.append_ulonglong(part_info->num_parts) ||
+          query.append(" AUTO_INCREMENT"))
       {
         my_error(ER_OUT_OF_RESOURCES, MYF(ME_ERROR_LOG));
         goto exit;
@@ -1112,12 +1049,6 @@ vers_make_name_err:
     trans_commit_stmt(thd);
 
 exit:
-  // If we failed with error allow non-processed tables to be processed next time
-  if (tl)
-    while ((tl= tl->next_global))
-      tl->table->s->vers_auto_part= false;
-  close_thread_tables(thd);
-open_err:
   thd->work_part_info= save_part_info;
   thd->m_reprepare_observer= save_reprepare_observer;
   thd->lex->restore_backup_query_tables_list(&save_query_tables);

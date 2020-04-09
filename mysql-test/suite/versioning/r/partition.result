@@ -1157,7 +1157,7 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 3600 SECOND STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 2
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 00:00:00');
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
 insert into t1 values (1);
 affected rows: 1
@@ -1169,7 +1169,7 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 3600 SECOND STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 3
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
 update t1 set x= x + 1;
 affected rows: 1
@@ -1182,7 +1182,7 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 3600 SECOND STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 4
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 affected rows: 0
 update t1 set x= x + 2;
 affected rows: 1
@@ -1214,6 +1214,8 @@ t1	CREATE TABLE `t1` (
  PARTITION `p3` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+affected rows: 0
 insert into t1 values (1);
 affected rows: 1
 show create table t1;
@@ -1226,7 +1228,7 @@ t1	CREATE TABLE `t1` (
  PARTITION `p3` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
 update t1 set x= x + 3;
 affected rows: 1
@@ -1242,7 +1244,7 @@ t1	CREATE TABLE `t1` (
  PARTITION `p2` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 affected rows: 0
 update t1 set x= x + 4;
 affected rows: 1
@@ -1259,9 +1261,9 @@ t1	CREATE TABLE `t1` (
  PARTITION `p4` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
-lock tables t1 write;
+set timestamp= unix_timestamp('2000-01-01 04:00:00');
 affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 03:00:00');
+lock tables t1 write;
 affected rows: 0
 update t1 set x= x + 5;
 affected rows: 1
@@ -1310,6 +1312,8 @@ partition by system_time interval 1 hour auto_increment;
 affected rows: 0
 create or replace view v1 as select * from t1;
 affected rows: 0
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+affected rows: 0
 insert into v1 values (1);
 affected rows: 1
 show create table t1;
@@ -1320,9 +1324,9 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 3
 affected rows: 1
-lock tables t1 write;
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+lock tables t1 write;
 affected rows: 0
 update t1 set x= x + 3;
 affected rows: 1
@@ -1348,7 +1352,7 @@ create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment partitions 3;
 affected rows: 0
 create or replace table t2 (y int) with system versioning
-partition by system_time interval 1 hour auto_increment partitions 4;
+partition by system_time interval 1 hour auto_increment;
 affected rows: 0
 insert into t1 values (1);
 affected rows: 1
@@ -1365,7 +1369,7 @@ t1	CREATE TABLE `t1` (
   `x` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
-PARTITIONS 4
+PARTITIONS 3
 affected rows: 1
 show create table t2;
 Table	Create Table
@@ -1373,7 +1377,7 @@ t2	CREATE TABLE `t2` (
   `y` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
-PARTITIONS 4
+PARTITIONS 3
 affected rows: 1
 set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
@@ -1386,7 +1390,7 @@ t1	CREATE TABLE `t1` (
   `x` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
-PARTITIONS 5
+PARTITIONS 4
 affected rows: 1
 show create table t2;
 Table	Create Table
@@ -1394,7 +1398,7 @@ t2	CREATE TABLE `t2` (
   `y` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
-PARTITIONS 5
+PARTITIONS 4
 affected rows: 1
 drop tables t1, t2;
 affected rows: 0
@@ -1403,6 +1407,8 @@ set timestamp= unix_timestamp('2000-01-01 00:00:00');
 affected rows: 0
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment;
+affected rows: 0
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
 execute immediate 'insert into t1 values (1)';
 affected rows: 1
@@ -1417,7 +1423,7 @@ affected rows: 1
 prepare s from 'update t1 set x= x + 6';
 affected rows: 0
 info: Statement prepared
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
 execute s;
 affected rows: 1
@@ -1433,9 +1439,9 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 4
 affected rows: 1
-lock tables t1 write;
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+lock tables t1 write;
 affected rows: 0
 execute s;
 affected rows: 1
@@ -1457,7 +1463,7 @@ drop prepare s;
 affected rows: 0
 create procedure sp() update t1 set x= x + 7;
 affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 03:00:00');
+set timestamp= unix_timestamp('2000-01-01 04:00:00');
 affected rows: 0
 call sp;
 affected rows: 1
@@ -1471,9 +1477,9 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO_INCREMENT
 PARTITIONS 6
 affected rows: 1
-lock tables t1 write;
+set timestamp= unix_timestamp('2000-01-01 05:00:00');
 affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 04:00:00');
+lock tables t1 write;
 affected rows: 0
 call sp;
 affected rows: 1
@@ -1545,6 +1551,8 @@ t1	CREATE TABLE `t1` (
 (PARTITION `p2` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+affected rows: 0
 insert into t1 (x, c, u, i1, i2, i3, ps, pe)
 values (1, 'cc', 0, 1, 2, 3, '1999-01-01', '2000-01-01');
 affected rows: 1
@@ -1578,7 +1586,7 @@ t1	CREATE TABLE `t1` (
  PARTITION `p1` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
 update t1 set x= x + 8;
 affected rows: 1
@@ -1618,6 +1626,7 @@ affected rows: 1
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment;
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 show create table t1;
 Table	Create Table
@@ -1634,28 +1643,28 @@ connect con4, localhost, root;
 connect con3, localhost, root;
 connect con2, localhost, root;
 connect con1, localhost, root;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 10;
 connection con2;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 20;
 connection con3;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 30;
 connection con4;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 40;
 connection con5;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 50;
 connection con6;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 60;
 connection con7;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 70;
 connection con8;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 80;
 connection con1;
 disconnect con1;
@@ -1689,14 +1698,9 @@ x
 connect con1, localhost, root;
 set lock_wait_timeout= 1;
 insert into t1 values (1);
-Warnings:
-Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p0`) is out of INTERVAL, need more HISTORY partitions
-Error	1205	Lock wait timeout exceeded; try restarting transaction
-Warning	4168	Auto-increment history partition: alter partition table failed
-Warning	4168	Versioned table `test`.`t1`: adding HISTORY partition failed with error 0, see error log for details
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 select * from t1;
 x
-1
 disconnect con1;
 connection default;
 drop table t1;

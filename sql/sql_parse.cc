@@ -5976,13 +5976,6 @@ finish:
   /* Free tables. Set stage 'closing tables' */
   close_thread_tables(thd);
 
-#ifdef WITH_PARTITION_STORAGE_ENGINE
-  /* NB: We cannot do this before close_thread_tables() because
-         upgrading MDL on locked table leads to a deadlock. */
-  if (!thd->is_error() && !thd->vers_auto_part_tables.is_empty())
-    vers_add_auto_parts(thd);
-#endif /* WITH_PARTITION_STORAGE_ENGINE */
-
 #ifndef DBUG_OFF
   if (lex->sql_command != SQLCOM_SET_OPTION && ! thd->in_sub_stmt)
     DEBUG_SYNC(thd, "execute_command_after_close_tables");

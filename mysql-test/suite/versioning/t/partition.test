@@ -911,17 +911,17 @@ starts '2000-01-01 00:00:00' auto_increment;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 00:00:00');
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 1;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 update t1 set x= x + 2;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -936,22 +936,23 @@ partition by system_time interval 1 hour auto_increment (
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 3;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 update t1 set x= x + 4;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+set timestamp= unix_timestamp('2000-01-01 04:00:00');
 lock tables t1 write;
-set timestamp= unix_timestamp('2000-01-01 03:00:00');
 update t1 set x= x + 5;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -973,12 +974,13 @@ create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment;
 create or replace view v1 as select * from t1;
 
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into v1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 lock tables t1 write;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 update t1 set x= x + 3;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -993,7 +995,7 @@ create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment partitions 3;
 
 create or replace table t2 (y int) with system versioning
-partition by system_time interval 1 hour auto_increment partitions 4;
+partition by system_time interval 1 hour auto_increment;
 
 insert into t1 values (1);
 insert into t2 values (2);
@@ -1019,18 +1021,19 @@ set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment;
 
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 execute immediate 'insert into t1 values (1)';
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
 prepare s from 'update t1 set x= x + 6';
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 execute s; execute s;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
 lock tables t1 write;
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
 execute s; execute s;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -1038,12 +1041,12 @@ unlock tables;
 drop prepare s;
 
 create procedure sp() update t1 set x= x + 7;
-set timestamp= unix_timestamp('2000-01-01 03:00:00');
+set timestamp= unix_timestamp('2000-01-01 04:00:00');
 call sp; call sp;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
+set timestamp= unix_timestamp('2000-01-01 05:00:00');
 lock tables t1 write;
-set timestamp= unix_timestamp('2000-01-01 04:00:00');
 call sp; call sp;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -1078,12 +1081,13 @@ partition by system_time interval 1 hour auto_increment (
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 (x, c, u, i1, i2, i3, ps, pe)
 values (1, 'cc', 0, 1, 2, 3, '1999-01-01', '2000-01-01');
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 8;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -1095,6 +1099,7 @@ set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto_increment;
 
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -1107,28 +1112,28 @@ show create table t1;
 --connect con3, localhost, root
 --connect con2, localhost, root
 --connect con1, localhost, root
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 10;
 --connection con2
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 20;
 --connection con3
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 30;
 --connection con4
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 40;
 --connection con5
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 50;
 --connection con6
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 60;
 --connection con7
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 send update t1 set x= x + 70;
 --connection con8
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
 update t1 set x= x + 80;
 --connection con1
 reap;
@@ -1165,6 +1170,7 @@ select * from t1;
 
 --connect con1, localhost, root
 set lock_wait_timeout= 1;
+--error ER_LOCK_WAIT_TIMEOUT
 insert into t1 values (1);
 select * from t1;
 

@@ -1,6 +1,6 @@
---- ./mysql-test/suite/versioning/r/partition.result	2020-04-10 09:19:26.295466734 +0300
-+++ ./mysql-test/suite/versioning/r/partition,heap.reject	2020-04-10 09:23:50.351472941 +0300
-@@ -1490,129 +1490,6 @@
+--- ./mysql-test/suite/versioning/r/partition.result	2020-04-11 20:02:14.711469259 +0300
++++ ./mysql-test/suite/versioning/r/partition,heap.reject	2020-04-11 20:03:28.243470987 +0300
+@@ -1497,131 +1497,6 @@
  affected rows: 0
  drop procedure sp;
  affected rows: 0
@@ -58,6 +58,8 @@
 -(PARTITION `p2` HISTORY ENGINE = DEFAULT_ENGINE,
 - PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 -affected rows: 1
+-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+-affected rows: 0
 -insert into t1 (x, c, u, i1, i2, i3, ps, pe)
 -values (1, 'cc', 0, 1, 2, 3, '1999-01-01', '2000-01-01');
 -affected rows: 1
@@ -91,7 +93,7 @@
 - PARTITION `p1` HISTORY ENGINE = DEFAULT_ENGINE,
 - PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 -affected rows: 1
--set timestamp= unix_timestamp('2000-01-01 01:00:00');
+-set timestamp= unix_timestamp('2000-01-01 02:00:00');
 -affected rows: 0
 -update t1 set x= x + 8;
 -affected rows: 1
