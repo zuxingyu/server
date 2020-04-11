@@ -138,7 +138,7 @@ drop table t1;
 --echo #
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
-partition by system_time interval 1 hour auto_increment;
+partition by system_time interval 1 hour auto;
 insert t1 values ();
 set timestamp= unix_timestamp('2000-01-01 01:00:00');
 delete from t1;
@@ -155,7 +155,7 @@ drop table t1;
 --echo #
 create table t1 (x int) partition by hash (x);
 --error ER_SYNTAX_ERROR
-alter table t1 add partition partitions 1 auto_increment;
+alter table t1 add partition partitions 1 auto;
 drop table t1;
 
 create table t1 (x int) with system versioning

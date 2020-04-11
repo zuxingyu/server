@@ -1025,7 +1025,7 @@ void vers_add_auto_parts(THD *thd, TABLE_LIST* tl, uint num_parts)
           query.append(table->s->table_name) ||
           query.append("` ADD PARTITION PARTITIONS ") ||
           query.append_ulonglong(part_info->num_parts) ||
-          query.append(" AUTO_INCREMENT"))
+          query.append(" AUTO"))
       {
         my_error(ER_OUT_OF_RESOURCES, MYF(ME_ERROR_LOG));
         goto exit;

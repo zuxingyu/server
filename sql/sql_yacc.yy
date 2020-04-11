@@ -5366,10 +5366,6 @@ opt_vers_auto_inc:
          {
            $$= 0;
          }
-       | AUTO_INC
-         {
-           $$= 1;
-         }
        | AUTO_SYM
          {
            $$= 1;
