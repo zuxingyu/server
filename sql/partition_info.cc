@@ -981,9 +981,11 @@ void vers_add_auto_parts(THD *thd, TABLE_LIST* tl, uint num_parts)
                                     table->part_info->next_part_no(num_parts)))
     {
       push_warning(thd, Sql_condition::WARN_LEVEL_WARN,
-                   WARN_VERS_HIST_PART_ERROR,
+                   ER_VERS_HIST_PART_FAILED,
                    "Auto-increment history partition: "
                    "setting up defaults failed");
+      my_error(ER_VERS_HIST_PART_FAILED, MYF(ME_WARNING),
+               tl->db.str, tl->table_name.str);
       goto exit;
     }
     bool partition_changed= false;
@@ -991,27 +993,31 @@ void vers_add_auto_parts(THD *thd, TABLE_LIST* tl, uint num_parts)
     if (prep_alter_part_table(thd, table, &alter_info, &create_info,
                               &partition_changed, &fast_alter_partition))
     {
-      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, WARN_VERS_HIST_PART_ERROR,
+      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, ER_VERS_HIST_PART_FAILED,
                    "Auto-increment history partition: "
                    "alter partitition prepare failed");
+      my_error(ER_VERS_HIST_PART_FAILED, MYF(ME_WARNING),
+               tl->db.str, tl->table_name.str);
       goto exit;
     }
     if (!fast_alter_partition)
     {
-      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, WARN_VERS_HIST_PART_ERROR,
+      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, ER_VERS_HIST_PART_FAILED,
                    "Auto-increment history partition: "
                    "fast alter partitition is not possible");
-      my_error(WARN_VERS_HIST_PART_ERROR, MYF(ME_WARNING),
-               table->s->db.str, table->s->table_name.str, 0);
+      my_error(ER_VERS_HIST_PART_FAILED, MYF(ME_WARNING),
+               tl->db.str, tl->table_name.str);
       goto exit;
     }
     DBUG_ASSERT(partition_changed);
     if (mysql_prepare_alter_table(thd, table, &create_info, &alter_info,
                                   &alter_ctx))
     {
-      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, WARN_VERS_HIST_PART_ERROR,
+      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, ER_VERS_HIST_PART_FAILED,
                    "Auto-increment history partition: "
                    "alter prepare failed");
+      my_error(ER_VERS_HIST_PART_FAILED, MYF(ME_WARNING),
+               tl->db.str, tl->table_name.str);
       goto exit;
     }
 
@@ -1037,11 +1043,11 @@ void vers_add_auto_parts(THD *thd, TABLE_LIST* tl, uint num_parts)
     if (fast_alter_partition_table(thd, table, &alter_info, &create_info,
                                    tl, &table->s->db, &table->s->table_name))
     {
-      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, WARN_VERS_HIST_PART_ERROR,
+      push_warning(thd, Sql_condition::WARN_LEVEL_WARN, ER_VERS_HIST_PART_FAILED,
                    "Auto-increment history partition: "
                    "alter partition table failed");
-      my_error(WARN_VERS_HIST_PART_ERROR, MYF(ME_WARNING),
-               tl->db.str, tl->table_name.str, 0);
+      my_error(ER_VERS_HIST_PART_FAILED, MYF(ME_WARNING),
+               tl->db.str, tl->table_name.str);
     }
   }
 

@@ -193,36 +193,28 @@ drop table t1;
 #
 # MENT-685 DML events for auto-partitioned tables are written into binary log twice
 #
-create table t1 (x int) partition by hash (x);
-alter table t1 add partition partitions 1 auto;
-ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use
-drop table t1;
-create table t1 (x int) with system versioning
-partition by system_time limit 1000 auto
-(partition p1 history, partition pn current);
+create table t1 (a int) with system versioning
+partition by system_time limit 10 auto;
 insert into t1 values (1);
+update t1 set a= a + 1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
-  `x` int(11) DEFAULT NULL
+  `a` int(11) DEFAULT NULL
 ) ENGINE=ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
- PARTITION BY SYSTEM_TIME LIMIT 1000 AUTO
-(PARTITION `p1` HISTORY ENGINE = ENGINE,
- PARTITION `p2` HISTORY ENGINE = ENGINE,
- PARTITION `pn` CURRENT ENGINE = ENGINE)
+ PARTITION BY SYSTEM_TIME LIMIT 10 AUTO
+PARTITIONS 3
 connection slave;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
-  `x` int(11) DEFAULT NULL
+  `a` int(11) DEFAULT NULL
 ) ENGINE=ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
- PARTITION BY SYSTEM_TIME LIMIT 1000 AUTO
-(PARTITION `p1` HISTORY ENGINE = ENGINE,
- PARTITION `p2` HISTORY ENGINE = ENGINE,
- PARTITION `pn` CURRENT ENGINE = ENGINE)
+ PARTITION BY SYSTEM_TIME LIMIT 10 AUTO
+PARTITIONS 3
 select * from t1;
-x
-1
+a
+2
 connection master;
 drop table t1;
 include/rpl_end.inc

@@ -153,24 +153,21 @@ drop table t1;
 --echo #
 --echo # MENT-685 DML events for auto-partitioned tables are written into binary log twice
 --echo #
-create table t1 (x int) partition by hash (x);
---error ER_SYNTAX_ERROR
-alter table t1 add partition partitions 1 auto;
-drop table t1;
-
-create table t1 (x int) with system versioning
-partition by system_time limit 1000 auto
-(partition p1 history, partition pn current);
+create table t1 (a int) with system versioning
+partition by system_time limit 10 auto;
 
 insert into t1 values (1);
+update t1 set a= a + 1;
 --replace_result InnoDB ENGINE MyISAM ENGINE MEMORY ENGINE
 show create table t1;
 
 --sync_slave_with_master
 --replace_result InnoDB ENGINE MyISAM ENGINE MEMORY ENGINE
 show create table t1;
+
 select * from t1;
 --connection master
+# cleanup
 drop table t1;
 
 --source include/rpl_end.inc

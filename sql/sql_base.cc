@@ -3164,7 +3164,7 @@ Open_table_context::recover_from_failed_open()
     case OT_DISCOVER:
     case OT_REPAIR:
     case OT_ADD_HISTORY_PARTITION:
-        if ((result= lock_table_names(m_thd, m_thd->lex->create_info,
+      if ((result= lock_table_names(m_thd, m_thd->lex->create_info,
                                     m_failed_table, NULL,
                                     get_timeout(), 0)))
         break;
