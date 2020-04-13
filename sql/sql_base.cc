@@ -1769,6 +1769,7 @@ bool open_table(THD *thd, TABLE_LIST *table_list, Open_table_context *ot_ctx)
       part_names_error= set_partitions_as_used(table_list, table);
       if (table->part_info &&
           table->part_info->part_type == VERSIONING_PARTITION &&
+          !table_list->vers_conditions.delete_history &&
           table_list->lock_type >= TL_WRITE_ALLOW_WRITE &&
           table_list->mdl_request.type == MDL_SHARED_WRITE)
       {
@@ -2030,6 +2031,7 @@ retry_share:
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   if (table->part_info &&
       table->part_info->part_type == VERSIONING_PARTITION &&
+      !table_list->vers_conditions.delete_history &&
       table_list->lock_type >= TL_WRITE_ALLOW_WRITE &&
       table_list->mdl_request.type >= MDL_SHARED_WRITE &&
       table_list->mdl_request.type < MDL_EXCLUSIVE)

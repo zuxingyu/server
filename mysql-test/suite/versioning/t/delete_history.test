@@ -174,7 +174,7 @@ drop table t1;
 --echo #
 --echo # Don't auto-create new partition on DELETE HISTORY:
 create or replace table t (a int) with system versioning
-partition by system_time limit 1000 auto_increment;
+partition by system_time limit 1000 auto;
 delete history from t;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t;
