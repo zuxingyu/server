@@ -884,7 +884,7 @@ uint partition_info::vers_set_hist_part(THD *thd, bool auto_inc)
         if (diff > 0)
         {
           size_t delta= vers_info->interval.seconds();
-          create_count= diff / delta;
+          create_count= diff / delta + 1;
           if (diff % delta)
             create_count++;
         }

@@ -419,7 +419,6 @@ create or replace table t1 (i int) with system versioning
 partition by system_time interval 1 day starts '2000-01-01 00:00:00'
 partitions 3;
 
---echo # we are warned when we push to present:
 insert into t1 values (0);
 set timestamp= unix_timestamp('2001-01-01 00:00:01');
 update t1 set i= i + 1;
@@ -894,24 +893,28 @@ drop table t1;
 --echo #
 --echo # MDEV-17554 Auto-create new partition for system versioned tables with history partitioned by INTERVAL/LIMIT
 --echo #
---enable_info
 create or replace table t1 (x int) with system versioning
 partition by system_time limit 1 auto;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
+--echo # INSERT, INSERT .. SELECT don't increment partitions
 insert into t1 values (1);
+
+create or replace table t2 (y int);
+insert into t2 values (2);
+
+insert into t1 select * from t2;
+insert into t2 select * from t1;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
---echo # Increment from 2 to 5
+--enable_info
+--echo # Increment from 3 to 5
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 3600 second
-starts '2000-01-01 00:00:00' auto;
---replace_result $default_engine DEFAULT_ENGINE
-show create table t1;
+starts '2000-01-01 00:00:00' auto partitions 3;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -933,10 +936,7 @@ partition by system_time interval 1 hour auto (
     partition p1 history,
     partition p3 history,
     partition pn current);
---replace_result $default_engine DEFAULT_ENGINE
-show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -971,15 +971,14 @@ show create table t1;
 --echo # Test VIEW, LOCK TABLES
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
-partition by system_time interval 1 hour auto;
+partition by system_time interval 1 hour auto partitions 3;
 create or replace view v1 as select * from t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into v1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 lock tables t1 write;
 update t1 set x= x + 3;
 --replace_result $default_engine DEFAULT_ENGINE
@@ -1014,6 +1013,14 @@ show create table t1;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t2;
 
+--echo # Here t2 is incremented too, but not updated
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
+update t1, t2 set t1.x= 0 where t1.x< t2.y;
+--replace_result $default_engine DEFAULT_ENGINE
+show create table t1;
+--replace_result $default_engine DEFAULT_ENGINE
+show create table t2;
+
 drop tables t1, t2;
 
 --echo # PS, SP, LOCK TABLES
@@ -1021,8 +1028,10 @@ set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto;
 
+insert into t1 values (1);
+
 set timestamp= unix_timestamp('2000-01-01 01:00:00');
-execute immediate 'insert into t1 values (1)';
+execute immediate 'update t1 set x= x + 5';
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
@@ -1081,14 +1090,15 @@ partition by system_time interval 1 hour auto (
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 (x, c, u, i1, i2, i3, ps, pe)
 values (1, 'cc', 0, 1, 2, 3, '1999-01-01', '2000-01-01');
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+update t1 set x= x + 8;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 
 set timestamp= unix_timestamp('2000-01-01 02:00:00');
-update t1 set x= x + 8;
+update t1 set x= x - 8;
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
 }
@@ -1097,9 +1107,8 @@ show create table t1;
 --echo # Concurrent DML
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
-partition by system_time interval 1 hour auto;
+partition by system_time interval 1 hour auto partitions 3;
 
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 insert into t1 values (1);
 --replace_result $default_engine DEFAULT_ENGINE
 show create table t1;
@@ -1163,18 +1172,46 @@ show create table t1;
 
 drop tables t1;
 
+--echo # Transaction
 create or replace table t1 (x int) with system versioning engine innodb
 partition by system_time interval 1 hour auto;
 start transaction;
+insert into t1 values (1);
 select * from t1;
 
 --connect con1, localhost, root
 set lock_wait_timeout= 1;
 --error ER_LOCK_WAIT_TIMEOUT
-insert into t1 values (1);
+update t1 set x= x + 1;
 select * from t1;
 
 # cleanup
+--disconnect con1
+--connection default
+drop table t1;
+
+set timestamp= unix_timestamp('2000-01-01 00:00:00');
+create or replace table t1 (x int) with system versioning engine innodb
+partition by system_time interval 1 hour auto;
+
+insert into t1 values (1);
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+start transaction;
+update t1 set x= 0;
+--connect con1, localhost, root
+select * from t1;
+--connection default
+commit;
+show create table t1;
+
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
+start transaction;
+update t1 set x= 1;
+--connection con1
+select * from t1;
+--connection default
+rollback;
+show create table t1;
 --disconnect con1
 --connection default
 drop table t1;

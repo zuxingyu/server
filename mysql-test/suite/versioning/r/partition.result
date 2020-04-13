@@ -278,8 +278,6 @@ x
 5
 6
 insert into t1 values (7), (8);
-Warnings:
-Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of LIMIT, need more HISTORY partitions
 ### warn about full partition
 delete from t1;
 Warnings:
@@ -352,8 +350,6 @@ insert t1 values (1);
 delete from t1;
 set timestamp=unix_timestamp('2001-02-04 10:20:50');
 insert t1 values (2);
-Warnings:
-Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of INTERVAL, need more HISTORY partitions
 delete from t1;
 Warnings:
 Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of INTERVAL, need more HISTORY partitions
@@ -569,10 +565,7 @@ set timestamp= unix_timestamp('2001-01-01 00:00:00');
 create or replace table t1 (i int) with system versioning
 partition by system_time interval 1 day starts '2000-01-01 00:00:00'
 partitions 3;
-# we are warned when we push to present:
 insert into t1 values (0);
-Warnings:
-Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p1`) is out of INTERVAL, need more HISTORY partitions
 set timestamp= unix_timestamp('2001-01-01 00:00:01');
 update t1 set i= i + 1;
 Warnings:
@@ -1125,7 +1118,6 @@ drop table t1;
 #
 create or replace table t1 (x int) with system versioning
 partition by system_time limit 1 auto;
-affected rows: 0
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -1133,31 +1125,23 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME LIMIT 1 AUTO
 PARTITIONS 2
-affected rows: 1
+# INSERT, INSERT .. SELECT don't increment partitions
 insert into t1 values (1);
-affected rows: 1
+create or replace table t2 (y int);
+insert into t2 values (2);
+insert into t1 select * from t2;
+insert into t2 select * from t1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `x` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME LIMIT 1 AUTO
-PARTITIONS 3
-affected rows: 1
-# Increment from 2 to 5
+PARTITIONS 2
+# Increment from 3 to 5
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 3600 second
-starts '2000-01-01 00:00:00' auto;
-affected rows: 0
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `x` int(11) DEFAULT NULL
-) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
- PARTITION BY SYSTEM_TIME INTERVAL 3600 SECOND STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
-PARTITIONS 2
-affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+starts '2000-01-01 00:00:00' auto partitions 3;
 affected rows: 0
 insert into t1 values (1);
 affected rows: 1
@@ -1203,18 +1187,6 @@ partition by system_time interval 1 hour auto (
 partition p1 history,
 partition p3 history,
 partition pn current);
-affected rows: 0
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `x` int(11) DEFAULT NULL
-) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
- PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
-(PARTITION `p1` HISTORY ENGINE = DEFAULT_ENGINE,
- PARTITION `p3` HISTORY ENGINE = DEFAULT_ENGINE,
- PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
-affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
 insert into t1 values (1);
 affected rows: 1
@@ -1308,11 +1280,9 @@ affected rows: 1
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 affected rows: 0
 create or replace table t1 (x int) with system versioning
-partition by system_time interval 1 hour auto;
+partition by system_time interval 1 hour auto partitions 3;
 affected rows: 0
 create or replace view v1 as select * from t1;
-affected rows: 0
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
 insert into v1 values (1);
 affected rows: 1
@@ -1324,7 +1294,7 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
 PARTITIONS 3
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 02:00:00');
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
 lock tables t1 write;
 affected rows: 0
@@ -1337,7 +1307,7 @@ t1	CREATE TABLE `t1` (
   `x` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
-PARTITIONS 4
+PARTITIONS 3
 affected rows: 1
 unlock tables;
 affected rows: 0
@@ -1400,6 +1370,28 @@ t2	CREATE TABLE `t2` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
 PARTITIONS 4
 affected rows: 1
+# Here t2 is incremented too, but not updated
+set timestamp= unix_timestamp('2000-01-01 03:00:00');
+affected rows: 0
+update t1, t2 set t1.x= 0 where t1.x< t2.y;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `x` int(11) DEFAULT NULL
+) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
+ PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
+PARTITIONS 5
+affected rows: 1
+show create table t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `y` int(11) DEFAULT NULL
+) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
+ PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
+PARTITIONS 5
+affected rows: 1
 drop tables t1, t2;
 affected rows: 0
 # PS, SP, LOCK TABLES
@@ -1408,10 +1400,13 @@ affected rows: 0
 create or replace table t1 (x int) with system versioning
 partition by system_time interval 1 hour auto;
 affected rows: 0
+insert into t1 values (1);
+affected rows: 1
 set timestamp= unix_timestamp('2000-01-01 01:00:00');
 affected rows: 0
-execute immediate 'insert into t1 values (1)';
+execute immediate 'update t1 set x= x + 5';
 affected rows: 1
+info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 0
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -1551,11 +1546,14 @@ t1	CREATE TABLE `t1` (
 (PARTITION `p2` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `pn` CURRENT ENGINE = DEFAULT_ENGINE)
 affected rows: 1
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
-affected rows: 0
 insert into t1 (x, c, u, i1, i2, i3, ps, pe)
 values (1, 'cc', 0, 1, 2, 3, '1999-01-01', '2000-01-01');
 affected rows: 1
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+affected rows: 0
+update t1 set x= x + 8;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 0
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -1580,7 +1578,7 @@ t1	CREATE TABLE `t1` (
   KEY `three` (`i1`,`i2`,`i3`),
   PERIOD FOR SYSTEM_TIME (`s`, `e`),
   CONSTRAINT `check_constr` CHECK (`u` > -1)
-) ENGINE=DEFAULT_ENGINE AUTO_INCREMENT=2 DEFAULT CHARSET=ucs2 WITH SYSTEM VERSIONING
+) ENGINE=DEFAULT_ENGINE AUTO_INCREMENT=10 DEFAULT CHARSET=ucs2 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
 (PARTITION `p2` HISTORY ENGINE = DEFAULT_ENGINE,
  PARTITION `p1` HISTORY ENGINE = DEFAULT_ENGINE,
@@ -1588,7 +1586,7 @@ t1	CREATE TABLE `t1` (
 affected rows: 1
 set timestamp= unix_timestamp('2000-01-01 02:00:00');
 affected rows: 0
-update t1 set x= x + 8;
+update t1 set x= x - 8;
 affected rows: 1
 info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 0
 show create table t1;
@@ -1625,8 +1623,7 @@ affected rows: 1
 # Concurrent DML
 set timestamp= unix_timestamp('2000-01-01 00:00:00');
 create or replace table t1 (x int) with system versioning
-partition by system_time interval 1 hour auto;
-set timestamp= unix_timestamp('2000-01-01 01:00:00');
+partition by system_time interval 1 hour auto partitions 3;
 insert into t1 values (1);
 show create table t1;
 Table	Create Table
@@ -1690,17 +1687,59 @@ t1	CREATE TABLE `t1` (
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
 PARTITIONS 4
 drop tables t1;
+# Transaction
 create or replace table t1 (x int) with system versioning engine innodb
 partition by system_time interval 1 hour auto;
 start transaction;
+insert into t1 values (1);
 select * from t1;
 x
+1
 connect con1, localhost, root;
 set lock_wait_timeout= 1;
-insert into t1 values (1);
+update t1 set x= x + 1;
 ERROR HY000: Lock wait timeout exceeded; try restarting transaction
 select * from t1;
 x
+disconnect con1;
+connection default;
+drop table t1;
+set timestamp= unix_timestamp('2000-01-01 00:00:00');
+create or replace table t1 (x int) with system versioning engine innodb
+partition by system_time interval 1 hour auto;
+insert into t1 values (1);
+set timestamp= unix_timestamp('2000-01-01 01:00:00');
+start transaction;
+update t1 set x= 0;
+connect con1, localhost, root;
+select * from t1;
+x
+1
+connection default;
+commit;
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `x` int(11) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
+ PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
+PARTITIONS 3
+set timestamp= unix_timestamp('2000-01-01 02:00:00');
+start transaction;
+update t1 set x= 1;
+connection con1;
+select * from t1;
+x
+0
+connection default;
+rollback;
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `x` int(11) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
+ PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
+PARTITIONS 4
 disconnect con1;
 connection default;
 drop table t1;

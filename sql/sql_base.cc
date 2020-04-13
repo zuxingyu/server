@@ -1776,9 +1776,7 @@ bool open_table(THD *thd, TABLE_LIST *table_list, Open_table_context *ot_ctx)
         {
         case SQLCOM_DELETE:
         case SQLCOM_UPDATE:
-        case SQLCOM_INSERT:
-        case SQLCOM_INSERT_SELECT:
-        case SQLCOM_LOAD:
+        case SQLCOM_LOAD: // FIXME: remove
         case SQLCOM_REPLACE:
         case SQLCOM_REPLACE_SELECT:
         case SQLCOM_DELETE_MULTI:
@@ -2042,8 +2040,6 @@ retry_share:
     case SQLCOM_LOCK_TABLES:
     case SQLCOM_DELETE:
     case SQLCOM_UPDATE:
-    case SQLCOM_INSERT:
-    case SQLCOM_INSERT_SELECT:
     case SQLCOM_LOAD:
     case SQLCOM_REPLACE:
     case SQLCOM_REPLACE_SELECT:
