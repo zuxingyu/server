@@ -1776,7 +1776,6 @@ bool open_table(THD *thd, TABLE_LIST *table_list, Open_table_context *ot_ctx)
         {
         case SQLCOM_DELETE:
         case SQLCOM_UPDATE:
-        case SQLCOM_LOAD: // FIXME: remove
         case SQLCOM_REPLACE:
         case SQLCOM_REPLACE_SELECT:
         case SQLCOM_DELETE_MULTI:
@@ -2040,7 +2039,6 @@ retry_share:
     case SQLCOM_LOCK_TABLES:
     case SQLCOM_DELETE:
     case SQLCOM_UPDATE:
-    case SQLCOM_LOAD:
     case SQLCOM_REPLACE:
     case SQLCOM_REPLACE_SELECT:
     case SQLCOM_DELETE_MULTI:
@@ -3205,9 +3203,6 @@ Open_table_context::recover_from_failed_open()
           TABLE_LIST *tl= m_failed_table;
           vers_add_auto_parts(m_thd, tl, vers_create_count);
           close_tables_for_reopen(m_thd, &tl, start_of_statement_svp());
-
-          // FIXME: why?
-          m_thd->clear_error(1);
           break;
         }
         case OT_BACKOFF_AND_RETRY:
