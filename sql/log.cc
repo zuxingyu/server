@@ -9571,11 +9571,11 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
   if ((error= open_purge_index_file(TRUE)))
   {
     sql_print_error("tc-heuristic-recover failed to open purge index file.");
-    goto err;
+    goto end;
   }
 
-  if ((error=find_log_pos(&log_info, truncate_file, 1)))
-    goto err;
+  if ((error= find_log_pos(&log_info, truncate_file, 1)))
+    goto end;
 
   while (!(error= find_next_log(&log_info, 1)))
   {
@@ -9585,7 +9585,7 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
     {
       sql_print_error("tc-heuristic-recover failed to copy %s to register"
                       " file.", log_info.log_file_name);
-      goto err;
+      goto end;
     }
   }
 
@@ -9594,7 +9594,7 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
     sql_print_error("Error during tc-heuristic-recover. Failed to "
                     "find the next binlog to add to purge index register. "
                     "Error:%d", error);
-   goto err;
+    goto end;
   }
 
   if (!index_file_offset)
@@ -9604,21 +9604,26 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
   {
     sql_print_error("tc-heuristic-recover failed to flush purge index register "
                     "file.");
-    goto err;
+    goto end;
   }
 
-  DBUG_ASSERT(index_file_offset != 0);
   // Trim index file
-  if (mysql_file_chsize(index_file.file, index_file_offset, '\n', MYF(MY_WME)) ||
-      mysql_file_sync(index_file.file, MYF(MY_WME|MY_SYNC_FILESIZE)))
+  if ((error=
+       mysql_file_chsize(index_file.file, index_file_offset, '\n', MYF(MY_WME))
+       || mysql_file_sync(index_file.file, MYF(MY_WME|MY_SYNC_FILESIZE))))
   {
     sql_print_error("tc-heuristic-recover failed to trim binlog index file.");
     mysql_file_close(index_file.file, MYF(MY_WME));
-    goto err;
+    goto end;
   }
 
   /* Reset data in old index cache */
-  reinit_io_cache(&index_file, READ_CACHE, (my_off_t) 0, 0, 1);
+  if ((error= reinit_io_cache(&index_file, READ_CACHE, (my_off_t) 0, 0, 1)))
+  {
+    sql_print_error("tc-heuristic-recover failed to reinit binlog index file.");
+    mysql_file_close(index_file.file, MYF(MY_WME));
+    goto end;
+  }
 
   /* Read each entry from purge_index_file and delete the file. */
   if (is_inited_purge_index_file() &&
@@ -9626,73 +9631,67 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
   {
     sql_print_error("Failed to process registered files that would be purged "
                     "during tc-heuristic-recover=ROLLBACK.");
-    goto err;
+    goto end;
   }
 
-  if (truncate_pos)
-  {
-    if ((file= mysql_file_open(key_file_binlog, truncate_file,
-                               O_RDWR | O_BINARY, MYF(MY_WME))) < 0)
-    {
-      sql_print_error("Failed to open binlog file:%s for truncation.",
-                      truncate_file);
-      goto err;
-    }
-    my_stat(truncate_file, &s, MYF(0));
-    binlog_size= s.st_size;
+  DBUG_ASSERT(truncate_pos);
 
-    /* Change binlog file size to truncate_pos */
-    if (mysql_file_chsize(file, truncate_pos, 0, MYF(MY_WME)) ||
-        mysql_file_sync(file, MYF(MY_WME|MY_SYNC_FILESIZE)))
-    {
-      sql_print_error("Failed to trim the crashed binlog file:%s to size:%llu",
-                      truncate_file, truncate_pos);
-      mysql_file_close(file, MYF(MY_WME));
-      goto err;
-    }
-    else
-    {
-      sql_print_information("tc-heuristic-recover=ROLLBACK truncated binlog "
-                            "File: %s of Size:%llu, to Position:%llu.",
-                            truncate_file, binlog_size, truncate_pos);
-    }
-    if ((error= init_io_cache(&cache, file, IO_SIZE, WRITE_CACHE, (my_off_t)truncate_pos, 0,
-                              MYF(MY_WME|MY_NABP))))
-      goto err;
+  if ((file= mysql_file_open(key_file_binlog, truncate_file,
+                             O_RDWR | O_BINARY, MYF(MY_WME))) < 0)
+  {
+    error= 1;
+    sql_print_error("Failed to open binlog file:%s for truncation.",
+                    truncate_file);
+    goto end;
+  }
+  my_stat(truncate_file, &s, MYF(0));
+  binlog_size= s.st_size;
+
+  /* Change binlog file size to truncate_pos */
+  if ((error=
+       mysql_file_chsize(file, truncate_pos, 0, MYF(MY_WME)) ||
+       mysql_file_sync(file, MYF(MY_WME|MY_SYNC_FILESIZE))))
+  {
+    sql_print_error("Failed to trim the crashed binlog file:%s to size:%llu",
+                    truncate_file, truncate_pos);
+    goto end;
+  }
+  else
+  {
+    sql_print_information("tc-heuristic-recover=ROLLBACK truncated binlog "
+                          "File: %s of Size:%llu, to Position:%llu.",
+                          truncate_file, binlog_size, truncate_pos);
+  }
+  if (!(error= init_io_cache(&cache, file, IO_SIZE, WRITE_CACHE,
+                            (my_off_t) truncate_pos, 0, MYF(MY_WME|MY_NABP))))
+  {
     /*
-       Write Stop_log_event to ensure clean end point for the binary log being
-       truncated.
+      Write Stop_log_event to ensure clean end point for the binary log being
+      truncated.
     */
-    Stop_log_event s;
-    s.checksum_alg= (enum_binlog_checksum_alg)binlog_checksum_options;
-    if (write_event(&s, &cache))
-      goto err;
-    if ((error= flush_io_cache(&cache)) ||
-        (error= mysql_file_sync(file, MYF(MY_WME|MY_SYNC_FILESIZE))))
+    Stop_log_event se;
+    se.checksum_alg= (enum_binlog_checksum_alg) binlog_checksum_options;
+    if ((error= write_event(&se, &cache)))
+      goto end;
+    if ((error=
+         flush_io_cache(&cache) ||
+         mysql_file_sync(file, MYF(MY_WME|MY_SYNC_FILESIZE))))
     {
       sql_print_error("Faild to write stop event to binary log during "
                       "tc-heuristic-recover=ROLLBACK");
-      goto err;
     }
-    end_io_cache(&cache);
-    mysql_file_close(file, MYF(MY_WME));
-    file= -1;
   }
-  goto end;
 
-err:
-  if (!error)
-    error= 1;
+end:
   if (file >= 0)
   {
     end_io_cache(&cache);
     mysql_file_close(file, MYF(MY_WME));
   }
 
-end:
-  close_purge_index_file();
+  error= error || close_purge_index_file();
 #endif
-  return error;
+  return error > 0;
 }
 
 /**
