@@ -4744,7 +4744,7 @@ int MYSQL_BIN_LOG::purge_index_entry(THD *thd, ulonglong *reclaimed_space,
           }
           goto err;
         }
-           
+
         error= 0;
 
         DBUG_PRINT("info",("purging %s",log_info.log_file_name));
@@ -9562,17 +9562,11 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
 #ifdef HAVE_REPLICATION
   LOG_INFO log_info;
   THD *thd= current_thd;
-  my_off_t index_file_offset=0;
+  my_off_t index_file_offset= 0;
   File file= -1;
   IO_CACHE cache;
   MY_STAT s;
   my_off_t binlog_size;
-
-  if ((error= open_purge_index_file(TRUE)))
-  {
-    sql_print_error("tc-heuristic-recover failed to open purge index file.");
-    goto end;
-  }
 
   if ((error= find_log_pos(&log_info, truncate_file, 1)))
     goto end;
@@ -9580,8 +9574,16 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
   while (!(error= find_next_log(&log_info, 1)))
   {
     if (!index_file_offset)
+    {
       index_file_offset= log_info.index_file_start_offset;
-    if((error= register_purge_index_entry(log_info.log_file_name)))
+      if ((error= open_purge_index_file(TRUE)) ||
+          DBUG_EVALUATE_IF("fault_injection_openning_purge_index", 1, 0))
+      {
+        sql_print_error("tc-heuristic-recover failed to open purge index file.");
+        goto end;
+      }
+    }
+    if ((error= register_purge_index_entry(log_info.log_file_name)))
     {
       sql_print_error("tc-heuristic-recover failed to copy %s to register"
                       " file.", log_info.log_file_name);
@@ -9597,41 +9599,48 @@ bool MYSQL_BIN_LOG::truncate_and_remove_binlogs(const char *truncate_file,
     goto end;
   }
 
-  if (!index_file_offset)
-    index_file_offset= log_info.index_file_start_offset;
-
-  if ((error= sync_purge_index_file()))
+  if (is_inited_purge_index_file())
   {
-    sql_print_error("tc-heuristic-recover failed to flush purge index register "
-                    "file.");
-    goto end;
-  }
+    if (!index_file_offset)
+      index_file_offset= log_info.index_file_start_offset;
 
-  // Trim index file
-  if ((error=
-       mysql_file_chsize(index_file.file, index_file_offset, '\n', MYF(MY_WME))
-       || mysql_file_sync(index_file.file, MYF(MY_WME|MY_SYNC_FILESIZE))))
-  {
-    sql_print_error("tc-heuristic-recover failed to trim binlog index file.");
-    mysql_file_close(index_file.file, MYF(MY_WME));
-    goto end;
-  }
+    DBUG_EXECUTE_IF("crash_before_sync_purge_index_file", DBUG_SUICIDE(););
+    if ((error= sync_purge_index_file()))
+    {
+      sql_print_error("tc-heuristic-recover failed to flush purge index "
+                      "register file.");
+      goto end;
+    }
+    DBUG_EXECUTE_IF("crash_after_sync_purge_index_file", DBUG_SUICIDE(););
 
-  /* Reset data in old index cache */
-  if ((error= reinit_io_cache(&index_file, READ_CACHE, (my_off_t) 0, 0, 1)))
-  {
-    sql_print_error("tc-heuristic-recover failed to reinit binlog index file.");
-    mysql_file_close(index_file.file, MYF(MY_WME));
-    goto end;
-  }
+    // Trim index file
+    if ((error=
+         mysql_file_chsize(index_file.file, index_file_offset, '\n',
+                           MYF(MY_WME)) ||
+         mysql_file_sync(index_file.file, MYF(MY_WME|MY_SYNC_FILESIZE))))
+    {
+      sql_print_error("tc-heuristic-recover failed to trim binlog index file.");
+      mysql_file_close(index_file.file, MYF(MY_WME));
+      goto end;
+    }
 
-  /* Read each entry from purge_index_file and delete the file. */
-  if (is_inited_purge_index_file() &&
-      (error= purge_index_entry(thd, NULL, TRUE)))
-  {
-    sql_print_error("Failed to process registered files that would be purged "
-                    "during tc-heuristic-recover=ROLLBACK.");
-    goto end;
+    DBUG_EXECUTE_IF("crash_after_index_file_resize", DBUG_SUICIDE(););
+    /* Reset data in old index cache */
+    if ((error= reinit_io_cache(&index_file, READ_CACHE, (my_off_t) 0, 0, 1)))
+    {
+      sql_print_error("tc-heuristic-recover failed to reinit binlog index "
+                      "file.");
+      mysql_file_close(index_file.file, MYF(MY_WME));
+      goto end;
+    }
+
+    /* Read each entry from purge_index_file and delete the file. */
+    if ((error= purge_index_entry(thd, NULL, TRUE)))
+    {
+      sql_print_error("Failed to process registered files that would be purged "
+                      "during tc-heuristic-recover=ROLLBACK.");
+      goto end;
+    }
   }
 
   DBUG_ASSERT(truncate_pos);
