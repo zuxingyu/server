@@ -43,6 +43,7 @@ enum Wsrep_service_key_type
 struct xid_t;
 struct wsrep_ws_handle;
 struct wsrep_buf;
+typedef struct wsrep_kill wsrep_kill_t;
 
 /* Must match to definition in sql/mysqld.h */
 typedef int64 query_id_t;
@@ -87,6 +88,7 @@ extern struct wsrep_service_st {
   ulong                       (*wsrep_OSU_method_get_func)(const MYSQL_THD thd);
   my_bool                     (*wsrep_thd_has_ignored_error_func)(const MYSQL_THD thd);
   void                        (*wsrep_thd_set_ignored_error_func)(MYSQL_THD thd, my_bool val);
+  bool                        (*wsrep_enqueue_background_kill_func)(wsrep_kill_t);
 } *wsrep_service;
 
 #define MYSQL_SERVICE_WSREP_INCLUDED
@@ -130,6 +132,7 @@ extern struct wsrep_service_st {
 #define wsrep_OSU_method_get(T) wsrep_service->wsrep_OSU_method_get_func(T)
 #define wsrep_thd_has_ignored_error(T) wsrep_service->wsrep_thd_has_ignored_error_func(T)
 #define wsrep_thd_set_ignored_error(T,V) wsrep_service->wsrep_thd_set_ignored_error_func(T,V)
+#define wsrep_enqueue_background_kill(T) wsrep_service->wsrep_enqueue_background_kill_func(T)
 #else
 
 #define MYSQL_SERVICE_WSREP_STATIC_INCLUDED
@@ -152,6 +155,7 @@ my_bool get_wsrep_recovery();
 void wsrep_thd_auto_increment_variables(THD *thd, unsigned long long *offset, unsigned long long *increment);
 bool wsrep_thd_ignore_table(MYSQL_THD thd);
 void wsrep_set_data_home_dir(const char *data_dir);
+bool wsrep_enqueue_background_kill(wsrep_kill_t);
 
 /* from mysql wsrep-lib */
 #include "my_global.h"
