@@ -4839,7 +4839,8 @@ int SJ_TMP_TABLE::sj_weedout_check_row(THD *thd)
 }
 
 
-int init_dups_weedout(JOIN *join, uint first_table, int first_fanout_table, uint n_tables)
+int init_dups_weedout(JOIN *join, JOIN_TAB *first_tab,
+                      JOIN_TAB* first_fanout_tab, uint n_tables)
 {
   THD *thd= join->thd;
   DBUG_ENTER("init_dups_weedout");
@@ -4852,8 +4853,7 @@ int init_dups_weedout(JOIN *join, uint first_table, int first_fanout_table, uint
      - tables that need their rowids to be put into temptable
      - the last outer table
   */
-  for (JOIN_TAB *j=join->join_tab + first_table; 
-       j < join->join_tab + first_table + n_tables; j++)
+  for (JOIN_TAB *j= first_tab; j < first_tab + n_tables; j++)
   {
     if (sj_table_is_included(join, j))
     {
@@ -4902,10 +4902,10 @@ int init_dups_weedout(JOIN *join, uint first_table, int first_fanout_table, uint
     sjtbl->have_degenerate_row= FALSE;
   }
 
-  sjtbl->next_flush_table= join->join_tab[first_table].flush_weedout_table;
-  join->join_tab[first_table].flush_weedout_table= sjtbl;
-  join->join_tab[first_fanout_table].first_weedout_table= sjtbl;
-  join->join_tab[first_table + n_tables - 1].check_weed_out_table= sjtbl;
+  sjtbl->next_flush_table= first_tab->flush_weedout_table;
+  first_tab->flush_weedout_table= sjtbl;
+  first_fanout_tab->first_weedout_table= sjtbl;
+  (first_tab + n_tables - 1)->check_weed_out_table= sjtbl;
   DBUG_RETURN(0);
 }
 
@@ -4931,19 +4931,25 @@ int setup_semijoin_loosescan(JOIN *join)
   DBUG_ENTER("setup_semijoin_loosescan");
 
   POSITION *pos= join->best_positions + join->const_tables;
-  for (i= join->const_tables ; i < join->top_join_tab_count; )
+  uint n_tables= join->sort_nest_info ?
+                 join->sort_nest_info->number_of_tables() : 0;
+
+  JOIN_TAB *tab= join->join_tab + join->const_tables;
+
+  for (uint j=join->const_tables;
+       j < join->top_join_tab_count + n_tables; j++)
   {
-    JOIN_TAB *tab=join->join_tab + i;
-    if (tab->is_sort_nest)
+    if (tab->is_mat_nest())
     {
-      i++;
+      tab= tab->bush_children->start;
       continue;
     }
+
     switch (pos->sj_strategy) {
       case SJ_OPT_MATERIALIZE:
       case SJ_OPT_MATERIALIZE_SCAN:
-        i+= 1; /* join tabs are embedded in the nest */
-        pos += pos->n_sj_tables;
+        pos+= pos->n_sj_tables;
+        i= 1;
         break;
       case SJ_OPT_LOOSE_SCAN:
       {
@@ -4954,8 +4960,8 @@ int setup_semijoin_loosescan(JOIN *join)
         if (tab->select && tab->select->quick)
           tab->select->quick->need_sorted_output();
 
-        for (uint j= i; j < i + pos->n_sj_tables; j++)
-          join->join_tab[j].inside_loosescan_range= TRUE;
+        for (JOIN_TAB *jt= tab; jt < tab + pos->n_sj_tables; jt++)
+          jt->inside_loosescan_range= TRUE;
 
         /* Calculate key length */
         uint keylen= 0;
@@ -4967,17 +4973,27 @@ int setup_semijoin_loosescan(JOIN *join)
         tab->loosescan_key_len= keylen;
         if (pos->n_sj_tables > 1) 
           tab[pos->n_sj_tables - 1].do_firstmatch= tab;
-        i+= pos->n_sj_tables;
+        i= pos->n_sj_tables;
         pos+= pos->n_sj_tables;
         break;
       }
       default:
       {
-        i++;
         pos++;
+        i= 1;
         break;
       }
     }
+
+    JOIN_TAB *jt= (tab+i-1);
+    if (jt->check_if_root_tab_is_mat_nest() && jt->last_leaf_in_bush)
+    {
+      tab+= i-1;
+      tab= tab->bush_root_tab;
+      tab++;
+    }
+    else
+      tab+= i;
   }
   DBUG_RETURN(FALSE);
 }
@@ -5087,30 +5103,34 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
   
   join->complex_firstmatch_tables= table_map(0);
   Sort_nest_info *sort_nest_info= join->sort_nest_info;
+  uint n_tables= 0;
 
   if (sort_nest_info)
-    no_jbuf_after= join->const_tables + sort_nest_info->number_of_tables();
+    n_tables= sort_nest_info->number_of_tables();
 
   POSITION *pos= join->best_positions + join->const_tables;
-  for (i= join->const_tables ; i < join->top_join_tab_count; )
+  JOIN_TAB *tab= join->join_tab + join->const_tables;
+
+  for (uint tablenr= join->const_tables;
+       tablenr < join->top_join_tab_count + n_tables;)
   {
-    JOIN_TAB *tab=join->join_tab + i;
-    if (tab->is_sort_nest)
+    if (tab->is_mat_nest())
     {
-      i++;
+      tab= tab->bush_children->start;
+      tablenr++;
       continue;
     }
     switch (pos->sj_strategy) {
       case SJ_OPT_MATERIALIZE:
       case SJ_OPT_MATERIALIZE_SCAN:
         /* Do nothing */
-        i+= 1;// It used to be pos->n_sj_tables, but now they are embedded in a nest
+        i= 1;// It used to be pos->n_sj_tables, but now they are embedded in a nest
         pos += pos->n_sj_tables;
         break;
       case SJ_OPT_LOOSE_SCAN:
       {
         /* Setup already handled by setup_semijoin_loosescan */
-        i+= pos->n_sj_tables;
+        i= pos->n_sj_tables;
         pos+= pos->n_sj_tables;
         break;
       }
@@ -5120,10 +5140,10 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
           Check for join buffering. If there is one, move the first table
           forwards, but do not destroy other duplicate elimination methods.
         */
-        uint first_table= i;
+        JOIN_TAB *first_table= tab;
 
         uint join_cache_level= join->thd->variables.join_cache_level;
-        for (uint j= i; j < i + pos->n_sj_tables; j++)
+        for (JOIN_TAB *js_tab= tab; js_tab < tab + pos->n_sj_tables; js_tab++)
         {
           /*
             When we'll properly take join buffering into account during
@@ -5132,15 +5152,17 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
                  j <= no_jbuf_after)".
             For now, use a rough criteria:
           */
-          JOIN_TAB *js_tab=join->join_tab + j; 
-          if (j != join->const_tables && js_tab->use_quick != 2 &&
-              j <= no_jbuf_after &&
+          if (js_tab != join->join_tab + join->const_tables &&
+              js_tab->use_quick != 2 &&
+              join->is_join_buffering_allowed(js_tab) &&
               ((js_tab->type == JT_ALL && join_cache_level != 0) ||
                (join_cache_level > 2 && (js_tab->type == JT_REF || 
                                          js_tab->type == JT_EQ_REF))))
           {
             /* Looks like we'll be using join buffer */
-            first_table= join->const_tables;
+            first_table= js_tab->check_if_root_tab_is_mat_nest() ?
+                         js_tab->bush_root_tab->bush_children->start :
+                         join->join_tab + join->const_tables;
             /* 
               Make sure that possible sorting of rows from the head table 
               is not to be employed.
@@ -5155,8 +5177,9 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
           }
         }
 
-        init_dups_weedout(join, first_table, i, i + pos->n_sj_tables - first_table);
-        i+= pos->n_sj_tables;
+        init_dups_weedout(join, first_table, tab,
+                          tab + pos->n_sj_tables - first_table);
+        i= pos->n_sj_tables;
         pos+= pos->n_sj_tables;
         break;
       }
@@ -5209,7 +5232,7 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
           }
         }
         j[-1].do_firstmatch= jump_to;
-        i+= pos->n_sj_tables;
+        i= pos->n_sj_tables;
         pos+= pos->n_sj_tables;
 
         if (complex_range)
@@ -5217,10 +5240,21 @@ int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
         break;
       }
       case SJ_OPT_NONE:
-        i++;
+        i= 1;
         pos++;
         break;
     }
+
+    JOIN_TAB *jt= (tab+i-1);
+    tablenr= tablenr + i;
+    if (jt->check_if_root_tab_is_mat_nest() && jt->last_leaf_in_bush)
+    {
+      tab+= i-1;
+      tab= tab->bush_root_tab;
+      tab++;
+    }
+    else
+      tab+= i;
   }
   DBUG_RETURN(FALSE);
 }
@@ -5309,7 +5343,7 @@ int clear_sj_tmp_tables(JOIN *join)
 
 static bool sj_table_is_included(JOIN *join, JOIN_TAB *join_tab)
 {
-  if (join_tab->emb_sj_nest || join_tab->is_sort_nest)
+  if (join_tab->emb_sj_nest || join_tab->is_mat_nest())
     return FALSE;
 
   /* Check if this table is functionally dependent on the tables that
@@ -5662,7 +5696,7 @@ enum_nested_loop_state join_tab_execution_startup(JOIN_TAB *tab)
         DBUG_RETURN(NESTED_LOOP_ERROR);
     }
   }
-  else if (tab->bush_children)
+  else if (tab->is_sjm_nest())
   {
     /* It's a merged SJM nest */
     enum_nested_loop_state rc;
@@ -5688,7 +5722,7 @@ enum_nested_loop_state join_tab_execution_startup(JOIN_TAB *tab)
       sjm->materialized= TRUE;
     }
   }
-  else if (tab->is_sort_nest)
+  else if (tab->is_mat_nest())
   {
     /*
       This is where the sort-nest gets filled by the partial join.

@@ -609,17 +609,20 @@ void Json_writer::add_table_name(const JOIN_TAB *tab)
     else if (tab->bush_children)
     {
       JOIN_TAB *ctab= tab->bush_children->start;
-      size_t len= my_snprintf(table_name_buffer,
-                           sizeof(table_name_buffer)-1,
-                           "<subquery%d>",
-                           ctab->emb_sj_nest->sj_subq_pred->get_identifier());
-      add_str(table_name_buffer, len);
-    }
-    else if (tab->is_sort_nest)
-    {
-      size_t len= my_snprintf(table_name_buffer, sizeof(table_name_buffer)-1,
-                              "<sort-nest>");
-      add_str(table_name_buffer, len);
+      if (tab->is_sjm_nest())
+      {
+        size_t len= my_snprintf(table_name_buffer,
+                             sizeof(table_name_buffer)-1,
+                             "<subquery%d>",
+                             ctab->emb_sj_nest->sj_subq_pred->get_identifier());
+        add_str(table_name_buffer, len);
+      }
+      else if (tab->is_mat_nest())
+      {
+        size_t len= my_snprintf(table_name_buffer, sizeof(table_name_buffer)-1,
+                                "<sort-nest>");
+        add_str(table_name_buffer, len);
+      }
     }
     else
     {
@@ -724,7 +727,7 @@ void Mat_join_tab_nest_info::add_nest_tables_to_trace(const char *name)
   THD *thd= join->thd;
   Json_writer_object trace_wrapper(thd);
   Json_writer_array sort_nest(thd, name);
-  for (tab= join->join_tab + join->const_tables; tab < nest_tab; tab++)
+  for (tab= get_start_tab(); tab < get_end_tab(); tab++)
     sort_nest.add_table_name(tab);
 }
 

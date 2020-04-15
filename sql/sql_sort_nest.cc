@@ -286,10 +286,12 @@ Mat_join_tab_nest_info::substitute_base_with_nest_field_items()
     (*ord->item)->update_used_tables();
   }
 
-  JOIN_TAB *tab= nest_tab;
-  for (uint i= join->const_tables + number_of_tables();
-       (tab && i < join->top_join_tab_count); i++, tab++)
+  JOIN_TAB *start_tab= join->join_tab + join->const_tables;
+  JOIN_TAB *end_tab  = join->join_tab + join->top_join_tab_count;
+  for (JOIN_TAB *tab= start_tab; tab < end_tab; tab++)
   {
+    if (tab->is_mat_nest())
+      continue;
 
     if (tab->type == JT_REF || tab->type == JT_EQ_REF ||
         tab->type == JT_REF_OR_NULL)
@@ -641,6 +643,12 @@ bool JOIN::check_if_sort_nest_present(uint* n_tables,
     {
       *n_tables= tables;
       *nest_tables_map= nest_tables;
+      pos->sort_nest_operation_here= FALSE;
+      if (tables == 1)
+        return TRUE;
+      DBUG_ASSERT(const_tables + tables - tablenr >= 1);
+      uint first= const_tables + tables - tablenr - 1;
+      best_positions[first].sort_nest_operation_here= TRUE;
       return TRUE;
     }
   }
@@ -712,7 +720,6 @@ bool Mat_join_tab_nest_info::make_nest()
 {
   Field_iterator_table field_iterator;
 
-  JOIN_TAB *j;
   JOIN_TAB *tab;
   THD *thd= join->thd;
 
@@ -733,7 +740,7 @@ bool Mat_join_tab_nest_info::make_nest()
       ORDER BY context
   */
 
-  for (j= start_tab; j < nest_tab; j++)
+  for (JOIN_TAB *j= get_start_tab(); j < get_end_tab(); j++)
   {
     if (!j->bush_children)
     {
@@ -752,6 +759,7 @@ bool Mat_join_tab_nest_info::make_nest()
     }
     else
     {
+      DBUG_ASSERT(j->is_sjm_nest());
       TABLE_LIST *emb_sj_nest;
       JOIN_TAB *child_tab= j->bush_children->start;
       emb_sj_nest= child_tab->table->pos_in_table_list->embedding;
@@ -791,7 +799,6 @@ bool Mat_join_tab_nest_info::make_nest()
     return TRUE; /* purecov: inspected */
 
   tab->table->map= get_tables_map();
-  table= tab->table;
   tab->type= JT_ALL;
   tab->table->reginfo.join_tab= tab;
 
@@ -816,7 +823,7 @@ bool Mat_join_tab_nest_info::make_nest()
   /* Setting up the scan on the temp table */
   tab->read_first_record= join_init_read_record;
   tab->read_record.read_record_func= rr_sequential;
-  tab[-1].next_select= end_nest_materialization;
+  tab->bush_children->end[-1].next_select= end_nest_materialization;
   DBUG_ASSERT(!is_materialized());
 
   return FALSE;
@@ -834,10 +841,9 @@ bool Sort_nest_info::make_sort_nest()
     setup the join tab for the materialized nest
 */
 
-void Mat_join_tab_nest_info::setup_nest_join_tab(JOIN_TAB *nest_start)
+void Mat_join_tab_nest_info::setup_nest_join_tab()
 {
   nest_tab->join= join;
-  start_tab= nest_start;
   nest_tab->table= NULL;
   nest_tab->ref.key = -1;
   nest_tab->on_expr_ref= (Item**) &null_ptr;
@@ -907,7 +913,7 @@ double JOIN::sort_nest_oper_cost(double join_record_count, uint idx,
 double Mat_join_tab_nest_info::calculate_record_count_for_nest()
 {
   double nest_records= 1, record_count;
-  for (JOIN_TAB *tab= start_tab; tab < nest_tab; tab++)
+  for (JOIN_TAB *tab= get_start_tab(); tab < get_end_tab(); tab++)
   {
     record_count= tab->records_read * tab->cond_selectivity;
     nest_records= COST_MULT(nest_records, record_count);
@@ -1149,12 +1155,15 @@ bool JOIN::is_join_buffering_allowed(JOIN_TAB *tab)
   if (!sort_nest_info)
     return TRUE;
 
-  // no need to disable join buffering for the inner tables of SJM
-  if (tab->bush_root_tab)
+  /*
+    No need to disable join buffering
+    1) for the inner tables of SJM
+    2) for the inner tables of the sort nest
+  */
+  if (tab->check_if_root_tab_is_sjm_nest() ||
+      tab->check_if_root_tab_is_mat_nest())
     return TRUE;
 
-  if (tab->table->map & sort_nest_info->get_tables_map())
-    return TRUE;
   return FALSE;
 }
 

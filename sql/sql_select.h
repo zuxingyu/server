@@ -296,6 +296,7 @@ typedef struct st_join_table {
     NULL - this join tab has no bush children
   */
   JOIN_TAB_RANGE *bush_children;
+  enum Type { NONE, SJM_NEST, SORT_NEST } nest_type;
   
   /* Special content for EXPLAIN 'Extra' column or NULL if none */
   enum explain_extra_tag info;
@@ -530,12 +531,6 @@ typedef struct st_join_table {
   /* Becomes true just after the used range filter has been built / filled */
   bool is_rowid_filter_built;
 
-  /*
-    Set to TRUE if we picked a join order that would use a sort-nest on
-    a prefix that can resolve the ORDER BY clause.
-  */
-  bool is_sort_nest;
-
   void build_range_rowid_filter_if_needed();
 
   void cleanup();
@@ -648,7 +643,7 @@ typedef struct st_join_table {
   ha_rows get_examined_rows();
   bool preread_init();
 
-  bool is_sjm_nest() { return MY_TEST(bush_children); }
+  bool is_sjm_nest() const { return bush_children && nest_type == SJM_NEST; }
   
   /*
     If this join_tab reads a non-merged semi-join (also called jtbm), return
@@ -693,6 +688,11 @@ typedef struct st_join_table {
   void find_keys_that_can_achieve_ordering();
   bool check_if_index_satisfies_ordering(int index_used);
   bool needs_filesort(uint idx, int index_used);
+  bool is_mat_nest() const { return bush_children && nest_type == SORT_NEST; }
+  bool check_if_root_tab_is_sjm_nest() const
+  { return bush_root_tab && bush_root_tab->is_sjm_nest(); }
+  bool check_if_root_tab_is_mat_nest() const
+  { return bush_root_tab && bush_root_tab->is_mat_nest(); }
 } JOIN_TAB;
 
 
@@ -1142,22 +1142,16 @@ protected:
   Item *nest_cond;
   /* TRUE <=> materialization already performed */
   bool materialized;
-  /*
-    join tab structure for the first table in the nest
-  */
-  st_join_table *start_tab;
 
 public:
   Mat_join_tab_nest_info(JOIN *join_arg, uint tables, table_map tables_map)
   {
     join= join_arg;
-    table= NULL;
     nest_tab= NULL;
     n_tables= tables;
     nest_tables_map= tables_map;
     nest_cond= NULL;
     materialized= FALSE;
-    start_tab= NULL;
   }
   virtual ~Mat_join_tab_nest_info() {}
 
@@ -1173,7 +1167,6 @@ public:
     join tab structure for the nest
   */
   st_join_table *nest_tab;
-  TABLE *table;
 
   uint number_of_tables() { return n_tables; }
   table_map get_tables_map() { return nest_tables_map; }
@@ -1181,16 +1174,30 @@ public:
   Item *get_nest_cond()   { return nest_cond; }
   void set_materialized() { materialized= TRUE; }
   bool is_materialized()  { return materialized; }
-  st_join_table *get_start_tab() { return start_tab; }
+  st_join_table *get_start_tab()
+  {
+    DBUG_ASSERT(nest_tab->bush_children);
+    return nest_tab->bush_children->start;
+  }
+  st_join_table *get_end_tab()
+  {
+    DBUG_ASSERT(nest_tab->bush_children);
+    return nest_tab->bush_children->end;
+  }
   void add_nest_tables_to_trace(const char* name);
   virtual const char *get_name() { return "nest"; }
   virtual double calculate_record_count_for_nest();
   bool make_nest();
-  void setup_nest_join_tab(JOIN_TAB *nest_start);
+  void setup_nest_join_tab();
   void substitute_ref_items(JOIN_TAB *tab);
   void substitutions_for_sjm_lookup(JOIN_TAB *sjm_tab);
   void extract_condition_for_the_nest();
   void substitute_base_with_nest_field_items();
+  TABLE *get_nest_table()
+  {
+    DBUG_ASSERT(nest_tab);
+    return nest_tab->table;
+  }
 };
 
 /*
