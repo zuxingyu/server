@@ -1159,6 +1159,7 @@ public:
     materialized= FALSE;
     start_tab= NULL;
   }
+  virtual ~Mat_join_tab_nest_info() {}
 
   TMP_TABLE_PARAM tmp_table_param;
   List<Item> nest_base_table_cols;
@@ -1204,13 +1205,14 @@ public:
   {
     index_used= -1;
   }
-  const char *get_name() { return "sort-nest"; }
+  ~Sort_nest_info() {}
   /*
     >=0 set to the index that satisfies the ORDER BY clause and does an index
         scan on the first non-const table.
     -1 otherwise
   */
   int index_used;
+  const char *get_name() { return "sort-nest"; }
   double calculate_record_count_for_nest();
   bool make_sort_nest();
 };
