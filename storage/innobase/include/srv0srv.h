@@ -838,11 +838,11 @@ ulint
 srv_get_activity_count(void);
 /*========================*/
 
-/** Check if there has been any activity.
-@param[in]	old_activity_count	old activity_count
+/** Check if there has been any activity and assigns the
+latest value of activity counter value in old_activity_count
+@param[in,out]	old_activity_count	old activity_count
 @return FALSE if no change in activity counter. */
-bool
-srv_check_activity(ulint& old_activity_count);
+bool srv_check_activity(ulint* old_activity_count);
 
 /******************************************************************//**
 Increment the server activity counter. */

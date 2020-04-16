@@ -446,13 +446,6 @@ static TYPELIB innodb_lock_schedule_algorithm_typelib = {
 	NULL
 };
 
-/* The following counter is used to convey information to InnoDB
-about server activity: in case of normal DML ops it is not
-sensible to call srv_active_wake_master_thread after each
-operation, we only do it every INNOBASE_WAKE_INTERVAL'th step. */
-
-#define INNOBASE_WAKE_INTERVAL	32
-
 /** Allowed values of innodb_change_buffering */
 static const char* innobase_change_buffering_values[IBUF_USE_COUNT] = {
 	"none",		/* IBUF_USE_NONE */

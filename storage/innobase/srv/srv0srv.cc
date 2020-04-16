@@ -2005,19 +2005,21 @@ srv_get_activity_count(void)
 	return(srv_sys.activity_count);
 }
 
-/** Check if there has been any activity.
-@param[in]	old_activity_count	old activity_count
-@return FALSE if no change in activity counter. */
-bool
-srv_check_activity(ulint& old_activity_count)
-{
-	ulint current_activity_count = srv_sys.activity_count;
-	if (current_activity_count != old_activity_count) {
-		old_activity_count = current_activity_count;
-		return true;
-	}
 
-	return false;
+/** Check if there has been any activity and assigns the
+latest value of activity counter value in old_activity_count
+@param[in,out]	old_activity_count	old activity_count
+@return FALSE if no change in activity counter. */
+bool srv_check_activity(ulint* old_activity_count)
+{
+  ulint current_activity_count = srv_sys.activity_count;
+  if (current_activity_count != *old_activity_count)
+  {
+    *old_activity_count = current_activity_count;
+    return true;
+  }
+
+  return false;
 }
 
 /********************************************************************//**
@@ -2426,7 +2428,7 @@ DECLARE_THREAD(srv_master_thread)(
 
 		MONITOR_INC(MONITOR_MASTER_THREAD_SLEEP);
 
-		if (srv_check_activity(old_activity_count)) {
+		if (srv_check_activity(&old_activity_count)) {
 			srv_master_do_active_tasks();
 		} else {
 			srv_master_do_idle_tasks();
@@ -2440,7 +2442,7 @@ DECLARE_THREAD(srv_master_thread)(
 	    && srv_fast_shutdown < 2) {
 		srv_shutdown(srv_fast_shutdown == 0);
 	}
-	
+
 	srv_suspend_thread(slot);
 	my_thread_end();
 	os_thread_exit();
@@ -2647,7 +2649,7 @@ srv_do_purge(ulint* n_total_purged
 				++n_use_threads;
 			}
 
-		} else if (srv_check_activity(old_activity_count)
+		} else if (srv_check_activity(&old_activity_count)
 			   && n_use_threads > 1) {
 
 			/* History length same or smaller since last snapshot,
