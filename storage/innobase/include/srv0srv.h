@@ -810,10 +810,6 @@ srv_reset_io_thread_op_info();
 void
 srv_wake_purge_thread_if_not_active();
 
-/** Wake up the master thread if it is suspended or being suspended. */
-void
-srv_wake_master_thread();
-
 /******************************************************************//**
 Outputs to a file the output of the InnoDB Monitor.
 @return FALSE if not all information printed
@@ -841,13 +837,13 @@ reading this value as it is only used in heuristics.
 ulint
 srv_get_activity_count(void);
 /*========================*/
-/*******************************************************************//**
-Check if there has been any activity.
+
+/** Check if there has been any activity.
+@param[in]	old_activity_count	old activity_count
 @return FALSE if no change in activity counter. */
-ibool
-srv_check_activity(
-/*===============*/
-	ulint		old_activity_count);	/*!< old activity count */
+bool
+srv_check_activity(ulint& old_activity_count);
+
 /******************************************************************//**
 Increment the server activity counter. */
 void

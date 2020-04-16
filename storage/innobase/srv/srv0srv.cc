@@ -1994,14 +1994,6 @@ srv_wake_purge_thread_if_not_active()
 	}
 }
 
-/** Wake up the master thread if it is suspended or being suspended. */
-void
-srv_wake_master_thread()
-{
-	srv_inc_activity_count();
-	srv_release_threads(SRV_MASTER, 1);
-}
-
 /*******************************************************************//**
 Get current server activity count. We don't hold srv_sys::mutex while
 reading this value as it is only used in heuristics.
@@ -2013,15 +2005,19 @@ srv_get_activity_count(void)
 	return(srv_sys.activity_count);
 }
 
-/*******************************************************************//**
-Check if there has been any activity.
+/** Check if there has been any activity.
+@param[in]	old_activity_count	old activity_count
 @return FALSE if no change in activity counter. */
-ibool
-srv_check_activity(
-/*===============*/
-	ulint		old_activity_count)	/*!< in: old activity count */
+bool
+srv_check_activity(ulint& old_activity_count)
 {
-	return(srv_sys.activity_count != old_activity_count);
+	ulint current_activity_count = srv_sys.activity_count;
+	if (current_activity_count != old_activity_count) {
+		old_activity_count = current_activity_count;
+		return true;
+	}
+
+	return false;
 }
 
 /********************************************************************//**
@@ -2431,31 +2427,23 @@ DECLARE_THREAD(srv_master_thread)(
 		MONITOR_INC(MONITOR_MASTER_THREAD_SLEEP);
 
 		if (srv_check_activity(old_activity_count)) {
-			old_activity_count = srv_get_activity_count();
 			srv_master_do_active_tasks();
 		} else {
 			srv_master_do_idle_tasks();
 		}
 	}
 
-	switch (srv_shutdown_state) {
-	case SRV_SHUTDOWN_NONE:
-		break;
-	case SRV_SHUTDOWN_FLUSH_PHASE:
-	case SRV_SHUTDOWN_LAST_PHASE:
-		ut_ad(0);
-		/* fall through */
-	case SRV_SHUTDOWN_EXIT_THREADS:
-		/* srv_init_abort() must have been invoked */
-	case SRV_SHUTDOWN_CLEANUP:
-		if (srv_shutdown_state == SRV_SHUTDOWN_CLEANUP
-		    && srv_fast_shutdown < 2) {
-			srv_shutdown(srv_fast_shutdown == 0);
-		}
-		srv_suspend_thread(slot);
-		my_thread_end();
-		os_thread_exit();
+	ut_ad(srv_shutdown_state == SRV_SHUTDOWN_EXIT_THREADS
+	      || srv_shutdown_state == SRV_SHUTDOWN_CLEANUP);
+
+	if (srv_shutdown_state == SRV_SHUTDOWN_CLEANUP
+	    && srv_fast_shutdown < 2) {
+		srv_shutdown(srv_fast_shutdown == 0);
 	}
+	
+	srv_suspend_thread(slot);
+	my_thread_end();
+	os_thread_exit();
 	OS_THREAD_DUMMY_RETURN;
 }
 
@@ -2666,8 +2654,6 @@ srv_do_purge(ulint* n_total_purged
 			use fewer threads. */
 
 			--n_use_threads;
-
-			old_activity_count = srv_get_activity_count();
 		}
 
 		/* Ensure that the purge threads are less than what

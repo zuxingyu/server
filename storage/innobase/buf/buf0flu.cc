@@ -3263,7 +3263,6 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(void*)
 
 			/* Estimate pages from flush_list to be flushed */
 			if (ret_sleep == OS_SYNC_TIME_EXCEEDED) {
-				last_activity = srv_get_activity_count();
 				n_to_flush =
 					page_cleaner_flush_pages_recommendation(
 						&lsn_limit, last_pages);
