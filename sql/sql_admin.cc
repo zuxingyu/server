@@ -31,6 +31,7 @@
 #include "strfunc.h"
 #include "sql_admin.h"
 #include "sql_statistics.h"
+#include "wsrep.h"
 
 /* Prepare, run and cleanup for mysql_recreate_table() */
 

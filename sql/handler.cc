@@ -55,6 +55,7 @@
 #endif
 #include "semisync_master.h"
 
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 #ifdef WITH_WSREP
 #include "wsrep_binlog.h"

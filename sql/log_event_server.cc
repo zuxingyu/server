@@ -50,6 +50,7 @@
 #include <mysql/psi/mysql_statement.h>
 #include <strfunc.h>
 #include "compat56.h"
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 #include "sql_insert.h"
 

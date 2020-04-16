@@ -15,6 +15,7 @@
 
 #include "sql_plugin.h"                         /* wsrep_plugins_pre_init() */
 #include "my_global.h"
+#include "wsrep.h"
 #include "wsrep_server_state.h"
 
 #include "mariadb.h"

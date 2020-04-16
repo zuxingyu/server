@@ -57,6 +57,7 @@
 #include "sp_rcontext.h"
 #include "sp_head.h"
 
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 #ifdef WITH_WSREP
 #include "wsrep_trans_observer.h"

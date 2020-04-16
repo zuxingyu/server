@@ -19,6 +19,7 @@
 #include "sql_table.h"                       // mysql_alter_table,
                                              // mysql_exchange_partition
 #include "sql_alter.h"
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 
 Alter_info::Alter_info(const Alter_info &rhs, MEM_ROOT *mem_root)

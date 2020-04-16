@@ -20,6 +20,7 @@
 #include "sp_head.h"
 #include "event_parse_data.h"
 #include "sql_time.h"                           // TIME_to_timestamp
+#include "wsrep.h"
 
 /*
   Returns a new instance

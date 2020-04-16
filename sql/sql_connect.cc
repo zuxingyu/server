@@ -37,6 +37,7 @@
                       // reset_host_errors
 #include "sql_callback.h"
 
+#include "wsrep.h"
 #ifdef WITH_WSREP
 #include "wsrep_trans_observer.h" /* wsrep open/close */
 #include "wsrep_mysqld.h"

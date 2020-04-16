@@ -57,6 +57,7 @@
 #ifdef  __WIN__
 #include <io.h>
 #endif
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 #ifdef WITH_WSREP
 #include "wsrep_thd.h"

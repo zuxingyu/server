@@ -36,6 +36,7 @@
 #include "sql_derived.h"
 #include "sql_cte.h"    // check_dependencies_in_with_clauses()
 #include "opt_trace.h"
+#include "wsrep.h"
 #include "wsrep_mysqld.h"
 
 #define MD5_BUFF_LENGTH 33

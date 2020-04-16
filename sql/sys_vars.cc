@@ -65,6 +65,7 @@
 #include "semisync_master.h"
 #include "semisync_slave.h"
 #include <ssl_compat.h>
+#include "wsrep.h"
 
 #define PCRE2_STATIC 1             /* Important on Windows */
 #include "pcre2.h"                 /* pcre2 header file */

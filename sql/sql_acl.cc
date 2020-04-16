@@ -54,6 +54,7 @@
 #include "sql_array.h"
 #include "sql_hset.h"
 #include "password.h"
+#include "wsrep.h"
 
 #include "sql_plugin_compat.h"
 
