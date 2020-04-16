@@ -1980,33 +1980,6 @@ srv_get_active_thread_type(void)
 	return(ret);
 }
 
-/** Wake up the InnoDB master thread if it was suspended (not sleeping). */
-void
-srv_active_wake_master_thread_low()
-{
-	ut_ad(!srv_read_only_mode);
-	ut_ad(!srv_sys_mutex_own());
-
-	srv_inc_activity_count();
-
-	if (my_atomic_loadlint(&srv_sys.n_threads_active[SRV_MASTER]) == 0) {
-		srv_slot_t*	slot;
-
-		srv_sys_mutex_enter();
-
-		slot = &srv_sys.sys_threads[SRV_MASTER_SLOT];
-
-		/* Only if the master thread has been started. */
-
-		if (slot->in_use) {
-			ut_a(srv_slot_get_type(slot) == SRV_MASTER);
-			os_event_set(slot->event);
-		}
-
-		srv_sys_mutex_exit();
-	}
-}
-
 /** Wake up the purge threads if there is work to do. */
 void
 srv_wake_purge_thread_if_not_active()
@@ -2451,7 +2424,6 @@ DECLARE_THREAD(srv_master_thread)(
 	slot = srv_reserve_slot(SRV_MASTER);
 	ut_a(slot == srv_sys.sys_threads);
 
-loop:
 	while (srv_shutdown_state == SRV_SHUTDOWN_NONE) {
 
 		srv_master_sleep();
@@ -2484,19 +2456,7 @@ loop:
 		my_thread_end();
 		os_thread_exit();
 	}
-
-	srv_main_thread_op_info = "suspending";
-
-	srv_suspend_thread(slot);
-
-	/* DO NOT CHANGE THIS STRING. innobase_start_or_create_for_mysql()
-	waits for database activity to die down when converting < 4.1.x
-	databases, and relies on this string being exactly as it is. InnoDB
-	manual also mentions this string in several places. */
-	srv_main_thread_op_info = "waiting for server activity";
-
-	srv_resume_thread(slot);
-	goto loop;
+	OS_THREAD_DUMMY_RETURN;
 }
 
 /** Check if purge should stop.
