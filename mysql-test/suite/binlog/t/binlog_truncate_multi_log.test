@@ -45,12 +45,14 @@ connect(master2,localhost,root,,);
 # Use "commit_after_release_LOCK_log" sync point. This point is reached after
 # the binary log end position is updated which actually triggers binlog to be
 # rotated.
+--echo "List of binary logs before rotation"
+--source include/show_binary_logs.inc
 SET DEBUG_SYNC= "commit_after_release_LOCK_log SIGNAL con1_ready WAIT_FOR con1_go";
 send INSERT INTO t1 VALUES (2, REPEAT("x", 4100));
 
 --connection master2
 SET DEBUG_SYNC= "now WAIT_FOR con1_ready";
---echo "List of binary logs"
+--echo "List of binary logs after rotation"
 --source include/show_binary_logs.inc
 --write_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 wait
