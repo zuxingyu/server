@@ -23,4 +23,3 @@
 0       belong&0xffffff00 0xfefe0c00
 >4      string          MACF            MySQL Maria control file
 >>3     byte            x               Version %d
-

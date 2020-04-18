@@ -10,10 +10,10 @@
 # content:
 #
 # [mysqladmin]
-# password = <secret> 
+# password = <secret>
 # user= root
 #
-# where "<secret>" is the password. 
+# where "<secret>" is the password.
 #
 # ATTENTION: This /root/.my.cnf should be readable ONLY
 # for root !

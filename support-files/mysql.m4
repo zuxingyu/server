@@ -1,6 +1,6 @@
 # Copyright (C) 2007 MySQL AB
 # Use is subject to license terms
-# 
+#
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
 # Software Foundation; version 2 of the License.
@@ -52,7 +52,7 @@ AC_DEFUN([MYSQL_CLIENT],[
     AC_ARG_WITH([mysql-library],
     AS_HELP_STRING([--with-mysql-library], ['client' or 'embedded']),
                    [mysql_lib="$withval"], [mysql_lib=client])
-[                   
+[
     case "$mysql_lib" in
       client) mysql_libs=--libs mysql_cflags=--cflags ;;
       embedded) mysql_libs=--libmysqld-libs mysql_cflags=--cflags ;;
@@ -106,4 +106,3 @@ dnl the same as sed transformation above, without suffix-stripping, in m4
 
     AC_MSG_RESULT([$mysql_version])
 ])
-

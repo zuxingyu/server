@@ -244,12 +244,12 @@ Note
    preference pane will also show the current setting for whether the
    MySQL server has been set to start up automatically.
 
-     * To start MySQL using the preference pane: 
+     * To start MySQL using the preference pane:
        Click Start MySQL Server. You may be prompted for the username
        and password of a user with administrator privileges to start
        the MySQL server.
 
-     * To stop MySQL using the preference pane: 
+     * To stop MySQL using the preference pane:
        Click Stop MySQL Server. You may be prompted for the username
        and password of a user with administrator privileges to
        shutdown the MySQL server.

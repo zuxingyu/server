@@ -9,4 +9,3 @@ if [ $1 = 0 ] ; then
     /usr/bin/systemctl daemon-reload > /dev/null 2>&1
   fi
 fi
-

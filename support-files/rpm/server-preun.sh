@@ -15,4 +15,3 @@ fi
 
 # We do not remove the mysql user since it may still own a lot of
 # database files.
-
