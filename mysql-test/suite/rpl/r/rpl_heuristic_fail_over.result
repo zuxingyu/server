@@ -20,7 +20,7 @@ include/stop_slave.inc
 SELECT @@GLOBAL.gtid_current_pos;
 @@GLOBAL.gtid_current_pos
 0-1-5
-FOUND /tc-heuristic-recover=ROLLBACK truncated binlog File: \.\/master\-bin\.000001 of Size:[0-9]*, to Position */ in mysqld.1.err
+FOUND /tc-heuristic-recover: Truncated binlog File: \.\/master\-bin\.000001 of Size:[0-9]*, to Position */ in mysqld.1.err
 set global rpl_semi_sync_master_enabled = 1;
 set global rpl_semi_sync_master_wait_point=AFTER_SYNC;
 CHANGE MASTER TO master_host='127.0.0.1', master_port=SERVER_MYPORT_2, master_user='root', master_use_gtid=CURRENT_POS;

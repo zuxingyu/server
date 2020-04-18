@@ -3397,10 +3397,11 @@ void
 recv_recovery_from_checkpoint_finish(void)
 /*======================================*/
 {
-	if (recv_needed_recovery) {
-		trx_sys_print_mysql_master_log_pos();
-		trx_sys_print_mysql_binlog_offset();
-	}
+  if (opt_bin_log)
+  {
+    trx_sys_print_mysql_master_log_pos();
+    trx_sys_print_mysql_binlog_offset();
+  }
 
 	if (recv_sys->found_corrupt_log) {
 
