@@ -1390,7 +1390,7 @@ t2	CREATE TABLE `t2` (
   `y` int(11) DEFAULT NULL
 ) ENGINE=DEFAULT_ENGINE DEFAULT CHARSET=latin1 WITH SYSTEM VERSIONING
  PARTITION BY SYSTEM_TIME INTERVAL 1 HOUR STARTS TIMESTAMP'2000-01-01 00:00:00' AUTO
-PARTITIONS 5
+PARTITIONS ok
 affected rows: 1
 drop tables t1, t2;
 affected rows: 0
@@ -1491,6 +1491,32 @@ affected rows: 1
 unlock tables;
 affected rows: 0
 drop procedure sp;
+affected rows: 0
+set timestamp= unix_timestamp('2001-01-01 00:00:00');
+affected rows: 0
+create or replace table t1 (i int) with system versioning
+partition by system_time interval 1 day starts '2000-01-01 00:00:00';
+affected rows: 0
+insert into t1 values (0);
+affected rows: 1
+set timestamp= unix_timestamp('2001-01-01 00:00:01');
+affected rows: 0
+prepare s from 'update t1 set i= i + 1';
+affected rows: 0
+info: Statement prepared
+execute s;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 1
+Warnings:
+Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p0`) is out of INTERVAL, need more HISTORY partitions
+set timestamp= unix_timestamp('2001-01-02 00:00:01');
+affected rows: 0
+execute s;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Inserted: 1  Warnings: 1
+Warnings:
+Warning	4114	Versioned table `test`.`t1`: last HISTORY partition (`p0`) is out of INTERVAL, need more HISTORY partitions
+drop prepare s;
 affected rows: 0
 # Complex table
 set timestamp= unix_timestamp('2000-01-01 00:00:00');

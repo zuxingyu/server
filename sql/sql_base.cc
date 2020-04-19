@@ -1770,6 +1770,7 @@ bool open_table(THD *thd, TABLE_LIST *table_list, Open_table_context *ot_ctx)
       if (table->part_info &&
           table->part_info->part_type == VERSIONING_PARTITION &&
           !table_list->vers_conditions.delete_history &&
+          !thd->stmt_arena->is_stmt_prepare() &&
           table_list->lock_type >= TL_WRITE_ALLOW_WRITE &&
           table_list->mdl_request.type == MDL_SHARED_WRITE)
       {
@@ -2033,6 +2034,7 @@ retry_share:
       table->part_info->part_type == VERSIONING_PARTITION &&
       !table_list->vers_conditions.delete_history &&
       !ot_ctx->vers_create_count &&
+      !thd->stmt_arena->is_stmt_prepare() &&
       table_list->lock_type >= TL_WRITE_ALLOW_WRITE &&
       table_list->mdl_request.type >= MDL_SHARED_WRITE &&
       table_list->mdl_request.type < MDL_EXCLUSIVE)

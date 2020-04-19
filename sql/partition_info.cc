@@ -880,11 +880,11 @@ uint partition_info::vers_set_hist_part(THD *thd, bool auto_inc)
       if (auto_inc)
       {
         DBUG_ASSERT(thd->query_start() >= vers_info->hist_part->range_value);
-        my_time_t diff= thd->query_start() - vers_info->hist_part->range_value;
+        my_time_t diff= thd->query_start() - (my_time_t) vers_info->hist_part->range_value;
         if (diff > 0)
         {
           size_t delta= vers_info->interval.seconds();
-          create_count= diff / delta + 1;
+          create_count= (uint) (diff / delta + 1);
           if (diff % delta)
             create_count++;
         }
