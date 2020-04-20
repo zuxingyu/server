@@ -77,6 +77,8 @@ directories which were not included */
 UNIV_INTERN ibool	recv_replay_file_ops	= TRUE;
 #endif /* !UNIV_HOTBACKUP */
 
+extern MYSQL_PLUGIN_IMPORT bool opt_bin_log;
+
 /** Log records are stored in the hash table in chunks at most of this size;
 this must be less than UNIV_PAGE_SIZE as it is stored in the buffer pool */
 #define RECV_DATA_BLOCK_SIZE	(MEM_MAX_ALLOC_IN_BUF - sizeof(recv_data_t))
@@ -3397,8 +3399,7 @@ void
 recv_recovery_from_checkpoint_finish(void)
 /*======================================*/
 {
-  if (opt_bin_log)
-  {
+  if (opt_bin_log) {
     trx_sys_print_mysql_master_log_pos();
     trx_sys_print_mysql_binlog_offset();
   }
