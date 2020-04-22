@@ -33,3 +33,16 @@ REVOKE EXECUTE ON PROCEDURE sp FROM u;
 --error ER_TABLE_NOT_LOCKED
 REVOKE PROCESS ON *.* FROM u;
 DROP TABLE t1;
+
+#
+# MDEV-22313: Neither SHOW CREATE USER nor SHOW GRANTS prints a user's default role
+#
+CREATE ROLE test_role;
+CREATE USER test_user;
+GRANT test_role TO test_user;
+SET DEFAULT ROLE test_role FOR test_user;
+SHOW GRANTS FOR test_user;
+SET DEFAULT ROLE NONE for test_user;
+SHOW GRANTS FOR test_user;
+DROP USER test_user;
+DROP ROLE test_role;
