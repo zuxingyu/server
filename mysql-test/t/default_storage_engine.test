@@ -9,8 +9,12 @@ let $cmd=`select replace("$MYSQLD_BOOTSTRAP_CMD --skip-innodb", " --default-stor
 # Now it *must* fail, because if InnoDB is compiled in, it is used as a default
 # storage engine. but $cmd includes --skip-innodb
 #
+
+--mkdir $MYSQL_TMP_DIR/default_storage_engine_data
+
 error 1;
-exec $cmd;
+exec $cmd --datadir=$MYSQL_TMP_DIR/default_storage_engine_data;
 
 echo "all ok"; # to not have zero-length result file
 
+--rmdir $MYSQL_TMP_DIR/default_storage_engine_data
