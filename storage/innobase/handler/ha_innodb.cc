@@ -4165,6 +4165,7 @@ static int innodb_init(void* p)
 	innobase_hton->get_checkpoint=innobase_wsrep_get_checkpoint;
 	innobase_hton->fake_trx_id=wsrep_fake_trx_id;
 #endif /* WITH_WSREP */
+	innobase_hton->reset_master= trx_rseg_reset_binlog_pos;
 
 	innobase_hton->tablefile_extensions = ha_innobase_exts;
 	innobase_hton->table_options = innodb_table_option_list;

@@ -1476,6 +1476,7 @@ struct handlerton
    int (*set_checkpoint)(handlerton *hton, const XID* xid);
    int (*get_checkpoint)(handlerton *hton, XID* xid);
    void (*fake_trx_id)(handlerton *hton, THD *thd);
+   void (*reset_master)();
    /*
      Optional clauses in the CREATE/ALTER TABLE
    */
@@ -4765,6 +4766,7 @@ void ha_close_connection(THD* thd);
 void ha_kill_query(THD* thd, enum thd_kill_levels level);
 bool ha_flush_logs(handlerton *db_type);
 void ha_drop_database(char* path);
+void ha_reset_master();
 void ha_checkpoint_state(bool disable);
 void ha_commit_checkpoint_request(void *cookie, void (*pre_hook)(void *));
 int ha_create_table(THD *thd, const char *path,

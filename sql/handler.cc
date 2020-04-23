@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB Corporation.
+   Copyright (c) 2009, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -744,6 +744,22 @@ static my_bool dropdb_handlerton(THD *unused1, plugin_ref plugin,
 void ha_drop_database(char* path)
 {
   plugin_foreach(NULL, dropdb_handlerton, MYSQL_STORAGE_ENGINE_PLUGIN, path);
+}
+
+
+static my_bool reset_master_handlerton(THD *, plugin_ref plugin, void *)
+{
+  handlerton *hton= plugin_hton(plugin);
+  if (hton->reset_master)
+    hton->reset_master();
+  return FALSE;
+}
+
+
+void ha_reset_master()
+{
+  plugin_foreach(NULL, reset_master_handlerton, MYSQL_STORAGE_ENGINE_PLUGIN,
+                 NULL);
 }
 
 

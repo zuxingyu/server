@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -113,6 +113,7 @@ trx_rseg_get_n_undo_tablespaces(
 /*============================*/
 	ulint*		space_ids);	/*!< out: array of space ids of
 					UNDO tablespaces */
+
 /* Number of undo log slots in a rollback segment file copy */
 #define TRX_RSEG_N_SLOTS	(srv_page_size / 16)
 
@@ -306,6 +307,11 @@ up to which replication has proceeded.
 @param[in,out]	mtr		mini-transaction */
 void
 trx_rseg_update_binlog_offset(byte* rseg_header, const trx_t* trx, mtr_t* mtr);
+
+/** Reset all persistent information for recovering
+trx_sys.recovered_binlog_filename and trx_sys.recovered_binlog_offset.
+Invoked on RESET MASTER. */
+void trx_rseg_reset_binlog_pos();
 
 #include "trx0rseg.ic"
 

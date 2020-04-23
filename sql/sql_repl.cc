@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2018, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2019, MariaDB Corporation
+   Copyright (c) 2008, 2020, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -3879,6 +3879,7 @@ int reset_master(THD* thd, rpl_gtid *init_state, uint32 init_state_len,
   repl_semisync_master.before_reset_master();
   ret= mysql_bin_log.reset_logs(thd, 1, init_state, init_state_len,
                                 next_log_number);
+  ha_reset_master();
   repl_semisync_master.after_reset_master();
   return ret;
 }

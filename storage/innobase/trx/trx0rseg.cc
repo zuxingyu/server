@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -785,4 +785,45 @@ trx_rseg_update_binlog_offset(byte* rseg_header, const trx_t* trx, mtr_t* mtr)
 	if (memcmp(binlog_name, p, len)) {
 		mlog_write_string(p, binlog_name, len, mtr);
 	}
+}
+
+/** Reset all persistent information for recovering
+trx_sys.recovered_binlog_filename and trx_sys.recovered_binlog_offset.
+Invoked on RESET MASTER. */
+void trx_rseg_reset_binlog_pos()
+{
+  mtr_t mtr;
+  /* Invalidate the information on the TRX_SYS page. */
+  mtr.start();
+  if (const buf_block_t* sys= trx_sysf_get(&mtr, true))
+  {
+    byte *magic= TRX_SYS + TRX_SYS_MYSQL_LOG_INFO +
+      TRX_SYS_MYSQL_LOG_MAGIC_N_FLD + sys->frame;
+    if (mach_read_from_4(magic))
+      mlog_write_ulint(magic, 0, MLOG_4BYTES, &mtr);
+  }
+  mtr.commit();
+
+  /* Invalidate the information on the rollback segment header pages. */
+  for (ulint rseg_id= 0; rseg_id < TRX_SYS_N_RSEGS; rseg_id++)
+  {
+    mtr.start();
+    if (const buf_block_t* sys= trx_sysf_get(&mtr, false))
+    {
+      const uint32_t page_no= trx_sysf_rseg_get_page_no(sys, rseg_id);
+      if (page_no != FIL_NULL)
+      {
+        const uint32_t space_id= trx_sysf_rseg_get_space(sys, rseg_id);
+        buf_block_t *block= buf_page_get(page_id_t(space_id, page_no),
+                                         univ_page_size, RW_X_LATCH, &mtr);
+        byte *name= TRX_RSEG + TRX_RSEG_BINLOG_NAME + block->frame;
+        if (*name)
+          mlog_write_ulint(name, 0, MLOG_1BYTE, &mtr);
+      }
+    }
+    mtr.commit();
+  }
+
+  /* Persist the change immediately. */
+  log_write_up_to(mtr.commit_lsn(), true);
 }
