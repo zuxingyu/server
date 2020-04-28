@@ -2055,3 +2055,36 @@ DROP USER 'mysqluser2'@'%';
 
 # Wait till we reached the initial number of concurrent sessions
 --source include/wait_until_count_sessions.inc
+
+--echo #
+--echo # MDEV-22374: VIEW with security definer require FILE privilege from definer
+--echo # not invoker in case of INTO OUTFILE
+--echo #
+
+
+create user test@localhost;
+grant select on test.* to test@localhost;
+
+create table t1 (a int);
+create definer=test@localhost sql security definer view v1 as select * from t1;
+
+--echo # check that ot works without view
+select * INTO OUTFILE '../..//tmp/test_out_txt' from t1;
+--echo # check that ot works without file
+select * from v1;
+
+remove_file $MYSQLTEST_VARDIR/tmp/test_out_txt;
+
+--echo # rights for file should be taken from current user not view
+select * INTO OUTFILE '../../tmp/test_out_txt' from (select count(*) from v1) as dv1;
+remove_file $MYSQLTEST_VARDIR/tmp/test_out_txt;
+select * INTO OUTFILE '../..//tmp/test_out_txt' from (select * from v1) as dv1;
+remove_file $MYSQLTEST_VARDIR/tmp/test_out_txt;
+select * INTO OUTFILE '../..//tmp/test_out_txt' from v1;
+
+remove_file $MYSQLTEST_VARDIR/tmp/test_out_txt;
+drop view v1;
+drop table t1;
+drop user test@localhost;
+
+--echo # End of 5.5 tests
