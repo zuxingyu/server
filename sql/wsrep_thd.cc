@@ -24,12 +24,16 @@
 #include "sql_parse.h"
 #include "sql_base.h" // close_thread_tables()
 #include "mysqld.h"   // start_wsrep_THD();
-#include "wsrep_applier.h"   // start_wsrep_THD();
+#include "sql_show.h" // find_thread_by_id
 #include "mysql/service_wsrep.h"
 #include "debug_sync.h"
 #include "slave.h"
 #include "rpl_rli.h"
 #include "rpl_mi.h"
+#include "debug_sync.h"
+#include <list>
+
+extern std::list< wsrep_kill_t > wsrep_kill_list;
 
 extern "C" pthread_key(struct st_my_thread_var*, THR_KEY_mysys);
 
@@ -85,17 +89,34 @@ static bool create_wsrep_THD(Wsrep_thd_args* args, bool mutex_protected)
     mysql_mutex_lock(&LOCK_wsrep_slave_threads);
 
   ulong old_wsrep_running_threads= wsrep_running_threads;
+  PSI_thread_key key;
 
-  DBUG_ASSERT(args->thread_type() == WSREP_APPLIER_THREAD ||
-              args->thread_type() == WSREP_ROLLBACKER_THREAD);
+#ifdef HAVE_PSI_INTERFACE
+  switch(args->thread_type())
+  {
+  case WSREP_APPLIER_THREAD:
+    key = key_wsrep_applier;
+    break;
+  case WSREP_ROLLBACKER_THREAD:
+    key = key_wsrep_rollbacker;
+    break;
+  case WSREP_KILLER_THREAD:
+    key = key_wsrep_killer;
+    break;
+  default:
+    WSREP_ERROR("Incorrect thread type %d", args->thread_type());
+    assert(0);
+  }
+#endif /* HAVE_PSI_INTERFACE */
 
-  bool res= mysql_thread_create(args->thread_type() == WSREP_APPLIER_THREAD
-                                ? key_wsrep_applier : key_wsrep_rollbacker,
+  bool res= mysql_thread_create(key,
                                 args->thread_id(), &connection_attrib,
                                 start_wsrep_THD, (void*)args);
 
   if (res)
+  {
     WSREP_ERROR("Can't create wsrep thread");
+  }
 
   /*
     if starting a thread on server startup, wait until the this thread's THD
@@ -114,6 +135,136 @@ static bool create_wsrep_THD(Wsrep_thd_args* args, bool mutex_protected)
     mysql_mutex_unlock(&LOCK_wsrep_slave_threads);
 
   return res;
+}
+
+static int wsrep_kill(wsrep_kill_t* item)
+{
+  bool signal= item->signal;
+  unsigned long long victim_trx_id= static_cast<unsigned long long>(item->victim_trx_id);
+  unsigned long long bf_trx_id= static_cast<unsigned long long>(item->bf_trx_id);
+
+  // Note that find_thread_by_id will acquire LOCK_thd_data and
+  // LOCK_thd_kill mutex for thd if it's found
+  THD* bf_thd= find_thread_by_id(item->bf_thd_id, false, true);
+
+  if (!bf_thd)
+  {
+    WSREP_DEBUG("BF thread: %lu not found", item->bf_thd_id);
+    return(0);
+  }
+
+  long long bf_seqno= wsrep_thd_trx_seqno(bf_thd);
+
+  WSREP_DEBUG("Aborter %s trx_id: %llu thread: %ld "
+              "seqno: %lld client_state: %s client_mode: %s transaction_mode: %s "
+              "query: %s",
+              wsrep_thd_is_BF(bf_thd, false) ? "BF" : "normal",
+              bf_trx_id,
+              item->bf_thd_id,
+              bf_seqno,
+              wsrep_thd_client_state_str(bf_thd),
+              wsrep_thd_client_mode_str(bf_thd),
+              wsrep_thd_transaction_state_str(bf_thd),
+              wsrep_thd_query(bf_thd));
+
+  // Note that we need to release LOCK_thd_data and LOCK_thd_kill
+  // mutex from BF thread to obey safe mutex ordering of LOCK_thd_data
+  // -> LOCK_thread_count -> LOCK_thd_kill
+  // that are taken on find_thread_by_id
+  wsrep_thd_UNLOCK(bf_thd);
+  mysql_mutex_unlock(&bf_thd->LOCK_thd_kill);
+
+  THD* thd= find_thread_by_id(item->victim_thd_id, false, true);
+
+  if (!thd)
+  {
+    WSREP_DEBUG("Victim thread: %lu not found", item->victim_thd_id);
+    return(0);
+  }
+
+  WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
+
+  unsigned long victim_thread= item->victim_thd_id;
+  long long victim_seqno= wsrep_thd_trx_seqno(thd);
+
+  WSREP_DEBUG("Victim %s trx_id: %llu thread: %ld "
+              "seqno: %lld client_state: %s  client_mode: %s transaction_mode: %s "
+              "query: %s",
+              wsrep_thd_is_BF(thd, false) ? "BF" : "normal",
+              victim_trx_id,
+              victim_thread,
+              victim_seqno,
+              wsrep_thd_client_state_str(thd),
+              wsrep_thd_client_mode_str(thd),
+              wsrep_thd_transaction_state_str(thd),
+              wsrep_thd_query(thd));
+
+  // Note that we need to release LOCK_thd_data and LOCK_thd_kill
+  // mutex from BF thread to obey safe mutex ordering of
+  // LOCK_thd_data -> LOCK_thd_kill
+  // because LOCK_thd_data is taken on wsrep-lib
+  if (WSREP(thd)) wsrep_thd_UNLOCK(thd);
+  mysql_mutex_unlock(&thd->LOCK_thd_kill);
+
+  wsrep_thd_bf_abort(bf_thd, thd, signal);
+
+  return(0);
+}
+
+static void wsrep_process_kill(THD *thd,
+                               void *arg __attribute__((unused)))
+{
+  DBUG_ENTER("wsrep_process_kill");
+
+  mysql_mutex_lock(&LOCK_wsrep_kill);
+
+  WSREP_DEBUG("WSREP killer thread started");
+
+  while (thd->killed == NOT_KILLED)
+  {
+    thd_proc_info(thd, "wsrep killer idle");
+    thd->mysys_var->current_mutex= &LOCK_wsrep_kill;
+    thd->mysys_var->current_cond=  &COND_wsrep_kill;
+
+    mysql_cond_wait(&COND_wsrep_kill,&LOCK_wsrep_kill);
+
+    WSREP_DEBUG("WSREP killer thread wakes for signal");
+
+    mysql_mutex_lock(&thd->mysys_var->mutex);
+    thd_proc_info(thd, "wsrep killer active");
+    thd->mysys_var->current_mutex= 0;
+    thd->mysys_var->current_cond=  0;
+    mysql_mutex_unlock(&thd->mysys_var->mutex);
+
+    /* process all entries in the queue */
+    while (!wsrep_kill_list.empty())
+    {
+      wsrep_kill_t to_be_killed= wsrep_kill_list.front();
+      // Release list mutex while we kill one thread
+      mysql_mutex_unlock(&LOCK_wsrep_kill);
+      wsrep_kill(&to_be_killed);
+      mysql_mutex_lock(&LOCK_wsrep_kill);
+      wsrep_kill_list.pop_front();
+    }
+  }
+
+  assert(wsrep_kill_list.empty());
+
+  mysql_mutex_unlock(&LOCK_wsrep_kill);
+  sql_print_information("WSREP: killer thread exiting");
+  DBUG_PRINT("wsrep",("wsrep killer thread exiting"));
+  DBUG_VOID_RETURN;
+}
+
+
+void wsrep_create_killer()
+{
+  Wsrep_thd_args* args(new Wsrep_thd_args(wsrep_process_kill,
+                                          WSREP_KILLER_THREAD,
+                                          pthread_self()));
+
+  if (create_wsrep_THD(args, false))
+    WSREP_WARN("Can't create thread to manage wsrep background kill");
 }
 
 bool wsrep_create_appliers(long threads, bool mutex_protected)
@@ -360,6 +511,7 @@ bool wsrep_bf_abort(const THD* bf_thd, THD* victim_thd)
   }
 
   bool ret;
+
   if (wsrep_thd_is_toi(bf_thd))
   {
     ret= victim_thd->wsrep_cs().total_order_bf_abort(bf_seqno);

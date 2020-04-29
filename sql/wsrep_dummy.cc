@@ -16,6 +16,7 @@
 #include "mariadb.h"
 #include <sql_class.h>
 #include <mysql/service_wsrep.h>
+#include "wsrep_mysqld.h"
 
 my_bool wsrep_thd_is_BF(const THD *, my_bool)
 { return 0; }
@@ -53,10 +54,10 @@ void wsrep_lock_rollback()
 my_bool wsrep_on(const THD *)
 { return 0; }
 
-void wsrep_thd_LOCK(const THD *)
+void wsrep_thd_LOCK(THD *)
 { }
 
-void wsrep_thd_UNLOCK(const THD *)
+void wsrep_thd_UNLOCK(THD *)
 { }
 
 const char *wsrep_thd_conflict_state_str(THD *)
@@ -142,3 +143,7 @@ void wsrep_log(void (*)(const char *, ...), const char *, ...)
 
 my_bool wsrep_thd_is_applying(const THD*)
 { return 0;}
+
+bool wsrep_enqueue_background_kill(wsrep_kill_t item)
+{ return false;}
+

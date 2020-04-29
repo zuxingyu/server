@@ -8883,6 +8883,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr)
     global_system_variables.binlog_format= BINLOG_FORMAT_ROW;
   }
 
+#ifdef WITH_WSREP
   if (!opt_bootstrap && WSREP_PROVIDER_EXISTS && WSREP_ON &&
       global_system_variables.binlog_format != BINLOG_FORMAT_ROW)
   {
@@ -8892,6 +8893,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr)
                  binlog_format_names[global_system_variables.binlog_format]);
     return 1;
   }
+#endif /* WITH_WSREP */
 
   // Synchronize @@global.autocommit on --autocommit
   const ulonglong turn_bit_on= opt_autocommit ?

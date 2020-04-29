@@ -27,13 +27,17 @@ extern "C" my_bool wsrep_on(const THD *thd)
   return my_bool(WSREP(thd));
 }
 
-extern "C" void wsrep_thd_LOCK(const THD *thd)
+extern "C" void wsrep_thd_LOCK(THD *thd)
 {
+  assert(WSREP(thd));
+  mysql_mutex_assert_not_owner(&thd->LOCK_thd_data);
   mysql_mutex_lock(&thd->LOCK_thd_data);
 }
 
-extern "C" void wsrep_thd_UNLOCK(const THD *thd)
+extern "C" void wsrep_thd_UNLOCK(THD *thd)
 {
+  assert(WSREP(thd));
+  mysql_mutex_assert_owner(&thd->LOCK_thd_data);
   mysql_mutex_unlock(&thd->LOCK_thd_data);
 }
 
@@ -207,7 +211,10 @@ extern "C" my_bool wsrep_thd_bf_abort(THD *bf_thd, THD *victim_thd,
     as RSU has paused the provider.
    */
   if ((ret || !wsrep_on(victim_thd)) && signal)
+  {
     victim_thd->awake(KILL_QUERY);
+  }
+
   return ret;
 }
 

@@ -16,7 +16,20 @@
 #ifndef WSREP_MYSQLD_H
 #define WSREP_MYSQLD_H
 
+#include <my_config.h>
+#include <stdint.h>
+#include <mysql/plugin.h>
+#include <mysql/service_wsrep.h>
 #include <wsrep.h>
+
+typedef struct wsrep_kill {
+  unsigned long        victim_thd_id;
+  unsigned long        bf_thd_id;
+  uint64_t             victim_trx_id;
+  uint64_t             bf_trx_id;
+  bool                 signal;
+  bool                 wait_lock;
+} wsrep_kill_t;
 
 #ifdef WITH_WSREP
 extern bool WSREP_ON_;
@@ -96,6 +109,7 @@ extern uint        wsrep_ignore_apply_errors;
 extern ulong       wsrep_running_threads;
 extern ulong       wsrep_running_applier_threads;
 extern ulong       wsrep_running_rollbacker_threads;
+extern ulong       wsrep_running_killer_threads;
 extern bool        wsrep_new_cluster;
 extern bool        wsrep_gtid_mode;
 extern uint32      wsrep_gtid_domain_id;
@@ -278,8 +292,6 @@ void WSREP_LOG(void (*fun)(const char* fmt, ...), const char* fmt, ...);
 #define WSREP_PROVIDER_EXISTS                                                  \
   (wsrep_provider && strncasecmp(wsrep_provider, WSREP_NONE, FN_REFLEN))
 
-#define WSREP_QUERY(thd) (thd->query())
-
 extern my_bool wsrep_ready_get();
 extern void wsrep_ready_wait();
 
@@ -304,6 +316,8 @@ extern mysql_mutex_t LOCK_wsrep_SR_store;
 extern mysql_mutex_t LOCK_wsrep_config_state;
 extern mysql_mutex_t LOCK_wsrep_group_commit;
 extern mysql_mutex_t LOCK_wsrep_joiner_monitor;
+extern mysql_mutex_t LOCK_wsrep_kill;
+extern mysql_cond_t  COND_wsrep_kill;
 extern mysql_mutex_t LOCK_wsrep_donor_monitor;
 extern mysql_cond_t  COND_wsrep_joiner_monitor;
 extern mysql_cond_t  COND_wsrep_donor_monitor;
@@ -335,6 +349,8 @@ extern PSI_mutex_key key_LOCK_wsrep_cluster_config;
 extern PSI_mutex_key key_LOCK_wsrep_desync;
 extern PSI_mutex_key key_LOCK_wsrep_SR_pool;
 extern PSI_mutex_key key_LOCK_wsrep_SR_store;
+extern PSI_mutex_key key_LOCK_wsrep_kill;
+extern PSI_cond_key  key_COND_wsrep_kill;
 extern PSI_mutex_key key_LOCK_wsrep_global_seqno;
 extern PSI_mutex_key key_LOCK_wsrep_thd_queue;
 extern PSI_cond_key  key_COND_wsrep_thd_queue;
@@ -347,6 +363,7 @@ extern PSI_thread_key key_wsrep_sst_joiner;
 extern PSI_thread_key key_wsrep_sst_donor;
 extern PSI_thread_key key_wsrep_rollbacker;
 extern PSI_thread_key key_wsrep_applier;
+extern PSI_thread_key key_wsrep_killer;
 extern PSI_thread_key key_wsrep_sst_joiner_monitor;
 extern PSI_thread_key key_wsrep_sst_donor_monitor;
 #endif /* HAVE_PSI_INTERFACE */
@@ -402,7 +419,8 @@ wsrep_handle_mdl_conflict(MDL_context *requestor_ctx,
 
 enum wsrep_thread_type {
   WSREP_APPLIER_THREAD=1,
-  WSREP_ROLLBACKER_THREAD=2
+  WSREP_ROLLBACKER_THREAD=2,
+  WSREP_KILLER_THREAD=3
 };
 
 typedef void (*wsrep_thd_processor_fun)(THD*, void *);
