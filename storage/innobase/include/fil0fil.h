@@ -1500,17 +1500,12 @@ void
 fil_flush(fil_space_t* space);
 
 /** Flush to disk the writes in file spaces of the given type
-possibly cached by the OS.
-@param[in]	purpose	FIL_TYPE_TABLESPACE */
-void
-fil_flush_file_spaces(
-	fil_type_t	purpose);
+possibly cached by the OS. */
+void fil_flush_file_spaces();
 /******************************************************************//**
 Checks the consistency of the tablespace cache.
 @return true if ok */
-bool
-fil_validate(void);
-/*==============*/
+bool fil_validate();
 /*********************************************************************//**
 Sets the file page type. */
 void
