@@ -2160,54 +2160,6 @@ dberr_t PageConverter::operator()(buf_block_t* block) UNIV_NOTHROW
 }
 
 /*****************************************************************//**
-Clean up after import tablespace failure, this function will acquire
-the dictionary latches on behalf of the transaction if the transaction
-hasn't already acquired them. */
-static	MY_ATTRIBUTE((nonnull))
-void
-row_import_discard_changes(
-/*=======================*/
-	row_prebuilt_t*	prebuilt,	/*!< in/out: prebuilt from handler */
-	trx_t*		trx,		/*!< in/out: transaction for import */
-	dberr_t		err)		/*!< in: error code */
-{
-	dict_table_t*	table = prebuilt->table;
-
-	ut_a(err != DB_SUCCESS);
-
-	prebuilt->trx->error_info = NULL;
-
-	ib::info() << "Discarding tablespace of table "
-		<< prebuilt->table->name
-		<< ": " << ut_strerr(err);
-
-	if (trx->dict_operation_lock_mode != RW_X_LATCH) {
-		ut_a(trx->dict_operation_lock_mode == 0);
-		row_mysql_lock_data_dictionary(trx);
-	}
-
-	ut_a(trx->dict_operation_lock_mode == RW_X_LATCH);
-
-	/* Since we update the index root page numbers on disk after
-	we've done a successful import. The table will not be loadable.
-	However, we need to ensure that the in memory root page numbers
-	are reset to "NULL". */
-
-	for (dict_index_t* index = UT_LIST_GET_FIRST(table->indexes);
-		index != 0;
-		index = UT_LIST_GET_NEXT(indexes, index)) {
-
-		index->page = FIL_NULL;
-	}
-
-	table->file_unreadable = true;
-	if (table->space) {
-		fil_close_tablespace(trx, table->space_id);
-		table->space = NULL;
-	}
-}
-
-/*****************************************************************//**
 Clean up after import tablespace. */
 static	MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
@@ -2220,7 +2172,27 @@ row_import_cleanup(
 	ut_a(prebuilt->trx != trx);
 
 	if (err != DB_SUCCESS) {
-		row_import_discard_changes(prebuilt, trx, err);
+		dict_table_t* table = prebuilt->table;
+		table->file_unreadable = true;
+		if (table->space) {
+			fil_close_tablespace(table->space_id);
+			table->space = NULL;
+		}
+
+		prebuilt->trx->error_info = NULL;
+
+		ib::info() << "Discarding tablespace of table "
+			   << table->name << ": " << ut_strerr(err);
+
+		if (!trx->dict_operation_lock_mode) {
+			row_mysql_lock_data_dictionary(trx);
+		}
+
+		for (dict_index_t* index = UT_LIST_GET_FIRST(table->indexes);
+		     index;
+		     index = UT_LIST_GET_NEXT(indexes, index)) {
+			index->page = FIL_NULL;
+		}
 	}
 
 	ut_a(trx->dict_operation_lock_mode == RW_X_LATCH);

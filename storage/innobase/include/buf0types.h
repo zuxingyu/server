@@ -44,16 +44,6 @@ struct buf_dblwr_t;
 /** A buffer frame. @see page_t */
 typedef	byte	buf_frame_t;
 
-/** Flags for flush types */
-enum buf_flush_t {
-	BUF_FLUSH_LRU = 0,		/*!< flush via the LRU list */
-	BUF_FLUSH_LIST,			/*!< flush via the flush list
-					of dirty blocks */
-	BUF_FLUSH_SINGLE_PAGE,		/*!< flush via the LRU list
-					but only a single page */
-	BUF_FLUSH_N_TYPES		/*!< index of last element + 1  */
-};
-
 /** Flags for io_fix types */
 enum buf_io_fix {
 	BUF_IO_NONE = 0,		/**< no pending I/O */
@@ -141,7 +131,7 @@ public:
     ut_ad(page_no <= 0xFFFFFFFFU);
   }
 
-  page_id_t(ulonglong id) : m_id(id) {}
+  page_id_t(uint64_t id) : m_id(id) {}
   bool operator==(const page_id_t& rhs) const { return m_id == rhs.m_id; }
   bool operator!=(const page_id_t& rhs) const { return m_id != rhs.m_id; }
   bool operator<(const page_id_t& rhs) const { return m_id < rhs.m_id; }
@@ -191,7 +181,6 @@ public:
 
   ulonglong raw() { return m_id; }
 private:
-  page_id_t(uint64_t id) : m_id(id) {}
   /** The page identifier */
   uint64_t m_id;
 };
