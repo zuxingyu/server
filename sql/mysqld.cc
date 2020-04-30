@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2020, MariaDB Corporation.
+   Copyright (c) 2008, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,6 +54,7 @@
 #include <m_ctype.h>
 #include <my_dir.h>
 #include <my_bit.h>
+#include "my_cpu.h"
 #include "slave.h"
 #include "rpl_mi.h"
 #include "sql_repl.h"
@@ -166,15 +167,6 @@ extern "C" {					// Because of SCO 3.2V4.2
 #ifdef __WIN__ 
 #include <crtdbg.h>
 #endif
-
-#ifdef HAVE_SOLARIS_LARGE_PAGES
-#if defined(__sun__) && defined(__GNUC__) && defined(__cplusplus) \
-    && defined(_XOPEN_SOURCE)
-extern int getpagesizes(size_t *, int);
-extern int getpagesizes2(size_t *, int);
-extern int memcntl(caddr_t, size_t, int, caddr_t, int, int);
-#endif /* __sun__ ... */
-#endif /* HAVE_SOLARIS_LARGE_PAGES */
 
 #ifdef _AIX41
 int initgroups(const char *,unsigned int);
@@ -455,7 +447,7 @@ uint lower_case_table_names;
 ulong tc_heuristic_recover= 0;
 Atomic_counter<uint32_t> thread_count;
 bool shutdown_wait_for_slaves;
-int32 slave_open_temp_tables;
+Atomic_counter<uint32_t> slave_open_temp_tables;
 ulong thread_created;
 ulong back_log, connect_timeout, server_id;
 ulong what_to_log;
@@ -596,7 +588,10 @@ DATE_TIME_FORMAT global_date_format, global_datetime_format, global_time_format;
 Time_zone *default_tz;
 
 const char *mysql_real_data_home_ptr= mysql_real_data_home;
-char server_version[SERVER_VERSION_LENGTH], *server_version_ptr;
+extern "C" {
+char server_version[SERVER_VERSION_LENGTH];
+}
+char *server_version_ptr;
 bool using_custom_server_version= false;
 char *mysqld_unix_port, *opt_mysql_tmpdir;
 ulong thread_handling;
@@ -1140,6 +1135,14 @@ PSI_file_key key_file_map;
 #ifdef HAVE_PSI_STATEMENT_INTERFACE
 PSI_statement_info stmt_info_new_packet;
 #endif
+
+#ifdef WITH_WSREP
+/** Whether the Galera write-set replication is enabled. A cached copy of
+global_system_variables.wsrep_on && wsrep_provider &&
+  strcmp(wsrep_provider, WSREP_NONE)
+*/
+bool WSREP_ON_;
+#endif /* WITH_WSREP */
 
 #ifndef EMBEDDED_LIBRARY
 void net_before_header_psi(struct st_net *net, void *thd, size_t /* unused: count */)
@@ -1879,6 +1882,9 @@ extern "C" void unireg_abort(int exit_code)
   disable_log_notes= 1;
 
 #ifdef WITH_WSREP
+  // Note that we do not have thd here, thus can't use
+  // WSREP(thd)
+
   if (WSREP_ON &&
       Wsrep_server_state::is_inited() &&
       Wsrep_server_state::instance().state() != wsrep::server_state::s_disconnected)
@@ -1894,6 +1900,7 @@ extern "C" void unireg_abort(int exit_code)
     sleep(1); /* so give some time to exit for those which can */
     WSREP_INFO("Some threads may fail to exit.");
   }
+
   if (WSREP_ON)
   {
     /* In bootstrap mode we deinitialize wsrep here. */
@@ -1938,16 +1945,12 @@ static void mysqld_exit(int exit_code)
   shutdown_performance_schema();        // we do it as late as possible
 #endif
   set_malloc_size_cb(NULL);
-  if (opt_endinfo && global_status_var.global_memory_used)
-    fprintf(stderr, "Warning: Memory not freed: %ld\n",
-            (long) global_status_var.global_memory_used);
-  if (!opt_debugging && !my_disable_leak_check && exit_code == 0 &&
-      debug_assert_on_not_freed_memory)
+  if (global_status_var.global_memory_used)
   {
-#ifdef SAFEMALLOC
-    sf_report_leaked_memory(0);
-#endif
-    DBUG_SLOW_ASSERT(global_status_var.global_memory_used == 0);
+    fprintf(stderr, "Warning: Memory not freed: %lld\n",
+            (longlong) global_status_var.global_memory_used);
+    if (exit_code == 0)
+      SAFEMALLOC_REPORT_MEMORY(0);
   }
   cleanup_tls();
   DBUG_LEAVE;
@@ -2174,9 +2177,11 @@ static void set_ports()
     */
 
 #if MYSQL_PORT_DEFAULT == 0
+# if !__has_feature(memory_sanitizer) // Work around MSAN deficiency
     struct  servent *serv_ptr;
     if ((serv_ptr= getservbyname("mysql", "tcp")))
       SYSVAR_AUTOSIZE(mysqld_port, ntohs((u_short) serv_ptr->s_port));
+# endif
 #endif
     if ((env = getenv("MYSQL_TCP_PORT")))
     {
@@ -3944,73 +3949,15 @@ static int init_common_variables()
   DBUG_PRINT("info",("%s  Ver %s for %s on %s\n",my_progname,
 		     server_version, SYSTEM_TYPE,MACHINE_TYPE));
 
-#ifdef HAVE_LINUX_LARGE_PAGES
   /* Initialize large page size */
   if (opt_large_pages)
   {
-    SYSVAR_AUTOSIZE(opt_large_page_size, my_get_large_page_size());
-    if (opt_large_page_size)
+    DBUG_PRINT("info", ("Large page set"));
+    if (my_init_large_pages(opt_super_large_pages))
     {
-      DBUG_PRINT("info", ("Large page set, large_page_size = %d",
-                 opt_large_page_size));
-      my_use_large_pages= 1;
-      my_large_page_size= opt_large_page_size;
+      return 1;
     }
-    else
-      SYSVAR_AUTOSIZE(opt_large_pages, 0);
   }
-#endif /* HAVE_LINUX_LARGE_PAGES */
-#ifdef HAVE_SOLARIS_LARGE_PAGES
-#define LARGE_PAGESIZE (4*1024*1024)  /* 4MB */
-#define SUPER_LARGE_PAGESIZE (256*1024*1024)  /* 256MB */
-  if (opt_large_pages)
-  {
-  /*
-    tell the kernel that we want to use 4/256MB page for heap storage
-    and also for the stack. We use 4 MByte as default and if the
-    super-large-page is set we increase it to 256 MByte. 256 MByte
-    is for server installations with GBytes of RAM memory where
-    the MySQL Server will have page caches and other memory regions
-    measured in a number of GBytes.
-    We use as big pages as possible which isn't bigger than the above
-    desired page sizes.
-  */
-   int nelem;
-   size_t max_desired_page_size;
-   if (opt_super_large_pages)
-     max_desired_page_size= SUPER_LARGE_PAGESIZE;
-   else
-     max_desired_page_size= LARGE_PAGESIZE;
-   nelem = getpagesizes(NULL, 0);
-   if (nelem > 0)
-   {
-     size_t *pagesize = (size_t *) malloc(sizeof(size_t) * nelem);
-     if (pagesize != NULL && getpagesizes(pagesize, nelem) > 0)
-     {
-       size_t max_page_size= 0;
-       for (int i= 0; i < nelem; i++)
-       {
-         if (pagesize[i] > max_page_size &&
-             pagesize[i] <= max_desired_page_size)
-            max_page_size= pagesize[i];
-       }
-       free(pagesize);
-       if (max_page_size > 0)
-       {
-         struct memcntl_mha mpss;
-
-         mpss.mha_cmd= MHA_MAPSIZE_BSSBRK;
-         mpss.mha_pagesize= max_page_size;
-         mpss.mha_flags= 0;
-         memcntl(NULL, 0, MC_HAT_ADVISE, (caddr_t)&mpss, 0, 0);
-         mpss.mha_cmd= MHA_MAPSIZE_STACK;
-         memcntl(NULL, 0, MC_HAT_ADVISE, (caddr_t)&mpss, 0, 0);
-       }
-     }
-   }
-  }
-#endif /* HAVE_SOLARIS_LARGE_PAGES */
-
 
 #if defined(HAVE_POOL_OF_THREADS)
   if (IS_SYSVAR_AUTOSIZE(&threadpool_size))
@@ -4707,7 +4654,6 @@ static int init_default_storage_engine_impl(const char *opt_name,
   return 0;
 }
 
-
 static int
 init_gtid_pos_auto_engines(void)
 {
@@ -4733,7 +4679,6 @@ init_gtid_pos_auto_engines(void)
   mysql_mutex_unlock(&LOCK_global_system_variables);
   return 0;
 }
-
 
 static int init_server_components()
 {
@@ -5099,6 +5044,14 @@ static int init_server_components()
        0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
       {"timed-mutexes", OPT_DEPRECATED_OPTION, "",
        0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#if defined(__linux__)
+      /*
+        Linux was the only large page OS that we've now removed the (always)
+        unused super-large-pages (because its Solaris only).
+      */
+      {"super-large-pages", OPT_DEPRECATED_OPTION, "",
+       0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#endif
       {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
     };
     /*
@@ -5585,7 +5538,13 @@ int mysqld_main(int argc, char **argv)
       set_user(mysqld_user, user_info);
   }
 
+#ifdef WITH_WSREP
+  WSREP_ON_= (global_system_variables.wsrep_on &&
+          wsrep_provider &&
+          strcmp(wsrep_provider, WSREP_NONE));
+
   if (WSREP_ON && wsrep_check_opts()) unireg_abort(1);
+#endif
 
   /* 
    The subsequent calls may take a long time : e.g. innodb log read.
@@ -6641,7 +6600,7 @@ struct my_option my_long_options[]=
    "mysql.gtid_slave_pos",
    &gtid_pos_auto_engines, 0, 0, GET_STR, REQUIRED_ARG,
    0, 0, 0, 0, 0, 0 },
-#ifdef HAVE_LARGE_PAGE_OPTION
+#ifdef HAVE_SOLARIS_LARGE_PAGES
   {"super-large-pages", 0, "Enable support for super large pages.",
    &opt_super_large_pages, &opt_super_large_pages, 0,
    GET_BOOL, OPT_ARG, 0, 0, 1, 0, 1, 0},
@@ -7004,18 +6963,6 @@ static int show_slave_running(THD *thd, SHOW_VAR *var, char *buff,
     *((my_bool *)buff)= tmp;
   else
     var->type= SHOW_UNDEF;
-  return 0;
-}
-
-
-/* How many slaves are connected to this master */
-
-static int show_slaves_connected(THD *thd, SHOW_VAR *var, char *buff)
-{
-
-  var->type= SHOW_LONGLONG;
-  var->value= buff;
-  *((longlong*) buff)= uint32_t(binlog_dump_thread_count);
   return 0;
 }
 
@@ -7423,6 +7370,16 @@ static int show_threadpool_idle_threads(THD *thd, SHOW_VAR *var, char *buff,
   *(int *)buff= tp_get_idle_thread_count(); 
   return 0;
 }
+
+
+static int show_threadpool_threads(THD *thd, SHOW_VAR *var, char *buff,
+                                   enum enum_var_type scope)
+{
+  var->type= SHOW_INT;
+  var->value= buff;
+  *(reinterpret_cast<int*>(buff))= tp_get_thread_count();
+  return 0;
+}
 #endif
 
 /*
@@ -7575,9 +7532,9 @@ SHOW_VAR status_vars[]= {
   {"Select_range",             (char*) offsetof(STATUS_VAR, select_range_count_), SHOW_LONG_STATUS},
   {"Select_range_check",       (char*) offsetof(STATUS_VAR, select_range_check_count_), SHOW_LONG_STATUS},
   {"Select_scan",	       (char*) offsetof(STATUS_VAR, select_scan_count_), SHOW_LONG_STATUS},
-  {"Slave_open_temp_tables",   (char*) &slave_open_temp_tables, SHOW_INT},
+  {"Slave_open_temp_tables",   (char*) &slave_open_temp_tables, SHOW_ATOMIC_COUNTER_UINT32_T},
 #ifdef HAVE_REPLICATION
-  {"Slaves_connected",        (char*) &show_slaves_connected, SHOW_SIMPLE_FUNC },
+  {"Slaves_connected",        (char*) &binlog_dump_thread_count, SHOW_ATOMIC_COUNTER_UINT32_T},
   {"Slaves_running",          (char*) &show_slaves_running, SHOW_SIMPLE_FUNC },
   {"Slave_connections",       (char*) offsetof(STATUS_VAR, com_register_slave), SHOW_LONG_STATUS},
   {"Slave_heartbeat_period",   (char*) &show_heartbeat_period, SHOW_SIMPLE_FUNC},
@@ -7642,7 +7599,7 @@ SHOW_VAR status_vars[]= {
 #endif
 #ifdef HAVE_POOL_OF_THREADS
   {"Threadpool_idle_threads",  (char *) &show_threadpool_idle_threads, SHOW_SIMPLE_FUNC},
-  {"Threadpool_threads",       (char *) &tp_stats.num_worker_threads, SHOW_INT},
+  {"Threadpool_threads",       (char *) &show_threadpool_threads, SHOW_SIMPLE_FUNC},
 #endif
   {"Threads_cached",           (char*) &cached_thread_count,    SHOW_LONG_NOFLUSH},
   {"Threads_connected",        (char*) &connection_count,       SHOW_INT},
@@ -7925,8 +7882,8 @@ static int mysql_init_variables(void)
   
   /* Variables that depends on compile options */
 #ifndef DBUG_OFF
-  default_dbug_option=IF_WIN("d:t:i:O,\\mysqld.trace",
-			     "d:t:i:o,/tmp/mysqld.trace");
+  default_dbug_option=IF_WIN("d:t:i:O,\\mariadbd.trace",
+			     "d:t:i:o,/tmp/mariadbd.trace");
   current_dbug_option= default_dbug_option;
 #endif
   opt_error_log= IF_WIN(1,0);

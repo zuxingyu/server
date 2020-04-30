@@ -25,7 +25,7 @@
             SHOW_LONG_STATUS, SHOW_DOUBLE_STATUS, \
             SHOW_HAVE, SHOW_MY_BOOL, SHOW_HA_ROWS, SHOW_SYS, \
             SHOW_LONG_NOFLUSH, SHOW_LONGLONG_STATUS, SHOW_UINT32_STATUS, \
-            SHOW_LEX_STRING
+            SHOW_LEX_STRING, SHOW_ATOMIC_COUNTER_UINT32_T
 #include "mariadb.h"
 #undef SHOW_always_last
 
@@ -55,9 +55,8 @@ extern ulong dlopen_count;
 /*
   the following flags are valid for plugin_init()
 */
-#define PLUGIN_INIT_SKIP_DYNAMIC_LOADING 1U
-#define PLUGIN_INIT_SKIP_PLUGIN_TABLE    2U
-#define PLUGIN_INIT_SKIP_INITIALIZATION  4U
+#define PLUGIN_INIT_SKIP_PLUGIN_TABLE    1U
+#define PLUGIN_INIT_SKIP_INITIALIZATION  2U
 
 #define INITIAL_LEX_PLUGIN_LIST_SIZE    16
 

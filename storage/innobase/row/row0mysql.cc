@@ -54,7 +54,6 @@ Created 9/17/2000 Heikki Tuuri
 #include "rem0cmp.h"
 #include "row0import.h"
 #include "row0ins.h"
-#include "row0merge.h"
 #include "row0row.h"
 #include "row0sel.h"
 #include "row0upd.h"
@@ -732,7 +731,7 @@ handle_new_error:
 			/* Roll back the latest, possibly incomplete insertion
 			or update */
 
-			trx_rollback_to_savepoint(trx, savept);
+			trx->rollback(savept);
 		}
 		/* MySQL will roll back the latest SQL statement */
 		break;
@@ -755,7 +754,7 @@ handle_new_error:
 		/* Roll back the whole transaction; this resolution was added
 		to version 3.23.43 */
 
-		trx_rollback_to_savepoint(trx, NULL);
+		trx->rollback();
 		break;
 
 	case DB_MUST_GET_MORE_FILE_SPACE:
@@ -1039,7 +1038,7 @@ row_prebuilt_free(
 		rtr_clean_rtr_info(prebuilt->rtr_info, true);
 	}
 	if (prebuilt->table) {
-		dict_table_close(prebuilt->table, dict_locked, TRUE);
+		dict_table_close(prebuilt->table, dict_locked, FALSE);
 	}
 
 	mem_heap_free(prebuilt->heap);
@@ -1098,7 +1097,7 @@ row_get_prebuilt_insert_row(
 		may need to rebuild the row insert template. */
 
 		if (prebuilt->trx_id == table->def_trx_id
-		    && UT_LIST_GET_LEN(prebuilt->ins_node->entry_list)
+		    && prebuilt->ins_node->entry_list.size()
 		    == UT_LIST_GET_LEN(table->indexes)) {
 
 			return(prebuilt->ins_node->row);
@@ -1190,7 +1189,7 @@ row_lock_table_autoinc_for_mysql(
 
 	thr = que_fork_get_first_thr(prebuilt->ins_graph);
 
-	que_thr_move_to_run_state_for_mysql(thr, trx);
+	thr->start_running();
 
 run_again:
 	thr->run_node = node;
@@ -1219,7 +1218,7 @@ run_again:
 		return(err);
 	}
 
-	que_thr_stop_for_mysql_no_error(thr, trx);
+	thr->stop_no_error();
 
 	trx->op_info = "";
 
@@ -1249,7 +1248,7 @@ row_lock_table(row_prebuilt_t* prebuilt)
 
 	thr = que_fork_get_first_thr(prebuilt->sel_graph);
 
-	que_thr_move_to_run_state_for_mysql(thr, trx);
+	thr->start_running();
 
 run_again:
 	thr->run_node = thr;
@@ -1281,7 +1280,7 @@ run_again:
 		return(err);
 	}
 
-	que_thr_stop_for_mysql_no_error(thr, trx);
+	thr->stop_no_error();
 
 	trx->op_info = "";
 
@@ -1454,7 +1453,7 @@ row_insert_for_mysql(
 		node->state = INS_NODE_ALLOC_ROW_ID;
 	}
 
-	que_thr_move_to_run_state_for_mysql(thr, trx);
+	thr->start_running();
 
 run_again:
 	thr->run_node = node;
@@ -1556,7 +1555,7 @@ error_exit:
 		}
 	}
 
-	que_thr_stop_for_mysql_no_error(thr, trx);
+	thr->stop_no_error();
 
 	if (table->is_system_db) {
 		srv_stats.n_system_rows_inserted.inc(size_t(trx->id));
@@ -1575,7 +1574,7 @@ error_exit:
 		memcpy(prebuilt->row_id, node->sys_buf, DATA_ROW_ID_LEN);
 	}
 
-	dict_stats_update_if_needed(table, trx->mysql_thd);
+	dict_stats_update_if_needed(table, *trx);
 	trx->op_info = "";
 
 	if (blob_heap != NULL) {
@@ -1869,7 +1868,7 @@ row_update_for_mysql(row_prebuilt_t* prebuilt)
 
 	ut_ad(!prebuilt->sql_stat_start);
 
-	que_thr_move_to_run_state_for_mysql(thr, trx);
+	thr->start_running();
 
 	ut_ad(!prebuilt->versioned_write || node->table->versioned());
 
@@ -1914,7 +1913,7 @@ row_update_for_mysql(row_prebuilt_t* prebuilt)
 		}
 	}
 
-	que_thr_stop_for_mysql_no_error(thr, trx);
+	thr->stop_no_error();
 
 	if (dict_table_has_fts_index(table)
 	    && trx->fts_next_doc_id != UINT64_UNDEFINED) {
@@ -1959,7 +1958,7 @@ row_update_for_mysql(row_prebuilt_t* prebuilt)
 	}
 
 	if (update_statistics) {
-		dict_stats_update_if_needed(prebuilt->table, trx->mysql_thd);
+		dict_stats_update_if_needed(prebuilt->table, *trx);
 	} else {
 		/* Always update the table modification counter. */
 		prebuilt->table->stat_modified_counter++;
@@ -2200,7 +2199,7 @@ static dberr_t row_update_vers_insert(que_thr_t* thr, upd_node_t* node)
 		case DB_SUCCESS:
 			srv_stats.n_rows_inserted.inc(
 				static_cast<size_t>(trx->id));
-			dict_stats_update_if_needed(table, trx->mysql_thd);
+			dict_stats_update_if_needed(table, *trx);
 			goto exit;
 		}
 	}
@@ -2294,8 +2293,7 @@ row_update_cascade_for_mysql(
 			}
 
 			if (stats) {
-				dict_stats_update_if_needed(node->table,
-							    trx->mysql_thd);
+				dict_stats_update_if_needed(node->table, *trx);
 			} else {
 				/* Always update the table
 				modification counter. */
@@ -2427,7 +2425,7 @@ err_exit:
 		break;
 	case DB_OUT_OF_FILE_SPACE:
 		trx->error_state = DB_SUCCESS;
-		trx_rollback_to_savepoint(trx, NULL);
+		trx->rollback();
 
 		ib::warn() << "Cannot create table "
 			<< table->name
@@ -2458,7 +2456,7 @@ err_exit:
 	case DB_TABLESPACE_EXISTS:
 	default:
 		trx->error_state = DB_SUCCESS;
-		trx_rollback_to_savepoint(trx, NULL);
+		trx->rollback();
 		dict_mem_table_free(table);
 		break;
 	}
@@ -2749,7 +2747,10 @@ row_mysql_drop_garbage_tables()
 		table_name = mem_heap_strdupl(
 			heap,
 			reinterpret_cast<const char*>(field), len);
-		if (strstr(table_name, "/" TEMP_FILE_PREFIX "-")) {
+		if (strstr(table_name, "/" TEMP_FILE_PREFIX "-") &&
+                    !strstr(table_name, "/" TEMP_FILE_PREFIX "-backup-") &&
+                    !strstr(table_name, "/" TEMP_FILE_PREFIX "-exchange-"))
+                {
 			btr_pcur_store_position(&pcur, &mtr);
 			btr_pcur_commit_specify_mtr(&pcur, &mtr);
 
@@ -3187,7 +3188,7 @@ row_mysql_lock_table(
 	thr = que_fork_get_first_thr(
 		static_cast<que_fork_t*>(que_node_get_parent(thr)));
 
-	que_thr_move_to_run_state_for_mysql(thr, trx);
+	thr->start_running();
 
 run_again:
 	thr->run_node = thr;
@@ -3198,7 +3199,7 @@ run_again:
 	trx->error_state = err;
 
 	if (err == DB_SUCCESS) {
-		que_thr_stop_for_mysql_no_error(thr, trx);
+		thr->stop_no_error();
 	} else {
 		que_thr_stop_for_mysql(thr);
 
@@ -3518,13 +3519,15 @@ row_drop_table_for_mysql(
 
 	if (table->n_foreign_key_checks_running > 0) {
 defer:
-		/* Rename #sql2 to #sql-ib if table has open ref count
+		/* Rename #sql-backup to #sql-ib if table has open ref count
 		while dropping the table. This scenario can happen
 		when purge thread is waiting for dict_sys.mutex so
 		that it could close the table. But drop table acquires
-		dict_sys.mutex. */
+		dict_sys.mutex.
+                In the future this should use 'tmp_file_prefix'!
+                */
 		if (!is_temp_name
-		    || strstr(table->name.m_name, "/#sql2")) {
+		    || strstr(table->name.m_name, "/#sql-backup-")) {
 			heap = mem_heap_create(FN_REFLEN);
 			const char* tmp_name
 				= dict_mem_create_temporary_tablename(
@@ -3790,7 +3793,7 @@ do_drop:
 			<< ut_get_name(trx, tablename) << ".";
 
 		trx->error_state = DB_SUCCESS;
-		trx_rollback_to_savepoint(trx, NULL);
+		trx->rollback();
 		trx->error_state = DB_SUCCESS;
 
 		/* Mark all indexes available in the data dictionary
@@ -4522,7 +4525,7 @@ end:
 				" succeed.";
 		}
 		trx->error_state = DB_SUCCESS;
-		trx_rollback_to_savepoint(trx, NULL);
+		trx->rollback();
 		trx->error_state = DB_SUCCESS;
 	} else {
 		/* The following call will also rename the .ibd data file if
@@ -4532,7 +4535,7 @@ end:
 			table, new_name, !new_is_tmp);
 		if (err != DB_SUCCESS) {
 			trx->error_state = DB_SUCCESS;
-			trx_rollback_to_savepoint(trx, NULL);
+			trx->rollback();
 			trx->error_state = DB_SUCCESS;
 			goto funct_exit;
 		}
@@ -4574,7 +4577,7 @@ end:
 			}
 
 			trx->error_state = DB_SUCCESS;
-			trx_rollback_to_savepoint(trx, NULL);
+			trx->rollback();
 			trx->error_state = DB_SUCCESS;
 		}
 
@@ -4586,7 +4589,7 @@ end:
 			ut_a(DB_SUCCESS == dict_table_rename_in_cache(
 				table, old_name, FALSE));
 			trx->error_state = DB_SUCCESS;
-			trx_rollback_to_savepoint(trx, NULL);
+			trx->rollback();
 			trx->error_state = DB_SUCCESS;
 			goto funct_exit;
 		}

@@ -130,6 +130,8 @@ our $path_testlog;
 our $default_vardir;
 our $opt_vardir;                # Path to use for var/ dir
 our $plugindir;
+our $opt_xml_report;            # XML output
+our $client_plugindir;
 my $path_vardir_trace;          # unix formatted opt_vardir for trace files
 my $opt_tmpdir;                 # Path to use for tmp/ dir
 my $opt_tmpdir_pid;
@@ -139,10 +141,6 @@ my $opt_start_dirty;
 my $opt_start_exit;
 my $start_only;
 my $file_wsrep_provider;
-my $extra_path;
-my $mariabackup_path;
-my $mariabackup_exe;
-my $garbd_exe;
 
 our @global_suppressions;
 
@@ -381,170 +379,6 @@ $| = 1; # Automatically flush STDOUT
 
 main();
 
-sub have_wsrep() {
-  my $wsrep_on= $mysqld_variables{'wsrep-on'};
-  return defined $wsrep_on
-}
-
-sub have_wsrep_provider() {
-  return $file_wsrep_provider ne "";
-}
-
-sub have_mariabackup() {
-  return $mariabackup_path ne "";
-}
-
-sub have_garbd() {
-  return $garbd_exe ne "";
-}
-
-sub check_wsrep_version() {
-  if ($My::SafeProcess::wsrep_check_version ne "") {
-    system($My::SafeProcess::wsrep_check_version);
-    return ($? >> 8) == 0;
-  }
-  else {
-    return 0;
-  }
-}
-
-sub wsrep_version_message() {
-  if ($My::SafeProcess::wsrep_check_version ne "") {
-     my $output= `$My::SafeProcess::wsrep_check_version -p`;
-     if (($? >> 8) == 0) {
-        $output =~ s/\s+\z//;
-        return "Wsrep provider version mismatch (".$output.")";
-     }
-     else {
-        return "Galera library does not contain a version symbol";
-     }
-  }
-  else {
-     return "Unable to find a wsrep version check utility";
-  }
-}
-
-sub which($) { return `sh -c "command -v $_[0]"` }
-
-sub check_garbd_support() {
-  if (defined $ENV{'MTR_GARBD_EXE'}) {
-    if (mtr_file_exists($ENV{'MTR_GARBD_EXE'}) ne "") {
-      $garbd_exe= $ENV{'MTR_GARBD_EXE'};
-    } else {
-      mtr_error("MTR_GARBD_EXE env set to an invalid path");
-    }
-  }
-  else {
-    my $wsrep_path= dirname($file_wsrep_provider);
-    $garbd_exe=
-      mtr_file_exists($wsrep_path."/garb/garbd",
-                      $wsrep_path."/../../bin/garb/garbd");
-    if ($garbd_exe ne "") {
-      $ENV{MTR_GARBD_EXE}= $garbd_exe;
-    }
-  }
-}
-
-sub check_wsrep_support() {
-  $garbd_exe= "";
-  if (have_wsrep()) {
-    mtr_report(" - binaries built with wsrep patch");
-
-    # ADD scripts to $PATH to that wsrep_sst_* can be found
-    my ($spath) = grep { -f "$_/wsrep_sst_rsync"; } "$bindir/scripts", $path_client_bindir;
-    mtr_error("No SST scripts") unless $spath;
-    my $separator= (IS_WINDOWS) ? ';' : ':';
-    $ENV{PATH}="$spath$separator$ENV{PATH}";
-
-    # ADD mysql client library path to path so that wsrep_notify_cmd can find mysql
-    # client for loading the tables. (Don't assume each machine has mysql install)
-    my ($cpath) = grep { -f "$_/mysql"; } "$bindir/scripts", $path_client_bindir;
-    mtr_error("No scritps") unless $cpath;
-    $ENV{PATH}="$cpath$separator$ENV{PATH}" unless $cpath eq $spath;
-
-    # ADD my_print_defaults script path to path so that SST scripts can find it
-    my $my_print_defaults_exe=
-      mtr_exe_maybe_exists(
-        "$bindir/extra/my_print_defaults",
-        "$path_client_bindir/my_print_defaults");
-    my $epath= "";
-    if ($my_print_defaults_exe ne "") {
-       $epath= dirname($my_print_defaults_exe);
-    }
-    mtr_error("No my_print_defaults") unless $epath;
-    $ENV{PATH}="$epath$separator$ENV{PATH}" unless ($epath eq $spath) or
-                                                   ($epath eq $cpath);
-
-    $extra_path= $epath;
-
-    if (!IS_WINDOWS) {
-      if (which("socat")) {
-        $ENV{MTR_GALERA_TFMT}="socat";
-      } elsif (which("nc")) {
-        $ENV{MTR_GALERA_TFMT}="nc";
-      }
-    }
-
-    # Check whether WSREP_PROVIDER environment variable is set.
-    if (defined $ENV{'WSREP_PROVIDER'}) {
-      $file_wsrep_provider= "";
-      if ($ENV{'WSREP_PROVIDER'} ne "none") {
-        if (mtr_file_exists($ENV{'WSREP_PROVIDER'}) ne "") {
-          $file_wsrep_provider= $ENV{'WSREP_PROVIDER'};
-        } else {
-          mtr_error("WSREP_PROVIDER env set to an invalid path");
-        }
-        check_garbd_support();
-      }
-      # WSREP_PROVIDER is valid; set to a valid path or "none").
-      mtr_verbose("WSREP_PROVIDER env set to $ENV{'WSREP_PROVIDER'}");
-    } else {
-      # WSREP_PROVIDER env not defined. Lets try to locate the wsrep provider
-      # library.
-      $file_wsrep_provider=
-        mtr_file_exists("/usr/lib64/galera-4/libgalera_smm.so",
-                        "/usr/lib64/galera/libgalera_smm.so",
-                        "/usr/lib/galera-4/libgalera_smm.so",
-                        "/usr/lib/galera/libgalera_smm.so");
-      if ($file_wsrep_provider ne "") {
-        # wsrep provider library found !
-        mtr_verbose("wsrep provider library found : $file_wsrep_provider");
-        $ENV{'WSREP_PROVIDER'}= $file_wsrep_provider;
-        check_garbd_support();
-      } else {
-        mtr_verbose("Could not find wsrep provider library, setting it to 'none'");
-        $ENV{'WSREP_PROVIDER'}= "none";
-      }
-    }
-  } else {
-    $file_wsrep_provider= "";
-    $extra_path= "";
-  }
-}
-
-sub check_mariabackup_support() {
-  $mariabackup_path= "";
-  $mariabackup_exe=
-    mtr_exe_maybe_exists(
-      "$bindir/extra/mariabackup$opt_vs_config/mariabackup",
-      "$path_client_bindir/mariabackup");
-  if ($mariabackup_exe ne "") {
-    my $bpath= dirname($mariabackup_exe);
-    my $separator= (IS_WINDOWS) ? ';' : ':';
-    $ENV{PATH}="$bpath$separator$ENV{PATH}" unless $bpath eq $extra_path;
-
-    $mariabackup_path= $bpath;
-
-    $ENV{XTRABACKUP}= $mariabackup_exe;
-
-    $ENV{XBSTREAM}= mtr_exe_maybe_exists(
-      "$bindir/extra/mariabackup/$opt_vs_config/mbstream",
-      "$path_client_bindir/mbstream");
-
-    $ENV{INNOBACKUPEX}= "$mariabackup_exe --innobackupex";
-  }
-}
-
 sub main {
   $ENV{MTR_PERL}=$^X;
 
@@ -589,8 +423,7 @@ sub main {
   }
   check_ssl_support();
   check_debug_support();
-  check_wsrep_support();
-  check_mariabackup_support();
+  environment_setup();
 
   if (!$opt_suites) {
     $opt_suites= join ',', collect_default_suites(@DEFAULT_SUITES);
@@ -626,11 +459,7 @@ sub main {
     else
     {
       my $sys_info= My::SysInfo->new();
-      $opt_parallel= $sys_info->num_cpus() +
-        int($sys_info->min_bogomips()/500) - 4;
-      for my $limit (2000, 1500, 1000, 500){
-        $opt_parallel-- if ($sys_info->min_bogomips() < $limit);
-      }
+      $opt_parallel= $sys_info->num_cpus()+int($sys_info->min_bogomips()/500)-4;
     }
     my $max_par= $ENV{MTR_MAX_PARALLEL} || 8;
     $opt_parallel= $max_par if ($opt_parallel > $max_par);
@@ -746,7 +575,6 @@ sub main {
   mtr_print_line();
 
   print_total_times($opt_parallel) if $opt_report_times;
-
   mtr_report_stats($prefix, $fail, $completed, $extra_warnings);
 
   if ($opt_gcov) {
@@ -1249,6 +1077,7 @@ sub print_global_resfile {
   resfile_global("warnings", $opt_warnings ? 1 : 0);
   resfile_global("max-connections", $opt_max_connections);
   resfile_global("product", "MySQL");
+  resfile_global("xml-report", $opt_xml_report);
   # Somewhat hacky code to convert numeric version back to dot notation
   my $v1= int($mysql_version_id / 10000);
   my $v2= int(($mysql_version_id % 10000)/100);
@@ -1415,7 +1244,8 @@ sub command_line_setup {
              'help|h'                   => \$opt_usage,
 	     # list-options is internal, not listed in help
 	     'list-options'             => \$opt_list_options,
-             'skip-test-list=s'         => \@opt_skip_test_list
+             'skip-test-list=s'         => \@opt_skip_test_list,
+             'xml-report=s'             => \$opt_xml_report
            );
 
   # fix options (that take an optional argument and *only* after = sign
@@ -1798,7 +1628,7 @@ sub command_line_setup {
   # $ENV{ASAN_OPTIONS}= "log_path=${opt_vardir}/log/asan:" . $ENV{ASAN_OPTIONS};
 
   # Add leak suppressions
-  $ENV{LSAN_OPTIONS}= "suppressions=${glob_mysql_test_dir}/lsan.supp"
+  $ENV{LSAN_OPTIONS}= "suppressions=${glob_mysql_test_dir}/lsan.supp:print_suppressions=0"
     if -f "$glob_mysql_test_dir/lsan.supp" and not IS_WINDOWS;
 
   if ( $opt_gdb || $opt_client_gdb || $opt_ddd || $opt_client_ddd || 
@@ -2154,7 +1984,7 @@ sub find_mysqld {
 
   my ($mysqld_basedir)= $ENV{MTR_BINDIR}|| @_;
 
-  my @mysqld_names= ("mysqld", "mysqld-max-nt", "mysqld-max",
+  my @mysqld_names= ("mariadbd", "mysqld", "mysqld-max-nt", "mysqld-max",
 		     "mysqld-nt");
 
   if ( $opt_debug_server ){
@@ -2603,10 +2433,23 @@ sub environment_setup {
   my $exe_innochecksum=
     mtr_exe_maybe_exists("$bindir/extra$opt_vs_config/innochecksum",
 		         "$path_client_bindir/innochecksum");
-  if ($exe_innochecksum)
-  {
-    $ENV{'INNOCHECKSUM'}= native_path($exe_innochecksum);
-  }
+  $ENV{'INNOCHECKSUM'}= native_path($exe_innochecksum) if $exe_innochecksum;
+
+  # ----------------------------------------------------
+  # mariabackup
+  # ----------------------------------------------------
+  my $exe_mariabackup= mtr_exe_maybe_exists(
+      "$bindir/extra/mariabackup$opt_vs_config/mariabackup",
+      "$path_client_bindir/mariabackup");
+
+  $ENV{XTRABACKUP}= native_path($exe_mariabackup) if $exe_mariabackup;
+
+  my $exe_xbstream= mtr_exe_maybe_exists(
+        "$bindir/extra/mariabackup/$opt_vs_config/mbstream",
+        "$path_client_bindir/mbstream");
+  $ENV{XBSTREAM}= native_path($exe_xbstream) if $exe_xbstream;
+
+  $ENV{INNOBACKUPEX}= "$exe_mariabackup --innobackupex";
 
   # Create an environment variable to make it possible
   # to detect that valgrind is being used from test cases
@@ -2784,12 +2627,15 @@ sub setup_vardir() {
   # and make them world readable
   copytree("$glob_mysql_test_dir/std_data", "$opt_vardir/std_data", "0022");
 
-  # create a plugin dir and copy or symlink plugins into it
   unless($plugindir)
   {
+    # create a plugin dir and copy or symlink plugins into it
     if ($source_dist)
     {
       $plugindir="$opt_vardir/plugins";
+      # Source builds collect both client plugins and server plugins in the
+      # same directory.
+      $client_plugindir= $plugindir;
       mkpath($plugindir);
       if (IS_WINDOWS)
       {
@@ -2845,10 +2691,18 @@ sub setup_vardir() {
            <$bindir/lib/plugin/*.so>,             # bintar
            <$bindir/lib/plugin/*.dll>)
       {
-        my $pname=basename($_);
+        my $pname= basename($_);
         set_plugin_var($pname);
-        $plugindir=dirname($_) unless $plugindir;
+        $plugindir= dirname($_) unless $plugindir;
       }
+
+      # Note: client plugins can be installed separately from server plugins,
+      #       as is the case for Debian packaging.
+      for (<$bindir/lib/*/libmariadb3/plugin>)
+      {
+        $client_plugindir= $_ if <$_/*.so>;
+      }
+      $client_plugindir= $plugindir unless $client_plugindir;
     }
   }
 
@@ -3394,7 +3248,8 @@ sub mysql_install_db {
   # ----------------------------------------------------------------------
   # export MYSQLD_BOOTSTRAP_CMD variable containing <path>/mysqld <args>
   # ----------------------------------------------------------------------
-  $ENV{'MYSQLD_BOOTSTRAP_CMD'}= "$exe_mysqld_bootstrap " . join(" ", @$args);
+  $ENV{'MYSQLD_BOOTSTRAP_CMD'}= "$exe_mysqld_bootstrap " . join(" ", @$args)
+    unless defined $ENV{'MYSQLD_BOOTSTRAP_CMD'};
 
   # Extra options can come not only from the command line, but also
   # from option files or combinations. We want them on a command line
@@ -3622,8 +3477,11 @@ sub do_before_run_mysqltest($)
     # to be able to distinguish them from manually created
     # version-controlled results, and to ignore them in git.
     my $dest = "$base_file$suites.result~";
-    my @cmd = ($exe_patch, qw/--binary -r - -f -s -o/,
-               $dest, $base_result, $resfile);
+    my @cmd = ($exe_patch);
+    if ($^O eq "MSWin32") {
+      push @cmd, '--binary';
+    }
+    push @cmd, (qw/-r - -f -s -o/, $dest, $base_result, $resfile);
     if (-w $resdir) {
       # don't rebuild a file if it's up to date
       unless (-e $dest and -M $dest < -M $resfile
@@ -4672,7 +4530,7 @@ sub extract_warning_lines ($$) {
 
   my @patterns =
     (
-     qr/^Warning|mysqld: Warning|\[Warning\]/,
+     qr/^Warning|(mysqld|mariadbd): Warning|\[Warning\]/,
      qr/^Error:|\[ERROR\]/,
      qr/^==\d+==\s+\S/, # valgrind errors
      qr/InnoDB: Warning|InnoDB: Error/,
@@ -4747,7 +4605,7 @@ sub extract_warning_lines ($$) {
      qr|Access denied for user|,
      qr|Aborted connection|,
      qr|table.*is full|,
-     qr|\[ERROR\] mysqld: \Z|,  # Warning from Aria recovery
+     qr/\[ERROR\] (mysqld|mariadbd): \Z/,  # Warning from Aria recovery
      qr|Linux Native AIO|, # warning that aio does not work on /dev/shm
      qr|InnoDB: io_setup\(\) attempt|,
      qr|InnoDB: io_setup\(\) failed with EAGAIN|,
@@ -6279,7 +6137,7 @@ sub valgrind_arguments {
   my $exe=  shift;
 
   # Ensure the jemalloc works with mysqld
-  if ($$exe =~ /mysqld/)
+  if ($$exe =~ /(mysqld|mariadbd)/)
   {
     my %somalloc=(
       'system jemalloc' => 'libjemalloc*',
@@ -6669,6 +6527,7 @@ Misc options
                         phases of test execution.
   stress=ARGS           Run stress test, providing options to
                         mysql-stress-test.pl. Options are separated by comma.
+  xml-report=<file>     Output jUnit xml file of the results.
   tail-lines=N          Number of lines of the result to include in a failure
                         report.
 

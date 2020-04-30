@@ -156,7 +156,7 @@ struct st_pagecache_hash_link
 
 /* simple states of a block */
 #define PCBLOCK_ERROR       1 /* an error occurred when performing disk i/o  */
-#define PCBLOCK_READ        2 /* the is page in the block buffer             */
+#define PCBLOCK_READ        2 /* there is an active page in the block buffer */
 
 /*
   A tread is reading the data to the page.
@@ -681,6 +681,10 @@ static my_bool pagecache_fwrite(PAGECACHE *pagecache,
     DBUG_PRINT("error", ("write callback problem"));
     DBUG_RETURN(1);
   }
+#if __has_feature(memory_sanitizer) /* FIXME: encryption.aria_tiny etc. fail */
+  /* FIXME: ENGINE=Aria occasionally writes uninitialized data */
+  __msan_unpoison(args.page, pagecache->block_size);
+#endif
   res= (int)my_pwrite(filedesc->file, args.page, pagecache->block_size,
                  ((my_off_t) pageno << pagecache->shift), flags);
   (*filedesc->post_write_hook)(res, &args);
@@ -845,9 +849,9 @@ size_t init_pagecache(PAGECACHE *pagecache, size_t use_mem,
            (blocks << pagecache->shift) > use_mem && blocks > 8)
       blocks--;
     /* Allocate memory for cache page buffers */
+    pagecache->mem_size= blocks * pagecache->block_size;
     if ((pagecache->block_mem=
-      my_large_malloc(blocks * pagecache->block_size,
-                         MYF(MY_WME))))
+      my_large_malloc(&pagecache->mem_size, MYF(MY_WME))))
     {
       /*
         Allocate memory for blocks, hash_links and hash entries;
@@ -871,7 +875,7 @@ size_t init_pagecache(PAGECACHE *pagecache, size_t use_mem,
                                              changed_blocks_hash_size),
                                 NullS))
         break;
-      my_large_free(pagecache->block_mem);
+      my_large_free(pagecache->block_mem, pagecache->mem_size);
       pagecache->block_mem= 0;
     }
     blocks= blocks / 4*3;
@@ -922,7 +926,7 @@ err:
   pagecache->blocks=  0;
   if (pagecache->block_mem)
   {
-    my_large_free(pagecache->block_mem);
+    my_large_free(pagecache->block_mem, pagecache->mem_size);
     pagecache->block_mem= NULL;
   }
   if (pagecache->block_root)
@@ -1196,7 +1200,7 @@ void end_pagecache(PAGECACHE *pagecache, my_bool cleanup)
 
     if (pagecache->block_mem)
     {
-      my_large_free(pagecache->block_mem);
+      my_large_free(pagecache->block_mem, pagecache->mem_size);
       pagecache->block_mem= NULL;
       my_free(pagecache->block_root);
       pagecache->block_root= NULL;
@@ -3748,6 +3752,7 @@ restart:
       */
       if (reg_request)
         unreg_request(pagecache, block, 1);
+      dec_counter_for_resize_op(pagecache);
       pagecache_pthread_mutex_unlock(&pagecache->cache_lock);
       DBUG_PRINT("info", ("restarting..."));
       goto restart;
@@ -4024,6 +4029,7 @@ my_bool pagecache_delete_by_link(PAGECACHE *pagecache,
     DBUG_ASSERT((block->status &
                  (PCBLOCK_IN_SWITCH | PCBLOCK_REASSIGNED)) == 0);
 
+    /* This lock is deleted in pagecache_delete_internal() called below */
     inc_counter_for_resize_op(pagecache);
     /*
       make_lock_and_pin() can't fail here, because we are keeping pin on the
@@ -4168,6 +4174,7 @@ restart:
       */
       if (pin == PAGECACHE_PIN)
         unreg_request(pagecache, block, 1);
+      dec_counter_for_resize_op(pagecache);
       pagecache_pthread_mutex_unlock(&pagecache->cache_lock);
       DBUG_PRINT("info", ("restarting..."));
       goto restart;

@@ -481,8 +481,9 @@ row_undo_mod_clust(
 				size_t offs = page_offset(rec + trx_id_offset);
 				mtr.memset(block, offs, DATA_TRX_ID_LEN, 0);
 				offs += DATA_TRX_ID_LEN;
-				mtr.write<1,mtr_t::OPT>(*block, block->frame
-							+ offs, 0x80U);
+				mtr.write<1,mtr_t::MAYBE_NOP>(*block,
+							      block->frame
+							      + offs, 0x80U);
 				mtr.memset(block, offs + 1,
 					   DATA_ROLL_PTR_LEN - 1, 0);
 			}
@@ -1398,8 +1399,8 @@ rollback_clust:
 			already be holding dict_sys.mutex, which
 			would be acquired when updating statistics. */
 			if (update_statistics && !dict_locked) {
-				dict_stats_update_if_needed(
-					node->table, node->trx->mysql_thd);
+				dict_stats_update_if_needed(node->table,
+							    *node->trx);
 			} else {
 				node->table->stat_modified_counter++;
 			}

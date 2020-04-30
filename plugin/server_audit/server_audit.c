@@ -1,5 +1,5 @@
 /* Copyright (C) 2013, 2015, Alexey Botchkov and SkySQL Ab
-   Copyright (c) 2019, MariaDB Corporation.
+   Copyright (c) 2019, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -276,7 +276,7 @@ static my_off_t loc_tell(File fd)
 #endif /*WIN32*/
 
 
-extern char server_version[];
+extern MYSQL_PLUGIN_IMPORT char server_version[];
 static const char *serv_ver= NULL;
 static int started_mysql= 0;
 static int mysql_57_started= 0;
@@ -764,7 +764,7 @@ static int user_coll_fill(struct user_coll *c, char *users,
       if (cmp_user && take_over_cmp)
       {
         ADD_ATOMIC(internal_stop_logging, 1);
-        CLIENT_ERROR(1, "User '%.*s' was removed from the"
+        CLIENT_ERROR(1, "User '%.*b' was removed from the"
             " server_audit_excl_users.",
             MYF(ME_WARNING), (int) cmp_length, users);
         ADD_ATOMIC(internal_stop_logging, -1);
@@ -774,7 +774,7 @@ static int user_coll_fill(struct user_coll *c, char *users,
       else if (cmp_user)
       {
         ADD_ATOMIC(internal_stop_logging, 1);
-        CLIENT_ERROR(1, "User '%.*s' is in the server_audit_incl_users, "
+        CLIENT_ERROR(1, "User '%.*b' is in the server_audit_incl_users, "
             "so wasn't added.", MYF(ME_WARNING), (int) cmp_length, users);
         ADD_ATOMIC(internal_stop_logging, -1);
         remove_user(users);
@@ -2373,31 +2373,37 @@ typedef struct loc_system_variables
 
 static int init_done= 0;
 
+static void* find_sym(const char *sym)
+{
+#ifdef _WIN32
+  return GetProcAddress(GetModuleHandle("server.dll"),sym);
+#else
+  return dlsym(RTLD_DEFAULT, sym);
+#endif
+}
+
 static int server_audit_init(void *p __attribute__((unused)))
 {
   if (!serv_ver)
   {
-#ifdef _WIN32
-    serv_ver= (const char *) GetProcAddress(0, "server_version");
-#else
-    serv_ver= server_version;
-#endif /*_WIN32*/
+    serv_ver= find_sym("server_version");
   }
+
   if (!mysql_57_started)
   {
-    const void *my_hash_init_ptr= dlsym(RTLD_DEFAULT, "_my_hash_init");
+    const void *my_hash_init_ptr= find_sym("_my_hash_init");
     if (!my_hash_init_ptr)
     {
       maria_above_5= 1;
-      my_hash_init_ptr= dlsym(RTLD_DEFAULT, "my_hash_init2");
+      my_hash_init_ptr= find_sym("my_hash_init2");
     }
     if (!my_hash_init_ptr)
       return 1;
   }
 
-  if(!(int_mysql_data_home= dlsym(RTLD_DEFAULT, "mysql_data_home")))
+  if(!(int_mysql_data_home= find_sym("mysql_data_home")))
   {
-    if(!(int_mysql_data_home= dlsym(RTLD_DEFAULT, "?mysql_data_home@@3PADA")))
+    if(!(int_mysql_data_home= find_sym("?mysql_data_home@@3PADA")))
       int_mysql_data_home= &default_home;
   }
 
@@ -2929,7 +2935,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
   if (fdwReason != DLL_PROCESS_ATTACH)
     return 1;
 
-  serv_ver= (const char *) GetProcAddress(0, "server_version");
+  serv_ver= server_version;
 #else
 void __attribute__ ((constructor)) audit_plugin_so_init(void)
 {

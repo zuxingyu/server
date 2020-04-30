@@ -60,7 +60,7 @@ rpt_handle_event(rpl_parallel_thread::queued_event *qev,
     rgi->last_master_timestamp= ev->when + (time_t)ev->exec_time;
   err= apply_event_and_update_pos_for_parallel(ev, thd, rgi);
 
-  thread_safe_increment64(&rli->executed_entries);
+  rli->executed_entries++;
 #ifdef WITH_WSREP
   if (wsrep_after_statement(thd))
   {
@@ -1777,7 +1777,7 @@ rpl_parallel_thread::inuse_relaylog_refcount_update()
   inuse_relaylog *ir= accumulated_ir_last;
   if (ir)
   {
-    my_atomic_add64(&ir->dequeued_count, accumulated_ir_count);
+    ir->dequeued_count+= accumulated_ir_count;
     accumulated_ir_count= 0;
     accumulated_ir_last= NULL;
   }

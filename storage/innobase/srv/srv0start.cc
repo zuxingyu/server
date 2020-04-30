@@ -1033,7 +1033,7 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 
 		if (flushed_lsn != log_sys.get_flushed_lsn()) {
 			log_write_up_to(flushed_lsn, false);
-			log_sys.log.flush_data_only();
+			log_sys.log.flush();
 		}
 
 		ut_ad(flushed_lsn == log_get_lsn());
@@ -1567,7 +1567,7 @@ file_checked:
 			respective file pages, for the last batch of
 			recv_group_scan_log_recs(). */
 
-			recv_apply_hashed_log_recs(true);
+			recv_sys.apply(true);
 
 			if (recv_sys.found_corrupt_log
 			    || recv_sys.found_corrupt_fs) {
@@ -1993,11 +1993,9 @@ skip_monitors:
 	}
 
 	if (srv_force_recovery == 0) {
-		/* In the insert buffer we may have even bigger tablespace
+		/* In the change buffer we may have even bigger tablespace
 		id's, because we may have dropped those tablespaces, but
-		insert buffer merge has not had time to clean the records from
-		the ibuf tree. */
-
+		the buffered records have not been cleaned yet. */
 		ibuf_update_max_tablespace_id();
 	}
 

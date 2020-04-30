@@ -62,7 +62,7 @@ static my_bool tty_password= 0;
 static char opt_tmpdir[FN_REFLEN] = "";
 
 #ifndef DBUG_OFF
-static char *default_dbug_option= (char*) "d:t:O,/tmp/mysql_upgrade.trace";
+static char *default_dbug_option= (char*) "d:t:O,/tmp/mariadb-upgrade.trace";
 #endif
 
 static char **defaults_argv;
@@ -507,7 +507,7 @@ static void find_tool(char *tool_executable_name, const char *tool_name,
 
     len= (int)(last_fn_libchar - self_name);
 
-    my_snprintf(tool_executable_name, FN_REFLEN, "%.*s%c%s",
+    my_snprintf(tool_executable_name, FN_REFLEN, "%.*b%c%s",
                 len, self_name, FN_LIBCHAR, tool_name);
   }
 

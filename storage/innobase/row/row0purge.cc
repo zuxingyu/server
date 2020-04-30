@@ -707,8 +707,9 @@ static void row_purge_reset_trx_id(purge_node_t* node, mtr_t* mtr)
 				size_t offs = page_offset(ptr);
 				mtr->memset(block, offs, DATA_TRX_ID_LEN, 0);
 				offs += DATA_TRX_ID_LEN;
-				mtr->write<1,mtr_t::OPT>(*block, block->frame
-							 + offs, 0x80U);
+				mtr->write<1,mtr_t::MAYBE_NOP>(*block,
+							       block->frame
+							       + offs, 0x80U);
 				mtr->memset(block, offs + 1,
 					    DATA_ROLL_PTR_LEN - 1, 0);
 			}
@@ -1050,8 +1051,7 @@ row_purge_record_func(
 			if (node->table->stat_initialized
 			    && srv_stats_include_delete_marked) {
 				dict_stats_update_if_needed(
-					node->table,
-					thr->graph->trx->mysql_thd);
+					node->table, *thr->graph->trx);
 			}
 			MONITOR_INC(MONITOR_N_DEL_ROW_PURGE);
 		}

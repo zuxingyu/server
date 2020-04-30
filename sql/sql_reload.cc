@@ -153,6 +153,8 @@ bool reload_acl_and_cache(THD *thd, unsigned long long options,
       if (mysql_bin_log.rotate_and_purge(true, drop_gtid_domain))
         *write_to_binlog= -1;
 
+      /* Note that WSREP(thd) might not be true here e.g. during
+      SST. */
       if (WSREP_ON)
       {
         /* Wait for last binlog checkpoint event to be logged. */
@@ -512,7 +514,6 @@ bool reload_acl_and_cache(THD *thd, unsigned long long options,
 bool flush_tables_with_read_lock(THD *thd, TABLE_LIST *all_tables)
 {
   Lock_tables_prelocking_strategy lock_tables_prelocking_strategy;
-  TABLE_LIST *table_list;
 
   /*
     This is called from SQLCOM_FLUSH, the transaction has
@@ -545,16 +546,10 @@ bool flush_tables_with_read_lock(THD *thd, TABLE_LIST *all_tables)
 
     DEBUG_SYNC(thd,"flush_tables_with_read_lock_after_acquire_locks");
 
-    for (table_list= all_tables; table_list;
+    /* Reset ticket to satisfy asserts in open_tables(). */
+    for (auto table_list= all_tables; table_list;
          table_list= table_list->next_global)
-    {
-      /* Request removal of table from cache. */
-      tdc_remove_table(thd, TDC_RT_REMOVE_UNUSED,
-                       table_list->db.str,
-                       table_list->table_name.str);
-      /* Reset ticket to satisfy asserts in open_tables(). */
       table_list->mdl_request.ticket= NULL;
-    }
   }
 
   thd->variables.option_bits|= OPTION_TABLE_LOCK;
@@ -586,6 +581,16 @@ bool flush_tables_with_read_lock(THD *thd, TABLE_LIST *all_tables)
                  table_list->db.str, table_list->table_name.str);
         goto error_reset_bits;
       }
+    }
+  }
+
+  if (thd->lex->type & REFRESH_READ_LOCK)
+  {
+    for (auto table_list= all_tables; table_list;
+         table_list= table_list->next_global)
+    {
+      if (table_list->table->file->extra(HA_EXTRA_FLUSH))
+        goto error_reset_bits;
     }
   }
 

@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2011, 2016, MariaDB
+   Copyright (c) 2011, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -463,6 +463,7 @@ int mysql_update(THD *thd,
       my_error(ER_NOT_CONSTANT_EXPRESSION, MYF(0), "FOR PORTION OF");
       DBUG_RETURN(true);
     }
+    table->no_cache= true;
   }
 
   old_covering_keys= table->covering_keys;		// Keys used in WHERE
@@ -613,9 +614,11 @@ int mysql_update(THD *thd,
   else
   {
     ha_rows scanned_limit= query_plan.scanned_rows;
+    table->no_keyread= 1;
     query_plan.index= get_index_for_order(order, table, select, limit,
                                           &scanned_limit, &need_sort,
                                           &reverse);
+    table->no_keyread= 0;
     if (!need_sort)
       query_plan.scanned_rows= scanned_limit;
 
@@ -968,8 +971,8 @@ update_begin:
   can_compare_record= records_are_comparable(table);
   explain->tracker.on_scan_init();
 
-  if (table->versioned(VERS_TIMESTAMP) || table_list->has_period())
-    table->file->prepare_for_insert(1);
+  table->file->prepare_for_insert(1);
+  DBUG_ASSERT(table->file->inited != handler::NONE);
 
   THD_STAGE_INFO(thd, stage_updating);
   while (!(error=info.read_record()) && !thd->killed)
@@ -2028,15 +2031,14 @@ int multi_update::prepare(List<Item> &not_used_values,
     {
       table->read_set= &table->def_read_set;
       bitmap_union(table->read_set, &table->tmp_set);
-      if (table->versioned(VERS_TIMESTAMP))
-        table->file->prepare_for_insert(1);
+      table->file->prepare_for_insert(1);
     }
   }
   if (unlikely(error))
     DBUG_RETURN(1);    
 
   /*
-    Save tables beeing updated in update_tables
+    Save tables being updated in update_tables
     update_table->shared is position for table
     Don't use key read on tables that are updated
   */
@@ -2590,6 +2592,9 @@ int multi_update::send_data(List<Item> &not_used_values)
       TABLE *tmp_table= tmp_tables[offset];
       if (copy_funcs(tmp_table_param[offset].items_to_copy, thd))
         DBUG_RETURN(1);
+      /* rowid field is NULL if join tmp table has null row from outer join */
+      if (tmp_table->field[0]->is_null())
+        continue;
       /* Store regular updated fields in the row. */
       DBUG_ASSERT(1 + unupdated_check_opt_tables.elements ==
                   tmp_table_param[offset].func_count);
@@ -2787,6 +2792,7 @@ int multi_update::do_updates()
       uint field_num= 0;
       do
       {
+        DBUG_ASSERT(!tmp_table->field[field_num]->is_null());
         String rowid;
         tmp_table->field[field_num]->val_str(&rowid);
         if (unlikely((local_error= tbl->file->ha_rnd_pos(tbl->record[0],

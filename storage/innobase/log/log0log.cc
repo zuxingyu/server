@@ -558,7 +558,7 @@ dberr_t mapped_file_t::map(const char *path, bool read_only,
     return DB_ERROR;
 
   m_area= {static_cast<byte *>(ptr),
-           static_cast<span<byte>::index_type>(file_size)};
+           static_cast<span<byte>::size_type>(file_size)};
   return DB_SUCCESS;
 }
 
@@ -633,9 +633,9 @@ dberr_t file_os_io::write(const char *path, os_offset_t offset,
                        buf.size());
 }
 
-dberr_t file_os_io::flush_data_only() noexcept
+dberr_t file_os_io::flush() noexcept
 {
-  return os_file_flush_data(m_fd) ? DB_SUCCESS : DB_ERROR;
+  return os_file_flush(m_fd) ? DB_SUCCESS : DB_ERROR;
 }
 
 #ifdef HAVE_PMEM
@@ -674,7 +674,7 @@ public:
     pmem_memcpy_persist(m_file.data() + offset, buf.data(), buf.size());
     return DB_SUCCESS;
   }
-  dberr_t flush_data_only() noexcept final
+  dberr_t flush() noexcept final
   {
     ut_ad(0);
     return DB_SUCCESS;
@@ -746,10 +746,10 @@ dberr_t log_file_t::write(os_offset_t offset, span<const byte> buf) noexcept
   return m_file->write(m_path.c_str(), offset, buf);
 }
 
-dberr_t log_file_t::flush_data_only() noexcept
+dberr_t log_file_t::flush() noexcept
 {
   ut_ad(is_opened());
-  return m_file->flush_data_only();
+  return m_file->flush();
 }
 
 void log_t::file::open_file(std::string path)
@@ -773,7 +773,7 @@ void log_t::file::write_header_durable(lsn_t lsn)
         log_sys.log.format == log_t::FORMAT_ENC_10_5);
 
   // man 2 open suggests this buffer to be aligned by 512 for O_DIRECT
-  alignas(OS_FILE_LOG_BLOCK_SIZE) byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
+  MY_ALIGNED(OS_FILE_LOG_BLOCK_SIZE) byte buf[OS_FILE_LOG_BLOCK_SIZE] = {0};
 
   mach_write_to_4(buf + LOG_HEADER_FORMAT, log_sys.log.format);
   mach_write_to_4(buf + LOG_HEADER_SUBFORMAT, log_sys.log.subformat);
@@ -788,7 +788,7 @@ void log_t::file::write_header_durable(lsn_t lsn)
 
   log_sys.log.write(0, buf);
   if (!log_sys.log.writes_are_durable())
-    log_sys.log.flush_data_only();
+    log_sys.log.flush();
 }
 
 void log_t::file::read(os_offset_t offset, span<byte> buf)
@@ -813,11 +813,11 @@ void log_t::file::write(os_offset_t offset, span<byte> buf)
   log_sys.n_log_ios++;
 }
 
-void log_t::file::flush_data_only()
+void log_t::file::flush()
 {
   log_sys.pending_flushes.fetch_add(1, std::memory_order_acquire);
-  if (const dberr_t err= fd.flush_data_only())
-    ib::fatal() << "flush_data_only(" << fd.get_path() << ") returned " << err;
+  if (const dberr_t err= fd.flush())
+    ib::fatal() << "flush(" << fd.get_path() << ") returned " << err;
   log_sys.pending_flushes.fetch_sub(1, std::memory_order_release);
   log_sys.flushes.fetch_add(1, std::memory_order_release);
 }
@@ -936,7 +936,7 @@ loop:
 and invoke log_mutex_enter(). */
 static void log_write_flush_to_disk_low(lsn_t lsn)
 {
-  log_sys.log.flush_data_only();
+  log_sys.log.flush();
   ut_a(lsn >= log_sys.get_flushed_lsn());
   log_sys.set_flushed_lsn(lsn);
 }
@@ -1207,7 +1207,7 @@ static bool log_preflush_pool_modified_pages(lsn_t new_oldest)
 		not know how up-to-date the disk version of the database is,
 		and we could not make a new checkpoint on the basis of the
 		info on the buffer pool only. */
-		recv_apply_hashed_log_recs(true);
+		recv_sys.apply(true);
 	}
 
 	if (new_oldest == LSN_MAX
@@ -1294,7 +1294,7 @@ void log_write_checkpoint_info(lsn_t end_lsn)
 							   : LOG_CHECKPOINT_1,
 			  {buf, OS_FILE_LOG_BLOCK_SIZE});
 
-	log_sys.log.flush_data_only();
+	log_sys.log.flush();
 
 	log_mutex_enter();
 
@@ -1334,7 +1334,7 @@ bool log_checkpoint()
 			os_thread_sleep(360000000););
 
 	if (recv_recovery_is_on()) {
-		recv_apply_hashed_log_recs(true);
+		recv_sys.apply(true);
 	}
 
 	switch (srv_file_flush_method) {
@@ -1742,7 +1742,7 @@ wait_suspend_loop:
 
 		/* Ensure that all buffered changes are written to the
 		redo log before fil_close_all_files(). */
-		log_sys.log.flush_data_only();
+		log_sys.log.flush();
 	} else {
 		lsn = recv_sys.recovered_lsn;
 	}

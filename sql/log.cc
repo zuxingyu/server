@@ -1834,7 +1834,7 @@ binlog_commit_flush_stmt_cache(THD *thd, bool all,
 #ifdef WITH_WSREP
   if (thd->wsrep_mysql_replicated > 0)
   {
-    DBUG_ASSERT(WSREP_ON);
+    DBUG_ASSERT(WSREP(thd));
     WSREP_DEBUG("avoiding binlog_commit_flush_trx_cache: %d",
                 thd->wsrep_mysql_replicated);
     return 0;
@@ -2408,9 +2408,6 @@ static int binlog_savepoint_set(handlerton *hton, THD *thd, void *sv)
   int error= 1;
   DBUG_ENTER("binlog_savepoint_set");
 
-  if (wsrep_emulate_bin_log)
-    DBUG_RETURN(0);
-
   char buf[1024];
 
   String log_query(buf, sizeof(buf), &my_charset_bin);
@@ -2442,9 +2439,6 @@ static int binlog_savepoint_set(handlerton *hton, THD *thd, void *sv)
 static int binlog_savepoint_rollback(handlerton *hton, THD *thd, void *sv)
 {
   DBUG_ENTER("binlog_savepoint_rollback");
-
-  if (wsrep_emulate_bin_log)
-    DBUG_RETURN(0);
 
   /*
     Write ROLLBACK TO SAVEPOINT to the binlog cache if we have updated some
@@ -6930,14 +6924,15 @@ int MYSQL_BIN_LOG::rotate(bool force_rotate, bool* check_purge)
   int error= 0;
   DBUG_ENTER("MYSQL_BIN_LOG::rotate");
 
-  if (wsrep_to_isolation)
+#ifdef WITH_WSREP
+  if (WSREP_ON && wsrep_to_isolation)
   {
-    DBUG_ASSERT(WSREP_ON);
     *check_purge= false;
-    WSREP_DEBUG("avoiding binlog rotate due to TO isolation: %d", 
+    WSREP_DEBUG("avoiding binlog rotate due to TO isolation: %d",
                 wsrep_to_isolation);
     DBUG_RETURN(0);
   }
+#endif /* WITH_WSREP */
 
   //todo: fix the macro def and restore safe_mutex_assert_owner(&LOCK_log);
   *check_purge= false;
@@ -11011,18 +11006,20 @@ void wsrep_register_binlog_handler(THD *thd, bool trx)
     back a statement or a transaction. However, notifications do not happen
     if the binary log is set as read/write.
   */
-  //binlog_cache_mngr *cache_mngr= thd_get_cache_mngr(thd);
   binlog_cache_mngr *cache_mngr=
     (binlog_cache_mngr*) thd_get_ha_data(thd, binlog_hton);
   /* cache_mngr may be missing e.g. in mtr test ev51914.test */
-  if (cache_mngr && cache_mngr->trx_cache.get_prev_position() == MY_OFF_T_UNDEF)
+  if (cache_mngr)
   {
     /*
       Set an implicit savepoint in order to be able to truncate a trx-cache.
     */
-    my_off_t pos= 0;
-    binlog_trans_log_savepos(thd, &pos);
-    cache_mngr->trx_cache.set_prev_position(pos);
+    if (cache_mngr->trx_cache.get_prev_position() == MY_OFF_T_UNDEF)
+    {
+      my_off_t pos= 0;
+      binlog_trans_log_savepos(thd, &pos);
+      cache_mngr->trx_cache.set_prev_position(pos);
+    }
 
     /*
       Set callbacks in order to be able to call commmit or rollback.

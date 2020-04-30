@@ -53,11 +53,6 @@ static void wsrep_replication_process(THD *thd,
 
   Wsrep_applier_service applier_service(thd);
 
-  /* thd->system_thread_info.rpl_sql_info isn't initialized. */
-  if (!thd->slave_thread)
-    thd->system_thread_info.rpl_sql_info=
-      new rpl_sql_thread_info(thd->wsrep_rgi->rli->mi->rpl_filter);
-
   WSREP_INFO("Starting applier thread %llu", thd->thread_id);
   enum wsrep::provider::status
     ret= Wsrep_server_state::get_provider().run_applier(&applier_service);
@@ -68,8 +63,6 @@ static void wsrep_replication_process(THD *thd,
   mysql_cond_broadcast(&COND_wsrep_slave_threads);
   mysql_mutex_unlock(&LOCK_wsrep_slave_threads);
 
-  if (!thd->slave_thread)
-    delete thd->system_thread_info.rpl_sql_info;
   delete thd->wsrep_rgi->rli->mi;
   delete thd->wsrep_rgi->rli;
   
@@ -327,10 +320,15 @@ int wsrep_abort_thd(THD *bf_thd_ptr, THD *victim_thd_ptr, my_bool signal)
   DBUG_ENTER("wsrep_abort_thd");
   THD *victim_thd= (THD *) victim_thd_ptr;
   THD *bf_thd= (THD *) bf_thd_ptr;
+
   mysql_mutex_lock(&victim_thd->LOCK_thd_data);
-  if ( (WSREP(bf_thd) ||
-         ( (WSREP_ON || bf_thd->variables.wsrep_OSU_method == WSREP_OSU_RSU) &&
-           wsrep_thd_is_toi(bf_thd)) )                         &&
+
+  /* Note that when you use RSU node is desynced from cluster, thus WSREP(thd)
+  might not be true.
+  */
+  if ((WSREP(bf_thd) ||
+       ((WSREP_ON || bf_thd->variables.wsrep_OSU_method == WSREP_OSU_RSU) &&
+	 wsrep_thd_is_toi(bf_thd))) &&
        victim_thd &&
        !wsrep_thd_is_aborting(victim_thd))
   {
@@ -344,6 +342,7 @@ int wsrep_abort_thd(THD *bf_thd_ptr, THD *victim_thd_ptr, my_bool signal)
   {
     WSREP_DEBUG("wsrep_abort_thd not effective: %p %p", bf_thd, victim_thd);
   }
+
   mysql_mutex_unlock(&victim_thd->LOCK_thd_data);
   DBUG_RETURN(1);
 }

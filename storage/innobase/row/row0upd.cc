@@ -432,7 +432,7 @@ func_exit:
 
 inline bool wsrep_must_process_fk(const upd_node_t* node, const trx_t* trx)
 {
-	if (!wsrep_on_trx(trx)) {
+	if (!trx->is_wsrep()) {
 		return false;
 	}
 	return que_node_get_type(node->common.parent) != QUE_NODE_UPDATE
@@ -503,11 +503,6 @@ row_upd_changes_field_size_or_external(
 		ut_ad(new_len != UNIV_SQL_DEFAULT);
 
 		if (dfield_is_null(new_val) && !rec_offs_comp(offsets)) {
-			/* A bug fixed on Dec 31st, 2004: we looked at the
-			SQL NULL size from the wrong field! We may backport
-			this fix also to 4.0. The merge to 5.0 will be made
-			manually immediately after we commit this to 4.1. */
-
 			new_len = dict_col_get_sql_null_size(
 				dict_index_get_nth_col(index,
 						       upd_field->field_no),
@@ -1889,6 +1884,7 @@ row_upd_store_v_row(
 @param[in]	thd		mysql thread handle
 @param[in,out]	mysql_table	NULL, or mysql table object when
 				user thread invokes dml */
+static
 void
 row_upd_store_row(
 	upd_node_t*	node,
@@ -2503,9 +2499,8 @@ check_fk:
 
 	mtr_commit(mtr);
 
-	err = row_ins_clust_index_entry(index, entry, thr, node->upd_ext
-					? node->upd_ext->n_ext
-					: dtuple_get_n_ext(entry));
+	err = row_ins_clust_index_entry(index, entry, thr,
+					dtuple_get_n_ext(entry));
 	node->state = UPD_NODE_INSERT_CLUSTERED;
 
 	mem_heap_free(heap);

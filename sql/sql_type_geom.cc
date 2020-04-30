@@ -872,7 +872,7 @@ int Field_geom::store(const char *from, size_t length, CHARSET_INFO *cs)
 
       my_error(ER_TRUNCATED_WRONG_VALUE_FOR_FIELD, MYF(0),
                Geometry::ci_collection[m_type_handler->geometry_type()]->m_name.str,
-	       wkt.c_ptr(),
+	       wkt.c_ptr_safe(),
                db, tab_name, field_name.str,
                (ulong) table->in_use->get_stmt_da()->
                current_row_for_warning());
@@ -943,16 +943,17 @@ bool Field_geom::load_data_set_null(THD *thd)
 }
 
 
-uint Field_geom::get_key_image(uchar *buff,uint length, imagetype type_arg)
+uint Field_geom::get_key_image(uchar *buff,uint length, const uchar *ptr_arg,
+                               imagetype type_arg) const
 {
   if (type_arg == itMBR)
   {
     LEX_CSTRING tmp;
-    tmp.str= (const char *) get_ptr();
-    tmp.length= get_length(ptr);
+    tmp.str= (const char *) get_ptr(ptr_arg);
+    tmp.length= get_length(ptr_arg);
     return Geometry::get_key_image_itMBR(tmp, buff, length);
   }
-  return Field_blob::get_key_image_itRAW(buff, length);
+  return Field_blob::get_key_image_itRAW(ptr_arg, buff, length);
 }
 
 Binlog_type_info Field_geom::binlog_type_info() const

@@ -1367,14 +1367,17 @@ static Sys_var_mybool Sys_large_files_support(
 
 static Sys_var_uint Sys_large_page_size(
        "large_page_size",
-       "If large page support is enabled, this shows the size of memory pages",
+       "Previously showed the size of large memory pages, unused since "
+       "multiple page size support was added",
        READ_ONLY GLOBAL_VAR(opt_large_page_size), NO_CMD_LINE,
-       VALID_RANGE(0, UINT_MAX), DEFAULT(0), BLOCK_SIZE(1));
+       VALID_RANGE(0, UINT_MAX), DEFAULT(0), BLOCK_SIZE(1),
+       NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0), ON_UPDATE(0),
+       DEPRECATED(""));
 
 static Sys_var_mybool Sys_large_pages(
        "large_pages", "Enable support for large pages",
        READ_ONLY GLOBAL_VAR(opt_large_pages),
-       IF_WIN(NO_CMD_LINE, CMD_LINE(OPT_ARG)), DEFAULT(FALSE));
+       CMD_LINE(OPT_ARG), DEFAULT(FALSE));
 
 static Sys_var_charptr_fscs Sys_language(
        "lc_messages_dir", "Directory where error messages are",
@@ -6077,7 +6080,7 @@ vio_keepalive_opts opt_vio_keepalive;
 
 static Sys_var_int Sys_keepalive_time(
        "tcp_keepalive_time",
-       "Timeout, in milliseconds, with no activity until the first TCP keep-alive packet is sent."
+       "Timeout, in seconds, with no activity until the first TCP keep-alive packet is sent."
        "If set to 0, system dependent default is used.",
        AUTO_SET GLOBAL_VAR(opt_vio_keepalive.idle),
        CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, INT_MAX32/1000), DEFAULT(0),

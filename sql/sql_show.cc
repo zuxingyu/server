@@ -64,6 +64,7 @@
 #endif
 #include "transaction.h"
 #include "opt_trace.h"
+#include "my_cpu.h"
 
 enum enum_i_s_events_fields
 {
@@ -2253,6 +2254,14 @@ int show_create_table_ex(THD *thd, TABLE_LIST *table_list,
 
   }
 
+  if (period.name)
+  {
+    append_period(thd, packet,
+                  period.start_field(share)->field_name,
+                  period.end_field(share)->field_name,
+                  period.name, true);
+  }
+
   key_info= table->s->key_info;
   primary_key= share->primary_key;
 
@@ -2287,7 +2296,11 @@ int show_create_table_ex(THD *thd, TABLE_LIST *table_list,
 
     packet->append(STRING_WITH_LEN(" ("));
 
-    for (uint j=0 ; j < key_info->user_defined_key_parts ; j++,key_part++)
+    uint key_parts= key_info->user_defined_key_parts;
+    if (key_info->without_overlaps)
+      key_parts-= 2;
+
+    for (uint j=0 ; j < key_parts ; j++,key_part++)
     {
       Field *field= key_part->field;
       if (field->invisible > INVISIBLE_USER)
@@ -2307,6 +2320,14 @@ int show_create_table_ex(THD *thd, TABLE_LIST *table_list,
                                       key_part->field->charset()->mbmaxlen);
       }
     }
+
+    if (key_info->without_overlaps)
+    {
+      packet->append(',');
+      append_identifier(thd, packet, &share->period.name);
+      packet->append(STRING_WITH_LEN(" WITHOUT OVERLAPS"));
+    }
+
     packet->append(')');
     store_key_options(thd, packet, table, &table->key_info[i]);
     if (key_info->parser)
@@ -2339,15 +2360,6 @@ int show_create_table_ex(THD *thd, TABLE_LIST *table_list,
       DBUG_ASSERT(fe->invisible == INVISIBLE_SYSTEM);
     }
   }
-
-  if (period.name)
-  {
-    append_period(thd, packet,
-                  period.start_field(share)->field_name,
-                  period.end_field(share)->field_name,
-                  period.name, true);
-  }
-
 
   /*
     Get possible foreign key definitions stored in InnoDB and append them
@@ -3619,6 +3631,11 @@ const char* get_one_variable(THD *thd,
         end= pos + ls->length;
       break;
     }
+  case SHOW_ATOMIC_COUNTER_UINT32_T:
+    end= int10_to_str(
+           static_cast<long>(*static_cast<Atomic_counter<uint32_t>*>(value)),
+           buff, 10);
+    break;
   case SHOW_UNDEF:
     break;                                        // Return empty string
   case SHOW_SYS:                                  // Cannot happen
@@ -8488,7 +8505,6 @@ end:
 bool optimize_schema_tables_reads(JOIN *join)
 {
   THD *thd= join->thd;
-  bool result= 0;
   DBUG_ENTER("optimize_schema_tables_reads");
 
   JOIN_TAB *tab;
@@ -8523,11 +8539,11 @@ bool optimize_schema_tables_reads(JOIN *join)
         */
         cond= tab->cache_select->cond;
       }
-
-      optimize_for_get_all_tables(thd, table_list, cond);
+      if (optimize_for_get_all_tables(thd, table_list, cond))
+        DBUG_RETURN(TRUE);   // Handle OOM
     }
   }
-  DBUG_RETURN(result);
+  DBUG_RETURN(FALSE);
 }
 
 

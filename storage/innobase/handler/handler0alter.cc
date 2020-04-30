@@ -58,6 +58,8 @@ Smart ALTER TABLE
 #include "span.h"
 
 using st_::span;
+/** File format constraint for ALTER TABLE */
+extern ulong innodb_instant_alter_column_allowed;
 
 static const char *MSG_UNSUPPORTED_ALTER_ONLINE_ON_VIRTUAL_COLUMN=
 			"INPLACE ADD or DROP of virtual columns cannot be "
@@ -1870,6 +1872,62 @@ innobase_fts_check_doc_id_col(
 	return(false);
 }
 
+/** Check whether the table is empty.
+@param[in]	table	table to be checked
+@return true if table is empty */
+static bool innobase_table_is_empty(const dict_table_t *table)
+{
+  dict_index_t *clust_index= dict_table_get_first_index(table);
+  mtr_t mtr;
+  btr_pcur_t pcur;
+  buf_block_t *block;
+  page_cur_t *cur;
+  const rec_t *rec;
+  bool next_page= false;
+
+  mtr.start();
+  btr_pcur_open_at_index_side(true, clust_index, BTR_SEARCH_LEAF,
+                              &pcur, true, 0, &mtr);
+  btr_pcur_move_to_next_user_rec(&pcur, &mtr);
+  if (!rec_is_metadata(btr_pcur_get_rec(&pcur), *clust_index))
+    btr_pcur_move_to_prev_on_page(&pcur);
+scan_leaf:
+  cur= btr_pcur_get_page_cur(&pcur);
+  page_cur_move_to_next(cur);
+next_page:
+  if (next_page)
+  {
+    uint32_t next_page_no= btr_page_get_next(page_cur_get_page(cur));
+    if (next_page_no == FIL_NULL)
+    {
+      mtr.commit();
+      return true;
+    }
+
+    next_page= false;
+    block= page_cur_get_block(cur);
+    block= btr_block_get(*clust_index, next_page_no, BTR_SEARCH_LEAF, false,
+                         &mtr);
+    btr_leaf_page_release(page_cur_get_block(cur), BTR_SEARCH_LEAF, &mtr);
+    page_cur_set_before_first(block, cur);
+    page_cur_move_to_next(cur);
+  }
+
+  rec= page_cur_get_rec(cur);
+  if (rec_get_deleted_flag(rec, dict_table_is_comp(table)));
+  else if (!page_rec_is_supremum(rec))
+  {
+    mtr.commit();
+    return false;
+  }
+  else
+  {
+    next_page= true;
+    goto next_page;
+  }
+  goto scan_leaf;
+}
+
 /** Check if InnoDB supports a particular alter table in-place
 @param altered_table TABLE object for new version of table.
 @param ha_alter_info Structure describing changes to be done
@@ -1959,6 +2017,37 @@ ha_innobase::check_if_supported_inplace_alter(
 	}
 
 	const char* reason_rebuild = NULL;
+
+	switch (innodb_instant_alter_column_allowed) {
+	case 0: /* never */
+		if ((ha_alter_info->handler_flags
+		     & (ALTER_ADD_STORED_BASE_COLUMN
+			| ALTER_STORED_COLUMN_ORDER
+			| ALTER_DROP_STORED_COLUMN))
+		    || m_prebuilt->table->is_instant()) {
+			reason_rebuild =
+				"innodb_instant_alter_column_allowed=never";
+innodb_instant_alter_column_allowed_reason:
+			if (ha_alter_info->handler_flags
+			    & ALTER_RECREATE_TABLE) {
+				reason_rebuild = NULL;
+			} else {
+				ha_alter_info->handler_flags
+					|= ALTER_RECREATE_TABLE;
+				ha_alter_info->unsupported_reason
+					= reason_rebuild;
+			}
+		}
+		break;
+	case 1: /* add_last */
+		if ((ha_alter_info->handler_flags
+		     & (ALTER_STORED_COLUMN_ORDER | ALTER_DROP_STORED_COLUMN))
+		    || m_prebuilt->table->instant) {
+			reason_rebuild = "innodb_instant_atler_column_allowed="
+				"add_last";
+			goto innodb_instant_alter_column_allowed_reason;
+		}
+	}
 
 	switch (ha_alter_info->handler_flags & ~INNOBASE_INPLACE_IGNORE) {
 	case ALTER_OPTIONS:
@@ -2059,6 +2148,13 @@ ha_innobase::check_if_supported_inplace_alter(
 		ib_push_frm_error(m_user_thd, m_prebuilt->table, altered_table,
 			n_indexes, true);
 
+		DBUG_RETURN(HA_ALTER_INPLACE_NOT_SUPPORTED);
+	}
+
+	/* '0000-00-00' value isn't allowed for datetime datatype
+	for newly added column when table is not empty */
+	if (ha_alter_info->error_if_not_empty
+	    && !innobase_table_is_empty(m_prebuilt->table)) {
 		DBUG_RETURN(HA_ALTER_INPLACE_NOT_SUPPORTED);
 	}
 
@@ -2450,6 +2546,7 @@ cannot_create_many_fulltext_index:
 	}
 
 	if (need_rebuild || fts_need_rebuild) {
+		ha_alter_info->handler_flags |= ALTER_RECREATE_TABLE;
 		DBUG_RETURN(online
 			    ? HA_ALTER_INPLACE_COPY_NO_LOCK
 			    : HA_ALTER_INPLACE_COPY_LOCK);
@@ -6153,7 +6250,7 @@ prepare_inplace_alter_table_dict(
 			    user_table, ctx->drop_fk, ctx->num_to_drop_fk)) {
 new_clustered_failed:
 			DBUG_ASSERT(ctx->trx != ctx->prebuilt->trx);
-			trx_rollback_to_savepoint(ctx->trx, NULL);
+			ctx->trx->rollback();
 
 			ut_ad(user_table->get_ref_count() == 1);
 
@@ -6892,7 +6989,7 @@ op_ok:
 			goto error_handling;
 		}
 
-		trx_commit(ctx->trx);
+		ctx->trx->commit();
 		trx_start_for_ddl(ctx->trx, op);
 
 		if (!ctx->new_table->fts
@@ -6937,7 +7034,7 @@ op_ok:
 	row_mysql_unlock_data_dictionary(ctx->trx);
 	dict_locked = false;
 
-	ut_a(ctx->trx->lock.n_active_thrs == 0);
+	ut_ad(!ctx->trx->lock.n_active_thrs);
 
 	if (ctx->old_table->fts) {
 		fts_sync_during_ddl(ctx->old_table);
@@ -10186,7 +10283,7 @@ commit_cache_norebuild(
 					    space->zip_size(),
 					    RW_X_LATCH, &mtr)) {
 					mtr.set_named_space(space);
-					mtr.write<4,mtr_t::OPT>(
+					mtr.write<4,mtr_t::MAYBE_NOP>(
 						*b,
 						FSP_HEADER_OFFSET
 						+ FSP_SPACE_FLAGS + b->frame,
@@ -10843,7 +10940,7 @@ ha_innobase::commit_inplace_alter_table(
 		} else {
 			ut_ad(trx_state_eq(trx, TRX_STATE_ACTIVE));
 			ut_ad(trx->has_logged());
-			trx_commit(trx);
+			trx->commit();
 		}
 
 		/* If server crashes here, the dictionary in

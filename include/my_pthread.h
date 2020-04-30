@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB Corporation.
+   Copyright (c) 2009, 2020, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -22,8 +22,6 @@
 #ifndef ETIME
 #define ETIME ETIMEDOUT				/* For FreeBSD */
 #endif
-
-#include <my_atomic.h>
 
 #ifdef  __cplusplus
 #define EXTERNC extern "C"
@@ -684,7 +682,7 @@ extern void my_mutex_end(void);
   We need to have at least 256K stack to handle calls to myisamchk_init()
   with the current number of keys and key parts.
 */
-#ifdef __SANITIZE_ADDRESS__
+#if defined(__SANITIZE_ADDRESS__) || defined(WITH_UBSAN)
 #define DEFAULT_THREAD_STACK	(383*1024L) /* 392192 */
 #else
 #define DEFAULT_THREAD_STACK	(292*1024L) /* 299008 */
@@ -732,13 +730,14 @@ struct st_my_thread_var
 #endif
 };
 
-extern struct st_my_thread_var *_my_thread_var(void) __attribute__ ((const));
+struct st_my_thread_var *_my_thread_var(void);
 extern void **my_thread_var_dbug(void);
 extern safe_mutex_t **my_thread_var_mutex_in_use(void);
 extern uint my_thread_end_wait_time;
 extern my_bool safe_mutex_deadlock_detector;
 #define my_thread_var (_my_thread_var())
 #define my_errno my_thread_var->thr_errno
+int set_mysys_var(struct st_my_thread_var *mysys_var);
 
 
 /*
@@ -796,26 +795,6 @@ extern my_bool safe_mutex_deadlock_detector;
 #define statistic_add(V,C,L)     (V)+=(C)
 #define statistic_sub(V,C,L)     (V)-=(C)
 #endif /* SAFE_STATISTICS */
-
-static inline void thread_safe_increment32(int32 *value)
-{
-  (void) my_atomic_add32_explicit(value, 1, MY_MEMORY_ORDER_RELAXED);
-}
-
-static inline void thread_safe_decrement32(int32 *value)
-{
-  (void) my_atomic_add32_explicit(value, -1, MY_MEMORY_ORDER_RELAXED);
-}
-
-static inline void thread_safe_increment64(int64 *value)
-{
-  (void) my_atomic_add64_explicit(value, 1, MY_MEMORY_ORDER_RELAXED);
-}
-
-static inline void thread_safe_decrement64(int64 *value)
-{
-  (void) my_atomic_add64_explicit(value, -1, MY_MEMORY_ORDER_RELAXED);
-}
 
 /*
   No locking needed, the counter is owned by the thread

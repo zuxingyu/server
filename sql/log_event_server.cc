@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2019, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2019, MariaDB
+   Copyright (c) 2009, 2020, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1367,7 +1367,8 @@ Query_log_event::Query_log_event()
   Creates an event for binlogging
   The value for `errcode' should be supplied by caller.
 */
-Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg, size_t query_length, bool using_trans,
+Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg,
+                                 size_t query_length, bool using_trans,
 				 bool direct, bool suppress_use, int errcode)
 
   :Log_event(thd_arg,
@@ -1380,7 +1381,7 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg, size_t que
    thread_id(thd_arg->thread_id),
    /* save the original thread id; we already know the server id */
    slave_proxy_id((ulong)thd_arg->variables.pseudo_thread_id),
-   flags2_inited(1), sql_mode_inited(1), charset_inited(1),
+   flags2_inited(1), sql_mode_inited(1), charset_inited(1), flags2(0),
    sql_mode(thd_arg->variables.sql_mode),
    auto_increment_increment(thd_arg->variables.auto_increment_increment),
    auto_increment_offset(thd_arg->variables.auto_increment_offset),
@@ -1395,9 +1396,14 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg, size_t que
   /*
     If Query_log_event will contain non trans keyword (not BEGIN, COMMIT,
     SAVEPOINT or ROLLBACK) we disable PA for this transaction.
+    Note that here WSREP(thd) might not be true e.g. when wsrep_shcema
+    is created we create tables with thd->variables.wsrep_on=false
+    to avoid replicating wsrep_schema tables to other nodes.
    */
   if (WSREP_ON && !is_trans_keyword())
+  {
     thd->wsrep_PA_safe= false;
+  }
 #endif /* WITH_WSREP */
 
   memset(&user, 0, sizeof(user));
@@ -1685,15 +1691,18 @@ int Query_log_event::do_apply_event(rpl_group_info *rgi,
     {
       thd->slave_expected_error= expected_error;
       if (flags2_inited)
+      {
         /*
-          all bits of thd->variables.option_bits which are 1 in OPTIONS_WRITTEN_TO_BIN_LOG
-          must take their value from flags2.
+          all bits of thd->variables.option_bits which are 1 in
+          OPTIONS_WRITTEN_TO_BIN_LOG must take their value from
+          flags2.
         */
         thd->variables.option_bits= flags2|(thd->variables.option_bits & ~OPTIONS_WRITTEN_TO_BIN_LOG);
+      }
       /*
         else, we are in a 3.23/4.0 binlog; we previously received a
-        Rotate_log_event which reset thd->variables.option_bits and sql_mode etc, so
-        nothing to do.
+        Rotate_log_event which reset thd->variables.option_bits and
+        sql_mode etc, so nothing to do.
       */
       /*
         We do not replicate MODE_NO_DIR_IN_CREATE. That is, if the master is a
@@ -2111,7 +2120,8 @@ Query_log_event::do_shall_skip(rpl_group_info *rgi)
     }
   }
 #ifdef WITH_WSREP
-  else if (WSREP_ON && wsrep_mysql_replication_bundle && opt_slave_domain_parallel_threads == 0 &&
+  else if (WSREP(thd) && wsrep_mysql_replication_bundle &&
+           opt_slave_domain_parallel_threads == 0 &&
            thd->wsrep_mysql_replicated > 0 &&
            (is_begin() || is_commit()))
   {
@@ -2125,7 +2135,7 @@ Query_log_event::do_shall_skip(rpl_group_info *rgi)
       thd->wsrep_mysql_replicated = 0;
     }
   }
-#endif
+#endif /* WITH_WSREP */
   DBUG_RETURN(Log_event::do_shall_skip(rgi));
 }
 
@@ -3972,7 +3982,7 @@ Xid_apply_log_event::do_shall_skip(rpl_group_info *rgi)
     DBUG_RETURN(Log_event::EVENT_SKIP_COUNT);
   }
 #ifdef WITH_WSREP
-  else if (wsrep_mysql_replication_bundle && WSREP_ON &&
+  else if (wsrep_mysql_replication_bundle && WSREP(thd) &&
            opt_slave_domain_parallel_threads == 0)
   {
     if (++thd->wsrep_mysql_replicated < (int)wsrep_mysql_replication_bundle)

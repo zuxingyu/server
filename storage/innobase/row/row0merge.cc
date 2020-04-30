@@ -1984,7 +1984,7 @@ row_merge_read_clustered_index(
 				os_thread_yield();
 scan_next:
 				ut_ad(!mtr_started);
-				ut_ad(mtr.is_active());
+				ut_ad(!mtr.is_active());
 				mtr.start();
 				mtr_started = true;
 				/* Restore position on the record, or its
@@ -4745,11 +4745,10 @@ func_exit:
 
 	ut_free(merge_files);
 
-	alloc.deallocate_large(block, &block_pfx, block_size);
+	alloc.deallocate_large(block, &block_pfx);
 
 	if (crypt_block) {
-		alloc.deallocate_large(crypt_block, &crypt_pfx,
-				       block_size);
+		alloc.deallocate_large(crypt_block, &crypt_pfx);
 	}
 
 	DICT_TF2_FLAG_UNSET(new_table, DICT_TF2_FTS_ADD_DOC_ID);
