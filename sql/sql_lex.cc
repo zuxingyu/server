@@ -3136,7 +3136,7 @@ st_select_lex_node *st_select_lex_node:: insert_chain_before(
 {
   end_chain_node->link_next= *ptr_pos_to_insert;
   (*ptr_pos_to_insert)->link_prev= &end_chain_node->link_next;
-  this->link_prev= ptr_pos_to_insert;
+  link_prev= ptr_pos_to_insert;
   return this;
 }
 
@@ -3322,7 +3322,7 @@ bool st_select_lex::mark_as_dependent(THD *thd, st_select_lex *last,
       return TRUE;
   } while ((s= s->outer_select()) != last && s != 0);
   is_correlated= TRUE;
-  this->master_unit()->item->is_correlated= TRUE;
+  master_unit()->item->is_correlated= TRUE;
   return FALSE;
 }
 
@@ -4481,7 +4481,7 @@ void LEX::reset_n_backup_query_tables_list(Query_tables_list *backup)
     We have to perform full initialization here since otherwise we
     will damage backed up state.
   */
-  this->reset_query_tables_list(TRUE);
+  reset_query_tables_list(TRUE);
 }
 
 
@@ -4495,8 +4495,8 @@ void LEX::reset_n_backup_query_tables_list(Query_tables_list *backup)
 
 void LEX::restore_backup_query_tables_list(Query_tables_list *backup)
 {
-  this->destroy_query_tables_list();
-  this->set_query_tables_list(backup);
+  destroy_query_tables_list();
+  set_query_tables_list(backup);
 }
 
 
@@ -6285,7 +6285,7 @@ bool LEX::sp_variable_declarations_set_default(THD *thd, int nvars,
     bool last= i + 1 == (uint) nvars;
     spvar->default_value= dflt_value_item;
     /* The last instruction is responsible for freeing LEX. */
-    sp_instr_set *is= new (this->thd->mem_root)
+    sp_instr_set *is= new (thd->mem_root)
                       sp_instr_set(sphead->instructions(),
                                    spcont, &sp_rcontext_handler_local,
                                    spvar->offset, dflt_value_item,
@@ -6585,7 +6585,7 @@ sp_variable *LEX::sp_add_for_loop_variable(THD *thd, const LEX_CSTRING *name,
     return NULL;
 
   spvar->default_value= value;
-  sp_instr_set *is= new (this->thd->mem_root)
+  sp_instr_set *is= new (thd->mem_root)
                     sp_instr_set(sphead->instructions(),
                                  spcont, &sp_rcontext_handler_local,
                                  spvar->offset, value,
