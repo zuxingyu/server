@@ -915,90 +915,88 @@ fil_space_extend(
 	return(success);
 }
 
-/** Prepare to free a file node object from a tablespace memory cache.
-@param[in,out]	node	file node
-@param[in]	space	tablespace */
-static
-void
-fil_node_close_to_free(
-	fil_node_t*	node,
-	fil_space_t*	space)
+/** Prepare to free a file from fil_system. */
+inline void fil_node_t::close_to_free()
 {
-	ut_ad(mutex_own(&fil_system.mutex));
-	ut_a(node->magic_n == FIL_NODE_MAGIC_N);
-	ut_a(!node->being_extended);
+  ut_ad(mutex_own(&fil_system.mutex));
+  ut_a(magic_n == FIL_NODE_MAGIC_N);
+  ut_a(!being_extended);
 
-	while (node->is_open()) {
-		/* We fool the assertion in fil_node_t::close() to think
-		there are no unflushed modifications in the file */
-		node->needs_flush = false;
-		if (space->is_in_unflushed_spaces()) {
-			ut_ad(srv_file_flush_method != SRV_O_DIRECT_NO_FSYNC);
-			fil_system.unflushed_spaces.remove(*space);
-		}
+  while (is_open())
+  {
+    if (space->is_in_unflushed_spaces())
+    {
+      ut_ad(srv_file_flush_method != SRV_O_DIRECT_NO_FSYNC);
+      fil_system.unflushed_spaces.remove(*space);
+    }
 
-		if (node->n_pending) {
-			mutex_exit(&fil_system.mutex);
-			os_thread_sleep(100);
-			mutex_enter(&fil_system.mutex);
-			continue;
-		}
+    if (n_pending)
+    {
+      mutex_exit(&fil_system.mutex);
+      os_thread_sleep(100);
+      mutex_enter(&fil_system.mutex);
+      continue;
+    }
 
-		if (srv_file_flush_method == SRV_O_DIRECT_NO_FSYNC) {
-			ut_ad(!space->is_in_unflushed_spaces());
-			ut_ad(fil_space_is_flushed(space));
-		} else if (space->is_in_unflushed_spaces()
-			   && fil_space_is_flushed(space)) {
-			fil_system.unflushed_spaces.remove(*space);
-		}
+    if (srv_file_flush_method == SRV_O_DIRECT_NO_FSYNC)
+    {
+      ut_ad(!space->is_in_unflushed_spaces());
+      ut_ad(fil_space_is_flushed(space));
+    }
+    else if (space->is_in_unflushed_spaces() && fil_space_is_flushed(space))
+      fil_system.unflushed_spaces.remove(*space);
 
-		node->close();
-		break;
-	}
+    if (fil_space_belongs_in_lru(space))
+    {
+      ut_ad(UT_LIST_GET_LEN(fil_system.LRU) > 0);
+      UT_LIST_REMOVE(fil_system.LRU, this);
+    }
+    ut_a(!n_pending_flushes);
+    ut_a(!being_extended);
+    bool ret= os_file_close(handle);
+    ut_a(ret);
+    handle= OS_FILE_CLOSED;
+    break;
+  }
 }
 
-/** Detach a space object from the tablespace memory cache.
-Closes the files in the chain but does not delete them.
-There must not be any pending i/o's or flushes on the files.
-@param[in,out]	space		tablespace */
-static
-void
-fil_space_detach(
-	fil_space_t*	space)
+/** Detach a tablespace from the cache and close the files. */
+inline void fil_system_t::detach(fil_space_t *space)
 {
-	ut_ad(mutex_own(&fil_system.mutex));
+  ut_ad(mutex_own(&fil_system.mutex));
+  HASH_DELETE(fil_space_t, hash, spaces, space->id, space);
 
-	HASH_DELETE(fil_space_t, hash, fil_system.spaces, space->id, space);
+  if (space->is_in_unflushed_spaces())
+  {
+    ut_ad(srv_file_flush_method != SRV_O_DIRECT_NO_FSYNC);
+    unflushed_spaces.remove(*space);
+  }
 
-	if (space->is_in_unflushed_spaces()) {
-		ut_ad(srv_file_flush_method != SRV_O_DIRECT_NO_FSYNC);
-		fil_system.unflushed_spaces.remove(*space);
-	}
+  if (space->is_in_rotation_list())
+    rotation_list.remove(*space);
+  UT_LIST_REMOVE(space_list, space);
+  if (space == sys_space)
+    sys_space= nullptr;
+  else if (space == temp_space)
+    temp_space= nullptr;
 
-	if (space->is_in_rotation_list()) {
-		fil_system.rotation_list.remove(*space);
-	}
+  ut_a(space->magic_n == FIL_SPACE_MAGIC_N);
+  ut_a(space->n_pending_flushes == 0);
 
-	UT_LIST_REMOVE(fil_system.space_list, space);
+  for (fil_node_t* node= UT_LIST_GET_FIRST(space->chain); node;
+       node= UT_LIST_GET_NEXT(chain, node))
+    if (node->is_open())
+    {
+      ut_ad(n_open > 0);
+      n_open--;
+    }
 
-	ut_a(space->magic_n == FIL_SPACE_MAGIC_N);
-	ut_a(space->n_pending_flushes == 0);
-
-	for (fil_node_t* fil_node = UT_LIST_GET_FIRST(space->chain);
-	     fil_node != NULL;
-	     fil_node = UT_LIST_GET_NEXT(chain, fil_node)) {
-
-		fil_node_close_to_free(fil_node, space);
-	}
-
-	if (space == fil_system.sys_space) {
-		fil_system.sys_space = NULL;
-	} else if (space == fil_system.temp_space) {
-		fil_system.temp_space = NULL;
-	}
+  for (fil_node_t* node= UT_LIST_GET_FIRST(space->chain); node;
+       node= UT_LIST_GET_NEXT(chain, node))
+    node->close_to_free();
 }
 
-/** Free a tablespace object on which fil_space_detach() was invoked.
+/** Free a tablespace object on which fil_system_t::detach() was invoked.
 There must not be any pending i/o's or flushes on the files.
 @param[in,out]	space		tablespace */
 static
@@ -1011,7 +1009,7 @@ fil_space_free_low(
 	      || space->max_lsn == 0);
 
 	/* Wait for fil_space_t::release_for_io(); after
-	fil_space_detach(), the tablespace cannot be found, so
+	fil_system_t::detach(), the tablespace cannot be found, so
 	fil_space_acquire_for_io() would return NULL */
 	while (space->pending_io()) {
 		os_thread_sleep(100);
@@ -1052,7 +1050,7 @@ fil_space_free(
 	fil_space_t*	space = fil_space_get_by_id(id);
 
 	if (space != NULL) {
-		fil_space_detach(space);
+		fil_system.detach(space);
 	}
 
 	mutex_exit(&fil_system.mutex);
@@ -1611,7 +1609,7 @@ next:
 		}
 
 		space = UT_LIST_GET_NEXT(space_list, space);
-		fil_space_detach(prev_space);
+		fil_system.detach(prev_space);
 		fil_space_free_low(prev_space);
 	}
 
@@ -2250,7 +2248,7 @@ dberr_t fil_delete_tablespace(ulint id, bool if_exists)
 		ut_a(s == space);
 		ut_a(!space->referenced());
 		ut_a(UT_LIST_GET_LEN(space->chain) == 1);
-		fil_space_detach(space);
+		fil_system.detach(space);
 		mutex_exit(&fil_system.mutex);
 
 		log_mutex_enter();

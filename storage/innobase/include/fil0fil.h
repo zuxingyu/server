@@ -649,11 +649,13 @@ struct fil_node_t {
 #endif
 			   );
 
-	/** Close the file handle. */
-	void close();
+  /** Close the file handle. */
+  void close();
+  /** Prepare to free a file from fil_system. */
+  inline void close_to_free();
 
-	/** Update the data structures on I/O completion */
-	inline void complete_io(bool write= false);
+  /** Update the data structures on I/O completion */
+  inline void complete_io(bool write= false);
 };
 
 /** Value of fil_node_t::magic_n */
@@ -960,6 +962,9 @@ public:
     return false;
   }
 #endif
+  /** Detach a tablespace from the cache and close the files. */
+  inline void detach(fil_space_t *space);
+
 public:
 	ib_mutex_t	mutex;		/*!< The mutex protecting the cache */
 	fil_space_t*	sys_space;	/*!< The innodb_system tablespace */
