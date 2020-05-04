@@ -1064,12 +1064,6 @@ public:
 					if written again we check is TRIM
 					operation needed. */
 
-	ulint           real_size;	/*!< Real size of the page
-					Normal pages == srv_page_size
-					page compressed pages, payload
-					size alligned to sector boundary.
-					*/
-
 	buf_tmp_buffer_t* slot;		/*!< Slot for temporary memory
 					used for encryption/compression
 					or NULL */

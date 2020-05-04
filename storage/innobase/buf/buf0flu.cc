@@ -880,13 +880,14 @@ a page is written to disk.
 @param[in,out]  space   tablespace
 @param[in,out]  bpage   buffer page
 @param[in]      s       physical page frame that is being encrypted
+@param[in,out]  size    payload size in bytes
 @return page frame to be written to file
 (may be src_frame or an encrypted/compressed copy of it) */
-static byte *buf_page_encrypt(fil_space_t* space, buf_page_t* bpage, byte* s)
+static byte *buf_page_encrypt(fil_space_t* space, buf_page_t* bpage, byte* s,
+                              size_t *size)
 {
   ut_ad(bpage->status != buf_page_t::FREED);
   ut_ad(space->id == bpage->id.space());
-  bpage->real_size = srv_page_size;
 
   ut_d(fil_page_type_validate(space, s));
 
@@ -974,7 +975,7 @@ not_compressed:
     if (!len)
       goto not_compressed;
 
-    bpage->real_size= len;
+    *size= len;
 
     if (full_crc32)
     {
@@ -1110,7 +1111,6 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
   buf_page_set_io_fix(bpage, BUF_IO_WRITE);
   mutex_exit(block_mutex);
   mutex_exit(&buf_pool.mutex);
-  IORequest request(IORequest::WRITE, bpage, flush_type);
 
   if (flush_type == IORequest::FLUSH_LIST && rw_lock &&
       !rw_lock_sx_lock_nowait(rw_lock, BUF_IO_WRITE))
@@ -1186,17 +1186,21 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
   }
 
   page_t *frame= bpage->zip.data;
+  size_t size, orig_size;
 
   if (UNIV_UNLIKELY(!rw_lock))
   {
-    ut_a(page_zip_verify_checksum(frame, bpage->zip_size()));
+    orig_size= size= bpage->zip_size();
+    ut_a(page_zip_verify_checksum(frame, size));
     if (status != buf_page_t::FREED)
-      frame= buf_page_encrypt(space, bpage, frame);
+      frame= buf_page_encrypt(space, bpage, frame, &size);
+    ut_ad(size == bpage->zip_size());
   }
   else
   {
     buf_block_t *block= reinterpret_cast<buf_block_t*>(bpage);
     byte *page= block->frame;
+    orig_size= size= block->physical_size();
 
     if (status != buf_page_t::FREED)
     {
@@ -1205,14 +1209,14 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
         /* innodb_checksum_algorithm=full_crc32 is not implemented for
         ROW_FORMAT=COMPRESSED pages. */
         ut_ad(!frame);
-        page= buf_page_encrypt(space, bpage, page);
+        page= buf_page_encrypt(space, bpage, page, &size);
       }
 
       buf_flush_init_for_writing(block, page, frame ? &bpage->zip : nullptr,
                                  full_crc32);
 
       if (!full_crc32)
-        page= buf_page_encrypt(space, bpage, frame ? frame : page);
+        page= buf_page_encrypt(space, bpage, frame ? frame : page, &size);
     }
 
     frame= page;
@@ -1230,6 +1234,7 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
     ut_ad(space->atomic_write_supported);
 
   bool use_doublewrite;
+  IORequest request(IORequest::WRITE, bpage, flush_type);
 
   ut_ad(status == bpage->status);
 
@@ -1245,14 +1250,16 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
     {
       ut_ad(!srv_read_only_mode);
       if (flush_type == IORequest::SINGLE_PAGE)
-        buf_dblwr_write_single_page(bpage, sync);
+        buf_dblwr->write_single_page(bpage, sync, size);
       else
-        buf_dblwr_add_to_batch(bpage, flush_type);
+        buf_dblwr->add_to_batch(bpage, flush_type, size);
       break;
     }
     /* fall through */
   case buf_page_t::INIT_ON_FLUSH:
     use_doublewrite= false;
+    if (size != orig_size)
+      request.set_punch_hole();
     /* TODO: pass the tablespace to fil_io() */
     fil_io_t fio= fil_io(request, sync, bpage->id, bpage->zip_size(), 0,
                          bpage->physical_size(), frame, bpage);
@@ -1270,6 +1277,8 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
     if (space->purpose != FIL_TYPE_TEMPORARY)
       fil_flush(space);
 
+    if (size != orig_size && space->punch_hole)
+      request.set_punch_hole();
     buf_page_write_complete(bpage, request, use_doublewrite, true/*evict*/);
   }
 

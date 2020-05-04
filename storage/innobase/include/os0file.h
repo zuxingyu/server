@@ -206,14 +206,8 @@ public:
 
   IORequest(ulint type= READ, buf_page_t *bpage= nullptr,
             flush_t flush_type= LRU) :
-	  m_bpage(bpage), m_type(static_cast<uint16_t>(type)),
-	  m_flush_type(flush_type)
-  {
-    if (bpage && buf_page_should_punch_hole(bpage))
-      set_punch_hole();
-    if (!is_punch_hole_supported())
-      clear_punch_hole();
-  }
+    m_bpage(bpage), m_type(static_cast<uint16_t>(type)),
+    m_flush_type(flush_type) {}
 
 	/** Flags passed in the request, they can be ORred together. */
 	enum {

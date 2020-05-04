@@ -1290,7 +1290,6 @@ buf_block_init(buf_block_t* block, byte* frame)
 	block->page.state = BUF_BLOCK_NOT_USED;
 	block->page.buf_fix_count = 0;
 	block->page.io_fix = BUF_IO_NONE;
-	block->page.real_size = 0;
 	block->page.write_size = 0;
 	block->modify_clock = 0;
 	block->page.slot = NULL;
@@ -4004,7 +4003,6 @@ buf_page_init_low(
 	bpage->access_time = 0;
 	bpage->oldest_modification = 0;
 	bpage->write_size = 0;
-	bpage->real_size = 0;
 	bpage->slot = NULL;
 	bpage->ibuf_exist = false;
 	bpage->status = buf_page_t::NORMAL;
@@ -5563,17 +5561,6 @@ std::ostream& operator<<(std::ostream &out, const page_id_t page_id)
   out << "[page id: space=" << page_id.space()
       << ", page number=" << page_id.page_no() << "]";
   return out;
-}
-
-/**
-Should we punch hole to deallocate unused portion of the page.
-@param[in]	bpage		Page control block
-@return true if punch hole should be used, false if not */
-bool
-buf_page_should_punch_hole(
-	const buf_page_t* bpage)
-{
-	return bpage->real_size != bpage->physical_size();
 }
 
 /**
