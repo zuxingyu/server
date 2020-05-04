@@ -1056,7 +1056,7 @@ inline void fil_node_t::complete_io(bool write)
       ut_ad(!space->is_in_unflushed_spaces());
       ut_ad(!needs_flush);
     }
-    else
+    else if (!space->is_stopping())
     {
       needs_flush= true;
       if (!space->is_in_unflushed_spaces())
