@@ -1099,6 +1099,7 @@ handle_rpl_parallel_thread(void *arg)
     uint wait_count= 0;
     rpl_parallel_thread::queued_event *qev, *next_qev;
 
+    slave_idle_parallel_worker_count++;
     thd->ENTER_COND(&rpt->COND_rpl_thread, &rpt->LOCK_rpl_thread,
                     &stage_waiting_for_work_from_sql_thread, &old_stage);
     /*

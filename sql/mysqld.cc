@@ -448,6 +448,7 @@ ulong tc_heuristic_recover= 0;
 Atomic_counter<uint32_t> thread_count;
 bool shutdown_wait_for_slaves;
 Atomic_counter<uint32_t> slave_open_temp_tables;
+Atomic_counter<uint64_t> slave_idle_parallel_worker_count;
 ulong thread_created;
 ulong back_log, connect_timeout, server_id;
 ulong what_to_log;
@@ -7542,6 +7543,7 @@ SHOW_VAR status_vars[]= {
   {"Slave_retried_transactions",(char*)&slave_retried_transactions, SHOW_LONG},
   {"Slave_running",            (char*) &show_slave_running,     SHOW_SIMPLE_FUNC},
   {"Slave_skipped_errors",     (char*) &slave_skipped_errors, SHOW_LONGLONG},
+  {"Slave_idle_parallel_worker_count", (char*) &slave_idle_parallel_worker_count, SHOW_LONG},
 #endif
   {"Slow_launch_threads",      (char*) &slow_launch_threads,    SHOW_LONG},
   {"Slow_queries",             (char*) offsetof(STATUS_VAR, long_query_count), SHOW_LONG_STATUS},
@@ -7798,6 +7800,7 @@ static int mysql_init_variables(void)
   test_flags= select_errors= dropping_tables= ha_open_options=0;
   thread_count= kill_cached_threads= 0;
   slave_open_temp_tables= 0;
+  slave_idle_parallel_worker_count= 0;
   cached_thread_count= 0;
   opt_endinfo= using_udf_functions= 0;
   opt_using_transactions= 0;

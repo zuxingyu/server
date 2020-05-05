@@ -1,0 +1,38 @@
+include/master-slave.inc
+[connection master]
+connection slave;
+include/stop_slave.inc
+# ==========================================================================
+#                  slave_parallel_max_queued=1024                          #
+# ==========================================================================
+connection slave;
+SET @old_slave_parallel_max_queued= @@GLOBAL.slave_parallel_max_queued;
+SET @old_slave_parallel_threads= @@GLOBAL.slave_parallel_threads;
+SET GLOBAL slave_parallel_max_queued= 1024;;
+SET GLOBAL slave_parallel_threads= 2;
+CHANGE MASTER TO master_use_gtid=slave_pos;
+START SLAVE IO_THREAD;
+include/wait_for_slave_io_to_start.inc
+connection master;
+CREATE TABLE t1 (t text) ENGINE=innodb;
+CREATE TABLE t2 (t text) ENGINE=innodb;
+SET SESSION gtid_domain_id=1;
+"Insert 500 rows into table 't1' using gtid_domain_id=1"
+SET SESSION gtid_domain_id=2;
+"Insert 500 rows into table 't1' using gtid_domain_id=2"
+include/sync_slave_io_with_master.inc
+include/wait_for_slave_sql_to_start.inc
+include/stop_slave.inc
+# ==========================================================================
+#                  slave_parallel_max_queued=1073741824                    #
+# ==========================================================================
+include/wait_for_slave_io_to_start.inc
+"Insert 500 rows into table 't1' using gtid_domain_id=1"
+SET SESSION gtid_domain_id=2;
+"Insert 500 rows into table 't1' using gtid_domain_id=2"
+include/sync_slave_io_with_master.inc
+include/wait_for_slave_sql_to_start.inc
+include/stop_slave.inc
+include/assert.inc ["Wait count should be higher when slave_parallel_max_queued=1024"]
+include/start_slave.inc
+include/rpl_end.inc

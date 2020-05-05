@@ -5387,6 +5387,7 @@ pthread_handler_t handle_slave_sql(void *arg)
 
   pthread_detach_this_thread();
 
+  slave_idle_parallel_worker_count=0;
   if (opt_slave_parallel_threads > 0 && 
       rpl_parallel_activate_pool(&global_rpl_thread_pool))
   {

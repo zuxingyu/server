@@ -1,0 +1,104 @@
+# ==== Purpose ====
+#
+#  Test verifies that status variable 'slave_idle_parallel_worker_count' gets
+#  incremented each time a worker enters idle state of "Waiting for work from
+#  SQL thread"
+#
+# ==== Implementation ====
+#
+# Steps:
+#    0 - Configure slave_parallel_max_queued=1KB to a small value.
+#    1 - Generate some busy load on master and observe that workers enter
+#        idle state more often inspite of busy load from master due to small
+#        'slave_parallel_max_queued' size.
+#    2 - Configure slave_parallel_max_queued=1GB
+#    3 - Generate some busy load on master and observe that the idle worker
+#        count is lesser than the first case. Confirm using assert.
+#
+# ==== References ====
+#
+# MDEV:20220: Add status variable that gets incremented if slave's parallel
+#             worker thread is idle due to full queue
+
+--source include/have_innodb.inc
+--source include/have_binlog_format_row.inc
+--source include/master-slave.inc
+
+--let $script_dir = $MYSQLTEST_VARDIR
+--write_file $script_dir/check_idle_worker_count.inc
+
+--connection slave
+SET @old_slave_parallel_max_queued= @@GLOBAL.slave_parallel_max_queued;
+SET @old_slave_parallel_threads= @@GLOBAL.slave_parallel_threads;
+--eval SET GLOBAL slave_parallel_max_queued= $worker_max_queued_var
+SET GLOBAL slave_parallel_threads= 2;
+CHANGE MASTER TO master_use_gtid=slave_pos;
+START SLAVE IO_THREAD;
+--source include/wait_for_slave_io_to_start.inc
+
+--connection master
+CREATE TABLE t1 (t text) ENGINE=innodb;
+CREATE TABLE t2 (t text) ENGINE=innodb;
+SET SESSION gtid_domain_id=1;
+
+--echo "Insert 500 rows into table 't1' using gtid_domain_id=1"
+--disable_query_log
+let $i=500;
+while ($i)
+{
+  INSERT INTO t1 VALUES (REPEAT('a',4096));
+  dec $i;
+}
+--enable_query_log
+
+SET SESSION gtid_domain_id=2;
+--echo "Insert 500 rows into table 't1' using gtid_domain_id=2"
+--disable_query_log
+let $i=500;
+while ($i)
+{
+  INSERT INTO t2 VALUES (repeat('a',4096));
+  dec $i;
+}
+--source include/sync_slave_io_with_master.inc
+
+--connection slave
+START SLAVE SQL_THREAD;
+--source include/wait_for_slave_sql_to_start.inc
+
+--connection master
+--sync_slave_with_master
+
+--connection master
+DROP TABLE t1,t2;
+--sync_slave_with_master
+
+--source include/stop_slave.inc
+SET @@GLOBAL.slave_parallel_max_queued= @old_slave_parallel_max_queued;
+SET @@GLOBAL.slave_parallel_threads= @old_slave_parallel_threads;
+EOF
+
+--connection slave
+--source include/stop_slave.inc
+
+--echo # ==========================================================================
+--echo #                  slave_parallel_max_queued=1024                          #
+--echo # ==========================================================================
+--let $worker_max_queued_var=1024;
+--source $script_dir/check_idle_worker_count.inc
+let $test_run1= query_get_value(show global status like 'slave_idle_parallel_worker_count', Value, 1);
+
+--echo # ==========================================================================
+--echo #                  slave_parallel_max_queued=1073741824                    #
+--echo # ==========================================================================
+--let $worker_max_queued_var=1073741824;
+--source $script_dir/check_idle_worker_count.inc
+let $test_run2= query_get_value(show global status like 'slave_idle_parallel_worker_count', Value, 1);
+
+--let $assert_text= "Wait count should be higher when slave_parallel_max_queued=1024"
+--let $assert_cond= $test_run1 > $test_run2
+--source include/assert.inc
+
+--source include/start_slave.inc
+
+--source include/rpl_end.inc
