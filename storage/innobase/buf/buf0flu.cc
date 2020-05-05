@@ -1307,7 +1307,7 @@ static bool buf_flush_check_neighbor(const page_id_t id,
 
   buf_page_t *bpage= buf_pool.page_hash_get_low(id);
 
-  if (!bpage)
+  if (!bpage || buf_pool.watch_is_sentinel(*bpage))
     return false;
 
   ut_ad(bpage->in_file());
