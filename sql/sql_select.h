@@ -1645,7 +1645,8 @@ public:
 	    ((select_distinct || !simple_order || !simple_group) ||
 	     (group_list && order) ||
              MY_TEST(select_options & OPTION_BUFFER_RESULT))) ||
-            (rollup.state != ROLLUP::STATE_NONE && select_distinct));
+            (rollup.state != ROLLUP::STATE_NONE && select_distinct) ||
+            select_lex->have_window_funcs());
   }
   bool choose_subquery_plan(table_map join_tables);
   void get_partial_cost_and_fanout(int end_tab_idx,
