@@ -1059,11 +1059,6 @@ public:
 					zip.data == NULL means an active
 					buf_pool.watch */
 
-	ulint           write_size;	/* Write size is set when this
-					page is first time written and then
-					if written again we check is TRIM
-					operation needed. */
-
 	buf_tmp_buffer_t* slot;		/*!< Slot for temporary memory
 					used for encryption/compression
 					or NULL */
