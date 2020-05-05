@@ -1297,8 +1297,7 @@ buf_block_init(buf_block_t* block, byte* frame)
 #endif /* BTR_CUR_HASH_ADAPT */
 	block->skip_flush_check = false;
 
-	ut_d(block->page.in_page_hash = FALSE);
-	ut_d(block->page.in_zip_hash = FALSE);
+	ut_d(block->page.in_zip_hash = false);
 	ut_d(block->page.in_flush_list = FALSE);
 	ut_d(block->page.in_free_list = FALSE);
 	ut_d(block->page.in_LRU_list = FALSE);
@@ -1743,15 +1742,11 @@ inline bool buf_pool_t::realloc(buf_block_t *block)
 		}
 
 		/* relocate page_hash */
-		ut_ad(block->page.in_page_hash);
 		ut_ad(&block->page == page_hash_get_low(block->page.id));
-		ut_d(block->page.in_page_hash = FALSE);
 		ulint	fold = block->page.id.fold();
 		ut_ad(fold == new_block->page.id.fold());
 		HASH_REPLACE(buf_page_t, hash, page_hash, fold,
 			     &block->page, &new_block->page);
-
-		ut_ad(new_block->page.in_page_hash);
 
 		buf_block_modify_clock_inc(block);
 		static_assert(FIL_PAGE_OFFSET % 4 == 0, "alignment");
@@ -2522,7 +2517,6 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage)
 	ut_a(bpage->buf_fix_count == 0);
 	ut_ad(bpage->in_LRU_list);
 	ut_ad(!bpage->in_zip_hash);
-	ut_ad(bpage->in_page_hash);
 	ut_ad(bpage == buf_pool.page_hash_get_low(bpage->id));
 	ut_ad(!buf_pool.watch_is_sentinel(*bpage));
 #ifdef UNIV_DEBUG
@@ -2547,7 +2541,6 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage)
 	buf_LRU_adjust_hp(bpage);
 
 	ut_d(bpage->in_LRU_list = FALSE);
-	ut_d(bpage->in_page_hash = FALSE);
 
 	/* relocate buf_pool.LRU */
 	b = UT_LIST_GET_PREV(LRU, bpage);
@@ -2630,7 +2623,6 @@ retry:
       /* This watch may be in use for some other page. */
       continue;
     ut_ad(w->state == BUF_BLOCK_POOL_WATCH);
-    ut_ad(!w->in_page_hash);
     ut_ad(w->buf_fix_count == 0);
     /* w is pointing to watch[], which is protected by mutex.
     Normally, buf_page_t objects are protected by buf_block_t::mutex
@@ -2653,10 +2645,8 @@ retry:
       goto retry;
     }
 
-    ut_ad(!w->in_page_hash);
     ut_ad(w->buf_fix_count == 0);
     w->buf_fix_count= 1;
-    ut_d(w->in_page_hash = TRUE);
     HASH_INSERT(buf_page_t, hash, page_hash, fold, w);
     return nullptr;
   }
@@ -2675,8 +2665,6 @@ inline void buf_pool_t::watch_remove(buf_page_t *watch)
   ut_ad(rw_lock_own(hash_lock_get(watch->id), RW_LOCK_X));
   ut_ad(mutex_own(&mutex));
 
-  ut_ad(watch->in_page_hash);
-  ut_d(watch->in_page_hash= FALSE);
   HASH_DELETE(buf_page_t, hash, page_hash, watch->id.fold(), watch);
   watch->buf_fix_count= 0;
   watch->state= BUF_BLOCK_POOL_WATCH;
@@ -4060,8 +4048,6 @@ static void buf_page_init(const page_id_t page_id, ulint zip_size,
 	}
 
 	ut_ad(!block->page.in_zip_hash);
-	ut_ad(!block->page.in_page_hash);
-	ut_d(block->page.in_page_hash = TRUE);
 
 	block->page.id = page_id;
 
@@ -4248,13 +4234,10 @@ buf_page_init_for_read(
 		bpage->id = page_id;
 		bpage->status = buf_page_t::NORMAL;
 
-		ut_d(bpage->in_page_hash = FALSE);
-		ut_d(bpage->in_zip_hash = FALSE);
+		ut_d(bpage->in_zip_hash = false);
 		ut_d(bpage->in_flush_list = FALSE);
 		ut_d(bpage->in_free_list = FALSE);
 		ut_d(bpage->in_LRU_list = FALSE);
-
-		ut_d(bpage->in_page_hash = TRUE);
 
 		if (watch_page != NULL) {
 

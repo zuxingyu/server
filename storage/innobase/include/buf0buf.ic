@@ -201,7 +201,6 @@ buf_page_set_state(
 	              || state == BUF_BLOCK_REMOVE_HASH
 		      || state == BUF_BLOCK_FILE_PAGE);
 		if (state == BUF_BLOCK_REMOVE_HASH) {
-			ut_ad(!bpage->in_page_hash);
 			ut_ad(!bpage->in_zip_hash);
 			ut_ad(!bpage->in_LRU_list);
 			ut_ad(!bpage->in_free_list);

@@ -1448,12 +1448,11 @@ func_exit:
 
 		UNIV_MEM_DESC(b->zip.data, b->zip_size());
 
-		/* The fields in_page_hash and in_LRU_list of
+		/* The field in_LRU_list of
 		the to-be-freed block descriptor should have
 		been cleared in
 		buf_LRU_block_remove_hashed(), which
 		invokes buf_LRU_remove_block(). */
-		ut_ad(!bpage->in_page_hash);
 		ut_ad(!bpage->in_LRU_list);
 
 		/* bpage->state was BUF_BLOCK_FILE_PAGE because
@@ -1463,7 +1462,6 @@ func_exit:
 		/* The fields of bpage were copied to b before
 		buf_LRU_block_remove_hashed() was invoked. */
 		ut_ad(!b->in_zip_hash);
-		ut_ad(b->in_page_hash);
 		ut_ad(b->in_LRU_list);
 
 		HASH_INSERT(buf_page_t, hash, buf_pool.page_hash,
@@ -1784,7 +1782,6 @@ buf_LRU_block_remove_hashed(
 			<< " not found in the hash table";
 		ib::error()
 #ifdef UNIV_DEBUG
-			<< "in_page_hash:" << bpage->in_page_hash
 			<< " in_zip_hash:" << bpage->in_zip_hash
 			<< " in_flush_list:" << bpage->in_flush_list
 			<< " in_LRU_list:" << bpage->in_LRU_list
@@ -1809,8 +1806,6 @@ buf_LRU_block_remove_hashed(
 	}
 
 	ut_ad(!bpage->in_zip_hash);
-	ut_ad(bpage->in_page_hash);
-	ut_d(bpage->in_page_hash = FALSE);
 
 	HASH_DELETE(buf_page_t, hash, buf_pool.page_hash, bpage->id.fold(),
 		    bpage);

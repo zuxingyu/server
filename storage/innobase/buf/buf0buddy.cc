@@ -362,13 +362,12 @@ buf_buddy_block_free(void* buf)
 
 	HASH_SEARCH(hash, buf_pool.zip_hash, fold, buf_page_t*, bpage,
 		    ut_ad(buf_page_get_state(bpage) == BUF_BLOCK_MEMORY
-			  && bpage->in_zip_hash && !bpage->in_page_hash),
+			  && bpage->in_zip_hash),
 		    ((buf_block_t*) bpage)->frame == buf);
 	ut_a(bpage);
 	ut_a(buf_page_get_state(bpage) == BUF_BLOCK_MEMORY);
-	ut_ad(!bpage->in_page_hash);
 	ut_ad(bpage->in_zip_hash);
-	ut_d(bpage->in_zip_hash = FALSE);
+	ut_d(bpage->in_zip_hash = false);
 	HASH_DELETE(buf_page_t, hash, buf_pool.zip_hash, fold, bpage);
 
 	ut_d(memset(buf, 0, srv_page_size));
@@ -401,9 +400,8 @@ buf_buddy_block_register(
 	ut_a(block->frame);
 	ut_a(!ut_align_offset(block->frame, srv_page_size));
 
-	ut_ad(!block->page.in_page_hash);
 	ut_ad(!block->page.in_zip_hash);
-	ut_d(block->page.in_zip_hash = TRUE);
+	ut_d(block->page.in_zip_hash = true);
 	HASH_INSERT(buf_page_t, hash, buf_pool.zip_hash, fold, &block->page);
 
 	ut_d(buf_pool.buddy_n_frames++);

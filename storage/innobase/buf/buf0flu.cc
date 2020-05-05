@@ -395,7 +395,6 @@ void buf_flush_insert_into_flush_list(buf_block_t* block, lsn_t lsn)
 		buf_flush_relocate_on_flush_list()), there is no possibility
 		of a race condition in the assertions below. */
 		ut_ad(block->page.in_LRU_list);
-		ut_ad(block->page.in_page_hash);
 		/* buf_buddy_block_register() will take a block in the
 		BUF_BLOCK_MEMORY state, not a file page. */
 		ut_ad(!block->page.in_zip_hash);

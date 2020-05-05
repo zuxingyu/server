@@ -1063,10 +1063,9 @@ public:
 					used for encryption/compression
 					or NULL */
 #ifdef UNIV_DEBUG
-	/** whether the page is in buf_pool.page_hash;
-	protected by buf_pool.mutex(!) and the hash bucket rw-latch */
-	ibool		in_page_hash;
-	ibool		in_zip_hash;	/*!< TRUE if in buf_pool.zip_hash */
+	/** whether the block is in buf_pool.zip_hash; protected by
+	buf_pool.mutex */
+	bool in_zip_hash;
 #endif /* UNIV_DEBUG */
 
 	/** @name Page flushing fields
@@ -1928,7 +1927,6 @@ public:
 
     ut_ad(bpage.state == BUF_BLOCK_ZIP_PAGE);
     ut_ad(!bpage.in_zip_hash);
-    ut_ad(bpage.in_page_hash);
     ut_ad(!bpage.zip.data);
     return true;
   }
@@ -1962,33 +1960,22 @@ public:
   void watch_unset(const page_id_t id)
   {
     const ulint fold= id.fold();
-#if 1 /* FIXME: Remove in_page_hash */
-    mutex_enter(&mutex);
-#endif
     rw_lock_t *hash_lock= page_hash_lock_confirmed<true>(fold);
     /* The page must exist because watch_set() increments buf_fix_count. */
     buf_page_t *watch= page_hash_get_low(id);
     if (watch->unfix() == 0 && watch_is_sentinel(*watch))
     {
       /* The following is based on buf_pool_watch_remove(). */
-      ut_d(watch->in_page_hash= FALSE);
       HASH_DELETE(buf_page_t, hash, page_hash, fold, watch);
       rw_lock_x_unlock(hash_lock);
       // Now that the watch is detached from page_hash, release it to watch[].
-#if 0
       mutex_enter(&mutex);
-#endif
       watch->buf_fix_count= 0;
       watch->state= BUF_BLOCK_POOL_WATCH;
-#if 0
       mutex_exit(&mutex);
-#endif
     }
     else
      rw_lock_x_unlock(hash_lock);
-#if 1 /* FIXME: Remove in_page_hash */
-    mutex_exit(&mutex);
-#endif
   }
 
   /** Remove the sentinel block for the watch before replacing it with a
@@ -2054,8 +2041,8 @@ public:
 					page_hash is protected by an
 					array of mutexes.
 					Changes in page_hash are protected
-					by buf_pool.mutex and the relevant
-					page_hash mutex. Lookups can happen
+					by the relevant page_hash mutex.
+					Lookups can happen
 					while holding the buf_pool.mutex or
 					the relevant page_hash mutex. */
 	hash_table_t*	page_hash_old;	/*!< old pointer to page_hash to be
@@ -2063,7 +2050,8 @@ public:
 	hash_table_t*	zip_hash;	/*!< hash table of buf_block_t blocks
 					whose frames are allocated to the
 					zip buddy system,
-					indexed by block->frame */
+					indexed by block->frame;
+					protected by buf_pool.mutex*/
 	/** number of pending read operations */
 	Atomic_counter<ulint> n_pend_reads;
 	Atomic_counter<ulint>
