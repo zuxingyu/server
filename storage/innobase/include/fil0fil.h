@@ -962,10 +962,10 @@ public:
     return false;
   }
 #endif
+public:
   /** Detach a tablespace from the cache and close the files. */
   inline void detach(fil_space_t *space);
 
-public:
 	ib_mutex_t	mutex;		/*!< The mutex protecting the cache */
 	fil_space_t*	sys_space;	/*!< The innodb_system tablespace */
 	fil_space_t*	temp_space;	/*!< The innodb_temporary tablespace */
