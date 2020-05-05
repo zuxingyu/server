@@ -3252,11 +3252,11 @@ loop:
 				/* We can release hash_lock after we
 				increment the fix count to make
 				sure that no state change takes place. */
-				fix_block = reinterpret_cast<buf_block_t*>(
-					bpage);
 				bpage->fix();
 				/* Now safe to release page_hash mutex */
 				rw_lock_x_unlock(hash_lock);
+				block = reinterpret_cast<buf_block_t*>(bpage);
+				fix_block = block;
 				goto got_block;
 			}
 
