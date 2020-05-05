@@ -21,6 +21,7 @@
 #define NO_WOLFSSL_STUB
 #define OPENSSL_ALL
 #define WOLFSSL_ALLOW_TLSV10
+#define NO_OLD_TIMEVAL_NAME
 
 #cmakedefine WOLFSSL_AESNI
 #cmakedefine USE_FAST_MATH
