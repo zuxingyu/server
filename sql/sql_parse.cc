@@ -3177,7 +3177,7 @@ mysql_create_routine(THD *thd, LEX *lex)
             creation of routine and implicit GRANT parts of one fully atomic
             statement.
       */
-    DBUG_ASSERT(thd->transaction.stmt.is_empty());
+    DBUG_ASSERT(thd->transaction->stmt.is_empty());
     close_thread_tables(thd);
     /*
       Check if the definer exists on slave,
@@ -6578,7 +6578,7 @@ drop_routine(THD *thd, LEX *lex)
     dropping of routine and implicit REVOKE parts of one fully atomic
     statement.
   */
-  DBUG_ASSERT(thd->transaction.stmt.is_empty());
+  DBUG_ASSERT(thd->transaction->stmt.is_empty());
   close_thread_tables(thd);
 
   if (sp_result != SP_KEY_NOT_FOUND &&

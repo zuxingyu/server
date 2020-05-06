@@ -1,0 +1,40 @@
+########################################################################
+# Tests BACKUP STAGE locking
+########################################################################
+
+--source include/have_innodb.inc
+--source include/have_metadata_lock_info.inc
+--source include/not_embedded.inc
+
+SET GLOBAL lock_wait_timeout=0;
+CREATE TABLE t_permanent_aria  (col1 INT) ENGINE = Aria transactional=1;
+INSERT INTO t_permanent_aria SET col1 = 1;
+
+--connect(con1,localhost,root,,)
+SET AUTOCOMMIT = 0;
+
+--connection default
+BACKUP STAGE START;
+BACKUP STAGE FLUSH;
+BACKUP STAGE BLOCK_DDL;
+BACKUP STAGE BLOCK_COMMIT;
+
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+
+--connection con1
+UPDATE t_permanent_aria SET col1 = 8;
+
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+
+--connection default
+BACKUP STAGE END;
+
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+
+select * from t_permanent_aria;
+
+SELECT LOCK_MODE, LOCK_TYPE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.metadata_lock_info;
+
+DROP TABLE t_permanent_aria;
+--disconnect con1
+set global lock_wait_timeout=default;
