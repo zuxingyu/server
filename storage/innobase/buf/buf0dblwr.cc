@@ -744,14 +744,14 @@ void buf_dblwr_update(const buf_page_t &bpage, bool single_page)
 @param[in] s     tablespace */
 static void buf_dblwr_check_page_lsn(const page_t* page, const fil_space_t& s)
 {
-  /* Ignore page compressed or encrypted pages */
+  /* Ignore page_compressed or encrypted pages */
   if (s.is_compressed() || buf_page_get_key_version(page, s.flags))
     return;
   const byte* lsn_start= FIL_PAGE_LSN + 4 + page;
-  const byte* lsn_end= page +
-    srv_page_size - (s.full_crc32()
-    ? FIL_PAGE_FCRC32_END_LSN
-    : FIL_PAGE_END_LSN_OLD_CHKSUM - 4);
+  const byte* lsn_end= page + srv_page_size -
+    (s.full_crc32()
+     ? FIL_PAGE_FCRC32_END_LSN
+     : FIL_PAGE_END_LSN_OLD_CHKSUM - 4);
   static_assert(FIL_PAGE_FCRC32_END_LSN % 4 == 0, "alignment");
   static_assert(FIL_PAGE_LSN % 4 == 0, "alignment");
   ut_ad(!memcmp_aligned<4>(lsn_start, lsn_end, 4));
@@ -1098,12 +1098,13 @@ void buf_dblwr_t::write_single_page(buf_page_t *bpage, bool sync, size_t size)
     /* Check that the actual page in the buffer pool is not corrupt
     and the LSN values are sane. */
     buf_dblwr_check_block(reinterpret_cast<buf_block_t*>(bpage));
-
+#ifdef UNIV_DEBUG
     /* Check that the page as written to the doublewrite buffer has
     sane LSN values. */
     if (!bpage->zip.data)
-      ut_d(buf_dblwr_check_page_lsn(*bpage, reinterpret_cast<buf_block_t*>
-                                    (bpage)->frame));
+      buf_dblwr_check_page_lsn(*bpage, reinterpret_cast<buf_block_t*>
+                               (bpage)->frame);
+#endif
   }
 
 retry:
