@@ -271,6 +271,9 @@ extern int my_umask_dir,
 	   my_recived_signals,	/* Signals we have got */
 	   my_safe_to_handle_signal, /* Set when allowed to SIGTSTP */
 	   my_dont_interrupt;	/* call remember_intr when set */
+#ifdef _WIN32
+extern SECURITY_ATTRIBUTES my_dir_security_attributes;
+#endif
 extern my_bool my_use_symdir;
 
 extern ulong	my_default_record_cache_size;
