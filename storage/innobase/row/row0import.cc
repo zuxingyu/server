@@ -3440,6 +3440,7 @@ fil_iterate(
 		bool		updated = false;
 		os_offset_t	page_off = offset;
 		ulint		n_pages_read = n_bytes / size;
+		/* This block is not attached to buf_pool */
 		block->page.id.set_page_no(ulint(page_off / size));
 
 		for (ulint i = 0; i < n_pages_read;
@@ -3758,7 +3759,7 @@ fil_tablespace_iterate(
 	buf_block_t* block = reinterpret_cast<buf_block_t*>
 		(ut_zalloc_nokey(sizeof *block));
 	block->frame = page;
-	block->page.id = page_id_t(0, 0);
+	block->page.id.set_corrupt_id();
 	block->page.io_fix = BUF_IO_NONE;
 	block->page.buf_fix_count = 1;
 	block->page.state = BUF_BLOCK_FILE_PAGE;

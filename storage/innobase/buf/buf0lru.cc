@@ -148,6 +148,20 @@ buf_LRU_block_remove_hashed(
 				may or may not be a hash index to the page */
 	bool		zip);	/*!< in: true if should remove also the
 				compressed page of an uncompressed page */
+
+/** Free a block to buf_pool */
+static void buf_LRU_block_free_hashed_page(buf_block_t *block)
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+
+  if (!buf_pool.flush_rbt)
+    /* FIXME: do this in the caller */
+    block->page.id.set_corrupt_id();
+
+  buf_block_set_state(block, BUF_BLOCK_MEMORY);
+  buf_LRU_block_free_non_file_page(block);
+}
+
 /******************************************************************//**
 Puts a file page whose has no hash index to the free list. */
 static
@@ -815,16 +829,12 @@ buf_block_t* buf_LRU_get_free_only()
 		    || UT_LIST_GET_LEN(buf_pool.withdraw)
 			>= buf_pool.withdraw_target
 		    || !buf_pool.will_be_withdrawn(block->page)) {
-			/* found valid free block */
-			buf_page_mutex_enter(block);
 			/* No adaptive hash index entries may point to
 			a free block. */
 			assert_block_ahi_empty(block);
 
-			buf_block_set_state(block, BUF_BLOCK_READY_FOR_USE);
+			block->page.state= BUF_BLOCK_READY_FOR_USE;
 			UNIV_MEM_ALLOC(block->frame, srv_page_size);
-
-			buf_page_mutex_exit(block);
 			break;
 		}
 
@@ -1368,14 +1378,12 @@ buf_LRU_free_page(
 {
 	buf_page_t*	b = NULL;
 	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(bpage->id);
-	BPageMutex*	block_mutex = bpage->get_mutex();
 
 	ut_ad(mutex_own(&buf_pool.mutex));
 	ut_ad(buf_page_in_file(bpage));
 	ut_ad(bpage->in_LRU_list);
 
 	rw_lock_x_lock(hash_lock);
-	mutex_enter(block_mutex);
 
 	if (!bpage->can_relocate()) {
 		/* Do not free buffer fixed and I/O-fixed blocks. */
@@ -1396,7 +1404,6 @@ buf_LRU_free_page(
 
 func_exit:
 		rw_lock_x_unlock(hash_lock);
-		mutex_exit(block_mutex);
 		return(false);
 
 	} else if (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE) {
@@ -1429,16 +1436,14 @@ func_exit:
 	we are interested in freeing only the uncompressed frame.
 	Therefore we have to reinsert the compressed page descriptor
 	into the LRU and page_hash (and possibly flush_list).
-	if b == NULL then it was a regular page that has been freed */
+	if !b then it was a regular page that has been freed */
 
-	if (b != NULL) {
+	if (UNIV_LIKELY_NULL(b)) {
 		buf_page_t*	prev_b	= UT_LIST_GET_PREV(LRU, b);
 
 		rw_lock_x_lock(hash_lock);
 
-		mutex_enter(block_mutex);
-
-		ut_a(!buf_pool.page_hash_get_low(b->id));
+		ut_ad(!buf_pool.page_hash_get_low(b->id));
 
 		b->state = b->oldest_modification
 			? BUF_BLOCK_ZIP_DIRTY
@@ -1523,19 +1528,10 @@ func_exit:
 
 		page_zip_set_size(&bpage->zip, 0);
 
-		mutex_exit(block_mutex);
-
 		/* Prevent buf_page_get_gen() from
 		decompressing the block while we release
-		buf_pool.mutex and block_mutex. */
-		block_mutex = buf_page_get_mutex(b);
-
-		mutex_enter(block_mutex);
-
-		buf_page_set_sticky(b);
-
-		mutex_exit(block_mutex);
-
+		hash_lock. */
+		b->io_fix = BUF_IO_PIN; // FIXME: atomics; remove buf_page_set_sticky
 		rw_lock_x_unlock(hash_lock);
 	}
 
@@ -1553,8 +1549,7 @@ func_exit:
 	UNIV_MEM_INVALID(((buf_block_t*) bpage)->frame,
 			 srv_page_size);
 
-	if (b != NULL) {
-
+	if (UNIV_LIKELY_NULL(b)) {
 		/* Compute and stamp the compressed page
 		checksum while not holding any mutex.  The
 		block is already half-freed
@@ -1572,17 +1567,10 @@ func_exit:
 
 		mach_write_to_4(b->zip.data + FIL_PAGE_SPACE_OR_CHKSUM,
 				checksum);
+		b->io_fix= BUF_IO_NONE;
 	}
 
 	mutex_enter(&buf_pool.mutex);
-
-	if (b != NULL) {
-		mutex_enter(block_mutex);
-
-		buf_page_unset_sticky(b);
-
-		mutex_exit(block_mutex);
-	}
 
 	buf_LRU_block_free_hashed_page((buf_block_t*) bpage);
 
@@ -1599,7 +1587,6 @@ buf_LRU_block_free_non_file_page(
 	void*		data;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(buf_page_mutex_own(block));
 
 	switch (buf_block_get_state(block)) {
 	case BUF_BLOCK_MEMORY:
@@ -1633,7 +1620,6 @@ buf_LRU_block_free_non_file_page(
 
 	if (data != NULL) {
 		block->page.zip.data = NULL;
-		buf_page_mutex_exit(block);
 		buf_pool_mutex_exit_forbid();
 
 		ut_ad(block->zip_size());
@@ -1641,8 +1627,6 @@ buf_LRU_block_free_non_file_page(
 		buf_buddy_free(data, block->zip_size());
 
 		buf_pool_mutex_exit_allow();
-		buf_page_mutex_enter(block);
-
 		page_zip_set_size(&block->page.zip, 0);
 	}
 
@@ -1690,7 +1674,6 @@ buf_LRU_block_remove_hashed(
 	rw_lock_t*		hash_lock;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 
 	hash_lock = buf_pool.hash_lock_get(bpage->id);
 
@@ -1796,12 +1779,6 @@ buf_LRU_block_remove_hashed(
 				<< " which is not " << bpage;
 		}
 
-		ut_d(mutex_exit(buf_page_get_mutex(bpage)));
-		ut_d(rw_lock_x_unlock(hash_lock));
-		ut_d(mutex_exit(&buf_pool.mutex));
-		ut_d(buf_pool.print());
-		ut_d(buf_LRU_print());
-		ut_d(buf_LRU_validate());
 		ut_ad(0);
 	}
 
@@ -1821,7 +1798,6 @@ buf_LRU_block_remove_hashed(
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 		UT_LIST_REMOVE(buf_pool.zip_clean, bpage);
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
-		mutex_exit(&buf_pool.zip_mutex);
 		rw_lock_x_unlock(hash_lock);
 		buf_pool_mutex_exit_forbid();
 
@@ -1844,7 +1820,7 @@ buf_LRU_block_remove_hashed(
 				 srv_page_size);
 		buf_page_set_state(bpage, BUF_BLOCK_REMOVE_HASH);
 
-		/* Question: If we release bpage and hash mutex here
+		/* Question: If we release hash_lock here
 		then what protects us against:
 		1) Some other thread buffer fixing this page
 		2) Some other thread trying to read this page and
@@ -1864,7 +1840,6 @@ buf_LRU_block_remove_hashed(
 		have inserted the compressed only descriptor in the
 		page_hash. */
 		rw_lock_x_unlock(hash_lock);
-		mutex_exit(&((buf_block_t*) bpage)->mutex);
 
 		if (zip && bpage->zip.data) {
 			/* Free the compressed page. */
@@ -1898,30 +1873,6 @@ buf_LRU_block_remove_hashed(
 	return(false);
 }
 
-/******************************************************************//**
-Puts a file page whose has no hash index to the free list. */
-static
-void
-buf_LRU_block_free_hashed_page(
-/*===========================*/
-	buf_block_t*	block)	/*!< in: block, must contain a file page and
-				be in a state where it can be freed */
-{
-	ut_ad(mutex_own(&buf_pool.mutex));
-
-	buf_page_mutex_enter(block);
-
-	if (buf_pool.flush_rbt == NULL) {
-		block->page.id
-		    = page_id_t(ULINT32_UNDEFINED, ULINT32_UNDEFINED);
-	}
-
-	buf_block_set_state(block, BUF_BLOCK_MEMORY);
-
-	buf_LRU_block_free_non_file_page(block);
-	buf_page_mutex_exit(block);
-}
-
 /** Remove one page from LRU list and put it to free list.
 @param[in,out]	bpage		block, must contain a file page and be in
 				a freeable state; there may or may not be a
@@ -1929,30 +1880,26 @@ buf_LRU_block_free_hashed_page(
 @param[in]	old_page_id	page number before bpage->id was invalidated */
 void buf_LRU_free_one_page(buf_page_t* bpage, page_id_t old_page_id)
 {
-	rw_lock_t*	hash_lock = buf_pool.hash_lock_get(old_page_id);
-	BPageMutex*	block_mutex = buf_page_get_mutex(bpage);
+  rw_lock_t *hash_lock= buf_pool.hash_lock_get(old_page_id);
 
-	ut_ad(mutex_own(&buf_pool.mutex));
+  ut_ad(mutex_own(&buf_pool.mutex));// FIXME: is this really necessary this early here?
 
-	rw_lock_x_lock(hash_lock);
+  rw_lock_x_lock(hash_lock);
 
-	while (bpage->buf_fix_count > 0) {
-		/* Wait for other threads to release the fix count
-		before releasing the bpage from LRU list. */
-	}
+  while (bpage->buf_fix_count > 0)
+  {
+    /* Wait for other threads to release the fix count
+    before releasing the bpage from LRU list. */
+  }
 
-	mutex_enter(block_mutex);
+  bpage->id= old_page_id;
 
-	bpage->id = old_page_id;
+  /* FIXME: here we will need buf_pool.mutex */
+  if (buf_LRU_block_remove_hashed(bpage, true))
+    buf_LRU_block_free_hashed_page((buf_block_t*) bpage);
 
-	if (buf_LRU_block_remove_hashed(bpage, true)) {
-		buf_LRU_block_free_hashed_page((buf_block_t*) bpage);
-	}
-
-	/* buf_LRU_block_remove_hashed() releases hash_lock and block_mutex */
-	ut_ad(!rw_lock_own_flagged(hash_lock,
-				   RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
-	ut_ad(!mutex_own(block_mutex));
+  /* buf_LRU_block_remove_hashed() releases hash_lock and block_mutex */
+  ut_ad(!rw_lock_own_flagged(hash_lock, RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
 }
 
 /** Update buf_pool.LRU_old_ratio.

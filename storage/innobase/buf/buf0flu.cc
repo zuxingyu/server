@@ -501,8 +501,6 @@ buf_flush_relocate_on_flush_list(
 	buf_page_t*	prev_b = NULL;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
-
 	mutex_enter(&buf_pool.flush_list_mutex);
 
 	/* FIXME: At this point we have both buf_pool and flush_list

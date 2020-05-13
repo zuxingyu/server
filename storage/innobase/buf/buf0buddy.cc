@@ -374,9 +374,7 @@ buf_buddy_block_free(void* buf)
 	UNIV_MEM_INVALID(buf, srv_page_size);
 
 	block = (buf_block_t*) bpage;
-	buf_page_mutex_enter(block);
 	buf_LRU_block_free_non_file_page(block);
-	buf_page_mutex_exit(block);
 
 	ut_ad(buf_pool.buddy_n_frames > 0);
 	ut_d(buf_pool.buddy_n_frames--);
@@ -571,10 +569,6 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 	contain uninitialized data. */
 	UNIV_MEM_ASSERT_W(src, size);
 
-	BPageMutex* block_mutex = bpage->get_mutex();
-
-	mutex_enter(block_mutex);
-
 	if (bpage->can_relocate()) {
 		/* Relocate the compressed page. */
 		const ulonglong ns = my_interval_timer();
@@ -585,8 +579,6 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 		bpage->zip.data = reinterpret_cast<page_zip_t*>(dst);
 
 		rw_lock_x_unlock(hash_lock);
-
-		mutex_exit(block_mutex);
 
 		buf_buddy_mem_invalid(
 			reinterpret_cast<buf_buddy_free_t*>(src), i);
@@ -599,7 +591,6 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 
 	rw_lock_x_unlock(hash_lock);
 
-	mutex_exit(block_mutex);
 	return(false);
 }
 

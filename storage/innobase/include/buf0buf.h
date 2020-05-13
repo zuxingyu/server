@@ -758,15 +758,6 @@ buf_page_belongs_to_unzip_LRU(
 	const buf_page_t*	bpage)	/*!< in: pointer to control block */
 	MY_ATTRIBUTE((warn_unused_result));
 
-/** Map a block to a file page.
-@param[in,out]	block	pointer to control block
-@param[in]	page_id	page id */
-UNIV_INLINE
-void
-buf_block_set_file_page(
-	buf_block_t*		block,
-	const page_id_t		page_id);
-
 /*********************************************************************//**
 Gets the io_fix state of a block.
 @return io_fix state */
@@ -856,30 +847,6 @@ if applicable. */
 	(UNIV_LIKELY_NULL((block)->page.zip.data) ? &(block)->page.zip : NULL)
 #define is_buf_block_get_page_zip(block) \
         UNIV_LIKELY_NULL((block)->page.zip.data)
-
-/** Initialize a page for read to the buffer buf_pool. If the page is
-(1) already in buf_pool, or
-(2) if we specify to read only ibuf pages and the page is not an ibuf page, or
-(3) if the space is deleted or being deleted,
-then this function does nothing.
-Sets the io_fix flag to BUF_IO_READ and sets a non-recursive exclusive lock
-on the buffer frame. The io-handler must take care that the flag is cleared
-and the lock released later.
-@param[out]	err			DB_SUCCESS or DB_TABLESPACE_DELETED
-@param[in]	mode			BUF_READ_IBUF_PAGES_ONLY, ...
-@param[in]	page_id			page id
-@param[in]	zip_size		ROW_FORMAT=COMPRESSED page size, or 0
-@param[in]	unzip			whether the uncompressed page is
-					requested (for ROW_FORMAT=COMPRESSED)
-@return pointer to the block
-@retval	NULL	in case of an error */
-buf_page_t*
-buf_page_init_for_read(
-	dberr_t*		err,
-	ulint			mode,
-	const page_id_t		page_id,
-	ulint			zip_size,
-	bool			unzip);
 
 /** Monitor the buffer page read/write activity, and increment corresponding
 counter value in MONITOR_MODULE_BUF_PAGE.
@@ -1065,9 +1032,10 @@ public:
 					used for encryption/compression
 					or NULL */
 #ifdef UNIV_DEBUG
-	/** whether the block is in buf_pool.zip_hash; protected by
-	buf_pool.mutex */
-	bool in_zip_hash;
+  /** whether the block is in buf_pool.zip_hash; protected by buf_pool.mutex */
+  bool in_zip_hash;
+  /** whether the page is in buf_pool.LRU; protected by buf_pool.mutex */
+  bool in_LRU_list;
 #endif /* UNIV_DEBUG */
 
 	/** @name Page flushing fields
@@ -1102,7 +1070,7 @@ public:
 					BUF_BLOCK_READY_IN_USE. */
 
 #ifdef UNIV_DEBUG
-	ibool		in_flush_list;	/*!< TRUE if in buf_pool.flush_list;
+	bool		in_flush_list;	/*!< TRUE if in buf_pool.flush_list;
 					when buf_pool.flush_list_mutex is
 					free, the following should hold:
 					in_flush_list
@@ -1113,7 +1081,7 @@ public:
 					and buf_pool.flush_list_mutex. Hence
 					reads can happen while holding
 					any one of the two mutexes */
-	ibool		in_free_list;	/*!< TRUE if in buf_pool.free; when
+	bool		in_free_list;	/*!< TRUE if in buf_pool.free; when
 					buf_pool.mutex is free, the following
 					should hold: in_free_list
 					== (state == BUF_BLOCK_NOT_USED) */
@@ -1140,11 +1108,6 @@ public:
 
 	UT_LIST_NODE_T(buf_page_t) LRU;
 					/*!< node of the LRU list */
-#ifdef UNIV_DEBUG
-	ibool		in_LRU_list;	/*!< TRUE if the page is in
-					the LRU list; used in
-					debugging */
-#endif /* UNIV_DEBUG */
 	unsigned	old:1;		/*!< TRUE if the block is in the old
 					blocks in buf_pool.LRU_old */
 	unsigned	freed_page_clock:31;/*!< the value of
@@ -1187,6 +1150,25 @@ public:
     be overwritten with zeroes. */
     FREED
   } status;
+
+  /** Initialize some fields */
+  void init()
+  {
+    io_fix= BUF_IO_NONE;
+    buf_fix_count= 0;
+    old= 0;
+    freed_page_clock= 0;
+    access_time= 0;
+    oldest_modification= 0;
+    slot= nullptr;
+    ibuf_exist= false;
+    status= NORMAL;
+    ut_d(in_zip_hash= false);
+    ut_d(in_flush_list= false);
+    ut_d(in_free_list= false);
+    ut_d(in_LRU_list= false);
+    HASH_INVALIDATE(this, hash);
+  }
 
   void fix() { buf_fix_count++; }
   uint32_t unfix()
@@ -1422,6 +1404,11 @@ struct buf_block_t{
   /** @return the ROW_FORMAT=COMPRESSED physical size, in bytes
   @retval 0 if not compressed */
   ulint zip_size() const { return page.zip_size(); }
+
+  /** Initialize the block.
+  @param page_id page id
+  @param zip_size ROW_FORMAT=COMPRESSED page size, or 0 */
+  void init(const page_id_t page_id, ulint zip_size);
 };
 
 /** Check if a buf_block_t object is in a valid state
@@ -1984,7 +1971,7 @@ public:
   real block. watch_unset() or watch_occurred() will notice
   that the block has been replaced with the real block.
   @param watch   sentinel */
-  inline void watch_remove(buf_page_t *watch);
+  void watch_remove(buf_page_t *watch);
 
   /** @return whether less than 1/4 of the buffer pool is available */
   bool running_out() const
@@ -2296,7 +2283,6 @@ The block can be dirty, but it must not be I/O-fixed or bufferfixed. */
 inline bool buf_page_t::can_relocate() const
 {
   ut_ad(mutex_own(&buf_pool.mutex));
-  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
   ut_ad(in_file());
   ut_ad(in_LRU_list);
   return io_fix == BUF_IO_NONE && buf_fix_count == 0;
