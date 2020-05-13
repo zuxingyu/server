@@ -1687,16 +1687,7 @@ inline bool buf_pool_t::realloc(buf_block_t *block)
 		new (&new_block->page) buf_page_t(block->page);
 
 		/* relocate LRU list */
-		ut_ad(block->page.in_LRU_list);
-		ut_ad(!block->page.in_zip_hash);
-		ut_d(block->page.in_LRU_list = false);
-
-		buf_LRU_adjust_hp(&block->page);
-
-		buf_page_t*	prev_b = UT_LIST_GET_PREV(LRU, &block->page);
-		UT_LIST_REMOVE(LRU, &block->page);
-
-		if (prev_b != NULL) {
+		if (buf_page_t*	prev_b = buf_pool.LRU_remove(&block->page)) {
 			UT_LIST_INSERT_AFTER(LRU, prev_b, &new_block->page);
 		} else {
 			UT_LIST_ADD_FIRST(LRU, &new_block->page);
@@ -2482,15 +2473,11 @@ The caller must relocate bpage->list.
 @param dpage   destination control block */
 static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage)
 {
-	buf_page_t*	b;
-
 	ut_ad(mutex_own(&buf_pool.mutex));
 	ut_ad(rw_lock_own(buf_pool.hash_lock_get(bpage->id), RW_LOCK_X));
 	ut_ad(bpage->get_mutex()->is_owned());
 	ut_a(buf_page_get_io_fix(bpage) == BUF_IO_NONE);
 	ut_a(bpage->buf_fix_count == 0);
-	ut_ad(bpage->in_LRU_list);
-	ut_ad(!bpage->in_zip_hash);
 	ut_ad(bpage == buf_pool.page_hash_get_low(bpage->id));
 	ut_ad(!buf_pool.watch_is_sentinel(*bpage));
 #ifdef UNIV_DEBUG
@@ -2512,15 +2499,7 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage)
 
 	/* Important that we adjust the hazard pointer before
 	removing bpage from LRU list. */
-	buf_LRU_adjust_hp(bpage);
-
-	ut_d(bpage->in_LRU_list = FALSE);
-
-	/* relocate buf_pool.LRU */
-	b = UT_LIST_GET_PREV(LRU, bpage);
-	UT_LIST_REMOVE(buf_pool.LRU, bpage);
-
-	if (b != NULL) {
+	if (buf_page_t* b = buf_pool.LRU_remove(bpage)) {
 		UT_LIST_INSERT_AFTER(buf_pool.LRU, b, dpage);
 	} else {
 		UT_LIST_ADD_FIRST(buf_pool.LRU, dpage);

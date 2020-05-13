@@ -1990,6 +1990,23 @@ public:
   void print();
 #endif /* UNIV_DEBUG_PRINT || UNIV_DEBUG || UNIV_BUF_DEBUG */
 
+  /** Remove a block from the LRU list.
+  @return the predecessor in the LRU list */
+  buf_page_t *LRU_remove(buf_page_t *bpage)
+  {
+    ut_ad(mutex_own(&mutex));
+    ut_ad(bpage->in_LRU_list);
+    ut_ad(!bpage->in_zip_hash);
+    ut_ad(bpage->in_file());
+    lru_hp.adjust(bpage);
+    lru_scan_itr.adjust(bpage);
+    single_scan_itr.adjust(bpage);
+    ut_d(bpage->in_LRU_list= false);
+    buf_page_t *prev= UT_LIST_GET_PREV(LRU, bpage);
+    UT_LIST_REMOVE(LRU, bpage);
+    return prev;
+  }
+
   /** Number of pages to read ahead */
   static constexpr uint32_t READ_AHEAD_PAGES= 64;
 

@@ -1169,28 +1169,13 @@ static void buf_unzip_LRU_remove_block_if_needed(buf_page_t* bpage)
 	}
 }
 
-/** Adjust LRU hazard pointers if needed.
-@param[in]	bpage	buffer page descriptor */
-void buf_LRU_adjust_hp(const buf_page_t* bpage)
-{
-	buf_pool.lru_hp.adjust(bpage);
-	buf_pool.lru_scan_itr.adjust(bpage);
-	buf_pool.single_scan_itr.adjust(bpage);
-}
-
 /** Removes a block from the LRU list.
 @param[in]	bpage	control block */
 static inline void buf_LRU_remove_block(buf_page_t* bpage)
 {
-	ut_ad(mutex_own(&buf_pool.mutex));
-
-	ut_a(buf_page_in_file(bpage));
-
-	ut_ad(bpage->in_LRU_list);
-
 	/* Important that we adjust the hazard pointers before removing
 	bpage from the LRU list. */
-	buf_LRU_adjust_hp(bpage);
+	buf_page_t* prev_bpage = buf_pool.LRU_remove(bpage);
 
 	/* If the LRU_old pointer is defined and points to just this block,
 	move it backward one step */
@@ -1202,8 +1187,6 @@ static inline void buf_LRU_remove_block(buf_page_t* bpage)
 		by BUF_LRU_OLD_TOLERANCE from strict
 		buf_pool.LRU_old_ratio/BUF_LRU_OLD_RATIO_DIV of the LRU
 		list length. */
-		buf_page_t*	prev_bpage = UT_LIST_GET_PREV(LRU, bpage);
-
 		ut_a(prev_bpage);
 #ifdef UNIV_LRU_DEBUG
 		ut_a(!prev_bpage->old);
@@ -1213,10 +1196,6 @@ static inline void buf_LRU_remove_block(buf_page_t* bpage)
 
 		buf_pool.LRU_old_len++;
 	}
-
-	/* Remove the block from the LRU list */
-	UT_LIST_REMOVE(buf_pool.LRU, bpage);
-	ut_d(bpage->in_LRU_list = FALSE);
 
 	buf_pool.stat.LRU_bytes -= bpage->physical_size();
 

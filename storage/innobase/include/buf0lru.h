@@ -177,10 +177,6 @@ buf_LRU_stat_update();
 void buf_LRU_free_one_page(buf_page_t* bpage, page_id_t old_page_id)
 	MY_ATTRIBUTE((nonnull));
 
-/** Adjust LRU hazard pointers if needed.
-@param[in]	bpage	buffer page descriptor */
-void buf_LRU_adjust_hp(const buf_page_t* bpage);
-
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 /** Validate the LRU list. */
 void buf_LRU_validate();
