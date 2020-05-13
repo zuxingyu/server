@@ -162,15 +162,6 @@ static void buf_LRU_block_free_hashed_page(buf_block_t *block)
   buf_LRU_block_free_non_file_page(block);
 }
 
-/******************************************************************//**
-Puts a file page whose has no hash index to the free list. */
-static
-void
-buf_LRU_block_free_hashed_page(
-/*===========================*/
-	buf_block_t*	block);	/*!< in: block, must contain a file page and
-				be in a state where it can be freed */
-
 /** Increase LRU size in bytes by the page size.
 @param[in]	bpage		control block */
 static inline void incr_LRU_size_in_bytes(const buf_page_t* bpage)
@@ -1649,7 +1640,6 @@ buf_LRU_block_remove_hashed(
 	bool		zip)	/*!< in: true if should remove also the
 				compressed page of an uncompressed page */
 {
-	const buf_page_t*	hashed_bpage;
 	rw_lock_t*		hash_lock;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
@@ -1738,29 +1728,7 @@ buf_LRU_block_remove_hashed(
 		break;
 	}
 
-	hashed_bpage = buf_pool.page_hash_get_low(bpage->id);
-	if (bpage != hashed_bpage) {
-		ib::error() << "Page " << bpage->id
-			<< " not found in the hash table";
-		ib::error()
-#ifdef UNIV_DEBUG
-			<< " in_zip_hash:" << bpage->in_zip_hash
-			<< " in_flush_list:" << bpage->in_flush_list
-			<< " in_LRU_list:" << bpage->in_LRU_list
-#endif
-			<< " zip.data:" << bpage->zip.data
-			<< " zip_size:" << bpage->zip_size()
-			<< " page_state:" << buf_page_get_state(bpage);
-
-		if (hashed_bpage) {
-			ib::error() << "In hash table we find block "
-				<< hashed_bpage << " of " << hashed_bpage->id
-				<< " which is not " << bpage;
-		}
-
-		ut_ad(0);
-	}
-
+	ut_a(bpage == buf_pool.page_hash_get_low(bpage->id));
 	ut_ad(!bpage->in_zip_hash);
 
 	HASH_DELETE(buf_page_t, hash, buf_pool.page_hash, bpage->id.fold(),
@@ -1859,11 +1827,10 @@ buf_LRU_block_remove_hashed(
 @param[in]	old_page_id	page number before bpage->id was invalidated */
 void buf_LRU_free_one_page(buf_page_t* bpage, page_id_t old_page_id)
 {
-  rw_lock_t *hash_lock= buf_pool.hash_lock_get(old_page_id);
+  ut_d(rw_lock_t *hash_lock= buf_pool.hash_lock_get(old_page_id));
+  ut_ad(rw_lock_own_flagged(hash_lock, RW_LOCK_FLAG_X));
 
   ut_ad(mutex_own(&buf_pool.mutex));// FIXME: is this really necessary this early here?
-
-  rw_lock_x_lock(hash_lock);
 
   while (bpage->buf_fix_count > 0)
   {
@@ -1871,11 +1838,11 @@ void buf_LRU_free_one_page(buf_page_t* bpage, page_id_t old_page_id)
     before releasing the bpage from LRU list. */
   }
 
-  bpage->id= old_page_id;
+  bpage->id= old_page_id; // FIXME: Do we need this?
 
   /* FIXME: here we will need buf_pool.mutex */
   if (buf_LRU_block_remove_hashed(bpage, true))
-    buf_LRU_block_free_hashed_page((buf_block_t*) bpage);
+    buf_LRU_block_free_hashed_page(reinterpret_cast<buf_block_t*>(bpage));
 
   /* buf_LRU_block_remove_hashed() releases hash_lock and block_mutex */
   ut_ad(!rw_lock_own_flagged(hash_lock, RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));

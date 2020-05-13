@@ -4240,40 +4240,32 @@ static void buf_mark_space_corrupt(buf_page_t* bpage, const fil_space_t& space)
 Also remove the bpage from LRU list. */
 static void buf_corrupt_page_release(buf_page_t *bpage, const fil_node_t &node)
 {
-	page_id_t	old_page_id = bpage->id;
+  page_id_t old_page_id= bpage->id;
+  rw_lock_t *hash_lock= buf_pool.hash_lock_get(old_page_id);
+  rw_lock_x_lock(hash_lock);
 
-	/* First unfix and release lock on the bpage */
-	mutex_enter(&buf_pool.mutex);
-	mutex_enter(buf_page_get_mutex(bpage)); // FIXME: do we need this?
-	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_READ);
-	ut_ad(bpage->id.space() == node.space->id);
+  /* First unfix and release lock on the bpage */
+  mutex_enter(&buf_pool.mutex);
+  ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_READ);
+  ut_ad(bpage->id.space() == node.space->id);
 
-	/* buf_fix_count can be greater than zero. Because other thread
-	can wait in buf_page_wait_read() for the page to be read. */
+  bpage->id.set_corrupt_id();
+  /* Set BUF_IO_NONE before we remove the block from LRU list */
+  buf_page_set_io_fix(bpage, BUF_IO_NONE);
 
-	bpage->id.set_corrupt_id();
-	/* Set BUF_IO_NONE before we remove the block from LRU list */
-	buf_page_set_io_fix(bpage, BUF_IO_NONE);
+  if (bpage->state == BUF_BLOCK_FILE_PAGE)
+    rw_lock_x_unlock_gen(&reinterpret_cast<buf_block_t*>(bpage)->lock,
+                         BUF_IO_READ);
 
-	if (bpage->state == BUF_BLOCK_FILE_PAGE) {
-		rw_lock_x_unlock_gen(
-			&((buf_block_t*) bpage)->lock,
-			BUF_IO_READ);
-	}
+  /* After this point bpage can't be referenced. */
+  buf_LRU_free_one_page(bpage, old_page_id);
+  mutex_exit(&buf_pool.mutex);
 
-	mutex_exit(buf_page_get_mutex(bpage));
+  if (!srv_force_recovery)
+    buf_mark_space_corrupt(bpage, *node.space);
 
-	if (!srv_force_recovery) {
-		buf_mark_space_corrupt(bpage, *node.space);
-	}
-
-	/* After this point bpage can't be referenced. */
-	buf_LRU_free_one_page(bpage, old_page_id);
-
-	ut_ad(buf_pool.n_pend_reads > 0);
-	buf_pool.n_pend_reads--;
-
-	mutex_exit(&buf_pool.mutex);
+  ut_d(auto n=) buf_pool.n_pend_reads--;
+  ut_ad(n > 0);
 }
 
 /** Check if the encrypted page is corrupted for the full crc32 format.
