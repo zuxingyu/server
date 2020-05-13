@@ -73,10 +73,10 @@ Created 10/21/1995 Heikki Tuuri
 
 #ifdef _WIN32
 #include <winioctl.h>
-#else
-// my_test_if_atomic_write()
-#include <my_sys.h>
 #endif
+
+// my_test_if_atomic_write() , my_win_secattr()
+#include <my_sys.h>
 
 /* Per-IO operation environment*/
 class io_slots
@@ -2004,6 +2004,10 @@ os_file_get_last_error_low(
 				" because of either a thread exit"
 				" or an application request."
 				" Retry attempt is made.";
+		} else if (err == ERROR_PATH_NOT_FOUND) {
+			ib::error()
+				<< "This error means that directory did not exist"
+				" during file creation.";
 		} else {
 
 			ib::info() << OPERATING_SYSTEM_ERROR_MSG;
@@ -2136,7 +2140,7 @@ os_file_create_simple_func(
 		file = CreateFile(
 			(LPCTSTR) name, access,
 			FILE_SHARE_READ | FILE_SHARE_DELETE,
-			NULL, create_flag, attributes, NULL);
+			my_win_file_secattr(), create_flag, attributes, NULL);
 
 		if (file == INVALID_HANDLE_VALUE) {
 
@@ -2542,7 +2546,7 @@ os_file_create_func(
 
 		/* Use default security attributes and no template file. */
 		file = CreateFile(
-			name, access, share_mode, NULL,
+			name, access, share_mode, my_win_file_secattr(),
 			create_flag, attributes, NULL);
 
 		/* If FILE_FLAG_NO_BUFFERING was set, check if this can work at all,
@@ -2596,6 +2600,7 @@ A simple function to open or create a file.
 @param[out]	success		true if succeeded
 @return own: handle to the file, not defined if error, error number
 	can be retrieved with os_file_get_last_error */
+
 pfs_os_file_t
 os_file_create_simple_no_error_handling_func(
 	const char*	name,
@@ -2677,7 +2682,7 @@ os_file_create_simple_no_error_handling_func(
 	file = CreateFile((LPCTSTR) name,
 			  access,
 			  share_mode,
-			  NULL,			// Security attributes
+			  my_win_file_secattr(),
 			  create_flag,
 			  attributes,
 			  NULL);		// No template file
@@ -2967,7 +2972,7 @@ os_file_get_status_win32(
 				access,
 				FILE_SHARE_READ | FILE_SHARE_WRITE
 				| FILE_SHARE_DELETE,	// Full sharing
-				NULL,			// Default security
+				my_win_file_secattr(),
 				OPEN_EXISTING,		// Existing file only
 				FILE_ATTRIBUTE_NORMAL,	// Normal file
 				NULL);			// No attr. template

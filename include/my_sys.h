@@ -273,6 +273,7 @@ extern int my_umask_dir,
 	   my_dont_interrupt;	/* call remember_intr when set */
 #ifdef _WIN32
 extern SECURITY_ATTRIBUTES my_dir_security_attributes;
+LPSECURITY_ATTRIBUTES my_win_file_secattr();
 #endif
 extern my_bool my_use_symdir;
 
