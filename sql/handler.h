@@ -2956,9 +2956,9 @@ public:
   {}
 };
 
-extern "C" enum icp_result handler_index_cond_check(void* h_arg);
+extern "C" check_result_t handler_index_cond_check(void* h_arg);
 
-extern "C" int handler_rowid_filter_check(void* h_arg);
+extern "C" check_result_t handler_rowid_filter_check(void* h_arg);
 extern "C" int handler_rowid_filter_is_active(void* h_arg);
 
 uint calculate_key_len(TABLE *, uint, const uchar *, key_part_map);
@@ -3381,6 +3381,7 @@ public:
     and delete_row() below.
   */
   int ha_external_lock(THD *thd, int lock_type);
+  int ha_external_unlock(THD *thd) { return ha_external_lock(thd, F_UNLCK); }
   int ha_write_row(const uchar * buf);
   int ha_update_row(const uchar * old_data, const uchar * new_data);
   int ha_delete_row(const uchar * buf);
@@ -4974,7 +4975,8 @@ public:
 
   virtual void set_lock_type(enum thr_lock_type lock);
 
-  friend enum icp_result handler_index_cond_check(void* h_arg);
+  friend check_result_t handler_index_cond_check(void* h_arg);
+  friend check_result_t handler_rowid_filter_check(void *h_arg);
 
   /**
     Find unique record by index or unique constrain

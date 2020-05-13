@@ -365,7 +365,7 @@ my $opt_max_save_core= env_or_val(MTR_MAX_SAVE_CORE => 5);
 my $opt_max_save_datadir= env_or_val(MTR_MAX_SAVE_DATADIR => 20);
 my $opt_max_test_fail= env_or_val(MTR_MAX_TEST_FAIL => 10);
 my $opt_core_on_failure= 0;
-
+my $opt_titlebar= 0;
 my $opt_parallel= $ENV{MTR_PARALLEL} || 1;
 my $opt_port_group_size = $ENV{MTR_PORT_GROUP_SIZE} || 20;
 
@@ -376,6 +376,32 @@ my $opt_stop_keep_alive= $ENV{MTR_STOP_KEEP_ALIVE};
 
 select(STDOUT);
 $| = 1; # Automatically flush STDOUT
+
+my $set_titlebar;
+
+
+ BEGIN {
+   if (IS_WINDOWS) {
+     my $have_win32_console= 0;
+     eval {
+       require Win32::Console;
+       Win32::Console->import();
+       $have_win32_console = 1;
+     };
+     eval 'sub HAVE_WIN32_CONSOLE { $have_win32_console }';
+   } else {
+     eval 'sub HAVE_WIN32_CONSOLE { 0 }';
+   }
+}
+
+if (-t STDOUT) {
+  if (IS_WINDOWS and HAVE_WIN32_CONSOLE) {
+    $set_titlebar = sub {Win32::Console::Title $_[0];};
+  } elsif (defined $ENV{TERM} and $ENV{TERM} =~ /xterm/) {
+    $set_titlebar = sub { syswrite STDOUT, "\e];$_[0]\a"; };
+  }
+}
+
 
 main();
 
@@ -758,6 +784,7 @@ sub run_test_server ($$$) {
               if ( $result->is_failed() ) {
                 my $worker_logdir= $result->{savedir};
                 my $log_file_name=dirname($worker_logdir)."/".$result->{shortname}.".log";
+                $result->{'logfile-failed'} = mtr_lastlinesfromfile($log_file_name, 20);
                 rename $log_file_name,$log_file_name.".failed";
               }
 	      delete($result->{result});
@@ -882,7 +909,7 @@ sub run_test_server ($$$) {
 	  delete $next->{reserved};
 	}
 
-        xterm_stat(scalar(@$tests));
+	titlebar_stat(scalar(@$tests)) if $set_titlebar && $opt_titlebar;
 
 	if ($next) {
 	  # We don't need this any more
@@ -1219,6 +1246,7 @@ sub command_line_setup {
              'start-and-exit'           => \$opt_start_exit,
              'start'                    => \$opt_start,
 	     'user-args'                => \$opt_user_args,
+             'titlebar'                 => \$opt_titlebar,
              'wait-all'                 => \$opt_wait_all,
 	     'print-testcases'          => \&collect_option,
 	     'repeat=i'                 => \$opt_repeat,
@@ -2279,7 +2307,8 @@ sub environment_setup {
   $ENV{'LC_CTYPE'}=           "C";
   $ENV{'LC_COLLATE'}=         "C";
 
-  $ENV{'OPENSSL_CONF'}=       "/dev/null";
+  $ENV{'OPENSSL_CONF'}= $mysqld_variables{'version-ssl-library'} gt 'OpenSSL 1.1.1'
+                       ? "$glob_mysql_test_dir/lib/openssl.cnf" : '/dev/null';
 
   $ENV{'USE_RUNNING_SERVER'}= using_extern();
   $ENV{'MYSQL_TEST_DIR'}=     $glob_mysql_test_dir;
@@ -6476,6 +6505,8 @@ Misc options
                         leaves just the server running
   start-dirty           Only start the servers (without initialization) for
                         the first specified test case
+  titlebar              Enable progress stats on the windows title bar. Works
+                        on Windows and Xterm.
   user-args             In combination with start* and no test name, drops
                         arguments to mysqld except those specified with
                         --mysqld (if any)
@@ -6558,19 +6589,16 @@ sub time_format($) {
 
 our $num_tests;
 
-sub xterm_stat {
-  if (-t STDOUT and defined $ENV{TERM} and $ENV{TERM} =~ /xterm/) {
-    my ($left) = @_;
+sub titlebar_stat {
+  my ($left) = @_;
 
-    # 2.5 -> best by test
-    $num_tests = $left + 2.5 unless $num_tests;
+  # 2.5 -> best by test
+  $num_tests = $left + 2.5 unless $num_tests;
 
-    my $done = $num_tests - $left;
-    my $spent = time - $^T;
+  my $done = $num_tests - $left;
+  my $spent = time - $^T;
 
-    syswrite STDOUT, sprintf
-           "\e];mtr: spent %s on %d tests. %s (%d tests) left\a",
+  &$set_titlebar(sprintf "mtr: spent %s on %d tests. %s (%d tests) left",
            time_format($spent), $done,
-           time_format($spent/$done * $left), $left;
-  }
+           time_format($spent/$done * $left), $left);
 }

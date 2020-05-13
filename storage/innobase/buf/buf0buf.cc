@@ -61,7 +61,6 @@ Created 11/5/1995 Heikki Tuuri
 #include "srv0mon.h"
 #include "log0crypt.h"
 #include "fil0pagecompress.h"
-#include "fsp0pagecompress.h"
 #endif /* !UNIV_INNOCHECKSUM */
 #include "page0zip.h"
 #include "sync0sync.h"
@@ -432,7 +431,7 @@ decompress:
 decompress_with_slot:
 		ut_d(fil_page_type_validate(node.space, dst_frame));
 
-		auto write_size = fil_page_decompress(
+		ulint write_size = fil_page_decompress(
 			slot->crypt_buf, dst_frame, flags);
 		slot->release();
 		ut_ad(!write_size
@@ -467,12 +466,14 @@ decrypt_failed:
 		ut_d(fil_page_type_validate(node.space, dst_frame));
 
 		if ((fil_space_t::full_crc32(flags) && page_compressed)
-		    || fil_page_is_compressed_encrypted(dst_frame)) {
+		    || fil_page_get_type(dst_frame)
+		    == FIL_PAGE_PAGE_COMPRESSED_ENCRYPTED) {
 			goto decompress_with_slot;
 		}
 
 		slot->release();
-	} else if (fil_page_is_compressed_encrypted(dst_frame)) {
+	} else if (fil_page_get_type(dst_frame)
+		   == FIL_PAGE_PAGE_COMPRESSED_ENCRYPTED) {
 		goto decompress;
 	}
 
@@ -790,7 +791,7 @@ buf_page_is_corrupted(
 	bool		crc32_inited = false;
 	bool		crc32_chksum = false;
 	const ulint zip_size = fil_space_t::zip_size(fsp_flags);
-	ulint page_type = mach_read_from_2(read_buf + FIL_PAGE_TYPE);
+	const uint16_t page_type = fil_page_get_type(read_buf);
 
 	/* We can trust page type if page compression is set on tablespace
 	flags because page compression flag means file must have been
@@ -1024,11 +1025,12 @@ buf_madvise_do_dump()
 
 	/* mirrors allocation in log_t::create() */
 	if (log_sys.buf) {
-		ret+= madvise(log_sys.first_in_use
-			      ? log_sys.buf
-			      : log_sys.buf - srv_log_buffer_size,
-			      srv_log_buffer_size * 2,
-			      MADV_DODUMP);
+		ret += madvise(log_sys.buf,
+			       srv_log_buffer_size,
+			       MADV_DODUMP);
+		ret += madvise(log_sys.flush_buf,
+			       srv_log_buffer_size,
+			       MADV_DODUMP);
 	}
 	/* mirrors recv_sys_t::create() */
 	if (recv_sys.buf)
@@ -3157,6 +3159,7 @@ buf_page_get_low(
 	      || (rw_latch == RW_NO_LATCH));
 	ut_ad(!allow_ibuf_merge
 	      || mode == BUF_GET
+	      || mode == BUF_GET_POSSIBLY_FREED
 	      || mode == BUF_GET_IF_IN_POOL
 	      || mode == BUF_GET_IF_IN_POOL_OR_WATCH);
 
@@ -3718,9 +3721,9 @@ evict_from_pool:
 		return NULL;
 	}
 
-	if (allow_ibuf_merge
-	    && mach_read_from_2(fix_block->frame + FIL_PAGE_TYPE)
-	    == FIL_PAGE_INDEX
+	if (fix_block->page.status != buf_page_t::FREED
+	    && allow_ibuf_merge
+	    && fil_page_get_type(fix_block->frame) == FIL_PAGE_INDEX
 	    && page_is_leaf(fix_block->frame)) {
 		rw_lock_x_lock_inline(&fix_block->lock, 0, file, line);
 
@@ -3786,9 +3789,27 @@ buf_page_get_gen(
   {
     block->fix();
     ut_ad(rw_lock_s_lock_nowait(block->debug_latch, file, line));
-    block= buf_page_mtr_lock(block, rw_latch, mtr, file, line);
     if (err)
       *err= DB_SUCCESS;
+    const bool must_merge= allow_ibuf_merge &&
+      ibuf_page_exists(page_id, block->zip_size());
+    if (block->page.status == buf_page_t::FREED)
+      ut_ad(mode == BUF_GET_POSSIBLY_FREED || mode == BUF_PEEK_IF_IN_POOL);
+    else if (must_merge && fil_page_get_type(block->frame) == FIL_PAGE_INDEX &&
+	     page_is_leaf(block->frame))
+    {
+      rw_lock_x_lock_inline(&block->lock, 0, file, line);
+      block->page.ibuf_exist= false;
+      ibuf_merge_or_delete_for_page(block, page_id, block->zip_size(), true);
+
+      if (rw_latch == RW_X_LATCH)
+      {
+        mtr->memo_push(block, MTR_MEMO_PAGE_X_FIX);
+	return block;
+      }
+      rw_lock_x_unlock(&block->lock);
+    }
+    block= buf_page_mtr_lock(block, rw_latch, mtr, file, line);
     return block;
   }
 

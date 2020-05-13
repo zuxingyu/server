@@ -1,5 +1,5 @@
 # Copyright (c) 2006, 2017, Oracle and/or its affiliates.
-# Copyright (c) 2008, 2019, MariaDB Corporation.
+# Copyright (c) 2008, 2020, MariaDB Corporation.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -29,6 +29,9 @@ IF(POLICY CMP0054)
 ENDIF()
 IF(POLICY CMP0075)
   CMAKE_POLICY(SET CMP0075 NEW)
+ENDIF()
+IF(POLICY CMP0069)
+ CMAKE_POLICY(SET CMP0069 NEW)
 ENDIF()
 
 MESSAGE(STATUS "Running cmake version ${CMAKE_VERSION}")
@@ -248,8 +251,11 @@ IF(SECURITY_HARDENED AND NOT WITH_ASAN AND NOT WITH_UBSAN AND NOT WITH_TSAN)
 ENDIF()
 
 INCLUDE(wsrep)
-INCLUDE(cpack_rpm)
-INCLUDE(cpack_deb)
+
+OPTION(WITH_DBUG_TRACE "Enable DBUG_ENTER()/DBUG_EXIT()" ON)
+IF(WITH_DBUG_TRACE)
+  ADD_DEFINITIONS(-DDBUG_TRACE)
+ENDIF()
 
 # Always enable debug sync for debug builds.
 SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DENABLED_DEBUG_SYNC")
@@ -375,8 +381,6 @@ MYSQL_CHECK_SSL()
 MYSQL_CHECK_READLINE()
 
 SET(MALLOC_LIBRARY "system")
-SET(PYTHON_SHEBANG "/usr/bin/env python" CACHE STRING "python shebang")
-MARK_AS_ADVANCED(PYTHON_SHEBANG)
 
 CHECK_PCRE()
 
@@ -412,6 +416,12 @@ ENDIF()
 UNSET (MYSQLD_STATIC_PLUGIN_LIBS CACHE)
 
 INCLUDE(mariadb_connector_c) # this does ADD_SUBDIRECTORY(libmariadb)
+
+INCLUDE(cpack_rpm)
+INCLUDE(cpack_deb)
+
+SET(PYTHON_SHEBANG "/usr/bin/env python" CACHE STRING "python shebang")
+MARK_AS_ADVANCED(PYTHON_SHEBANG)
 
 # Add storage engines and plugins.
 CONFIGURE_PLUGINS()

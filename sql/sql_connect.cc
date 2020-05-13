@@ -28,6 +28,7 @@
 #endif
 #include "sql_audit.h"
 #include "sql_connect.h"
+#include "thread_cache.h"
 #include "probes_mysql.h"
 #include "sql_parse.h"                          // sql_command_flags,
                                                 // execute_init_command,
@@ -1105,16 +1106,9 @@ static int check_connection(THD *thd)
         In this case we will close the connection and increment status
 */
 
-bool setup_connection_thread_globals(THD *thd)
+void setup_connection_thread_globals(THD *thd)
 {
-  if (thd->store_globals())
-  {
-    close_connection(thd, ER_OUT_OF_RESOURCES);
-    statistic_increment(aborted_connects,&LOCK_status);
-    statistic_increment(connection_errors_internal, &LOCK_status);
-    return 1;                                   // Error
-  }
-  return 0;
+  thd->store_globals();
 }
 
 
@@ -1397,12 +1391,7 @@ void do_handle_one_connection(CONNECT *connect, bool put_in_cache)
     stack overruns.
   */
   thd->thread_stack= (char*) &thd;
-  if (setup_connection_thread_globals(thd))
-  {
-    unlink_thd(thd);
-    delete thd;
-    return;
-  }
+  setup_connection_thread_globals(thd);
 
   for (;;)
   {
@@ -1432,7 +1421,7 @@ end_thread:
 
     unlink_thd(thd);
     if (IF_WSREP(thd->wsrep_applier, false) || !put_in_cache ||
-        !(connect= cache_thread(thd)))
+        !(connect= thread_cache.park()))
       break;
 
     /* Create new instrumentation for the new THD job */

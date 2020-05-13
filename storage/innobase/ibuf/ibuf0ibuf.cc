@@ -2325,8 +2325,8 @@ tablespace_deleted:
 			mtr.start();
 			dberr_t err;
 			buf_page_get_gen(page_id_t(space_id, page_nos[i]),
-					 zip_size,
-					 RW_X_LATCH, NULL, BUF_GET,
+					 zip_size, RW_X_LATCH, nullptr,
+					 BUF_GET_POSSIBLY_FREED,
 					 __FILE__, __LINE__, &mtr, &err, true);
 			mtr.commit();
 			if (err == DB_TABLESPACE_DELETED) {
@@ -2607,42 +2607,28 @@ ibuf_contract_after_insert(
 	} while (size > 0 && sum_sizes < entry_size);
 }
 
-/*********************************************************************//**
-Determine if an insert buffer record has been encountered already.
-@return TRUE if a new record, FALSE if possible duplicate */
-static
-ibool
-ibuf_get_volume_buffered_hash(
-/*==========================*/
-	const rec_t*	rec,	/*!< in: ibuf record in post-4.1 format */
-	const byte*	types,	/*!< in: fields */
-	const byte*	data,	/*!< in: start of user record data */
-	ulint		comp,	/*!< in: 0=ROW_FORMAT=REDUNDANT,
-				nonzero=ROW_FORMAT=COMPACT */
-	ulint*		hash,	/*!< in/out: hash array */
-	ulint		size)	/*!< in: number of elements in hash array */
+/** Determine if a change buffer record has been encountered already.
+@param rec   change buffer record in the MySQL 5.5 format
+@param hash  hash table of encountered records
+@param size  number of elements in hash
+@retval true if a distinct record
+@retval false if this may be duplicating an earlier record */
+static bool ibuf_get_volume_buffered_hash(const rec_t *rec, ulint *hash,
+                                          ulint size)
 {
-	ulint		len;
-	ulint		fold;
-	ulint		bitmask;
+  ut_ad(rec_get_n_fields_old(rec) > IBUF_REC_FIELD_USER);
+  const ulint start= rec_get_field_start_offs(rec, IBUF_REC_FIELD_USER);
+  const ulint len= rec_get_data_size_old(rec) - start;
+  const uint32_t fold= ut_crc32(rec + start, len);
+  hash+= (fold / (CHAR_BIT * sizeof *hash)) % size;
+  ulint bitmask= static_cast<ulint>(1) << (fold % (CHAR_BIT * sizeof(*hash)));
 
-	len = ibuf_rec_get_size(
-		rec, types,
-		rec_get_n_fields_old(rec) - IBUF_REC_FIELD_USER, comp);
-	fold = ut_fold_binary(data, len);
+  if (*hash & bitmask)
+    return false;
 
-	hash += (fold / (CHAR_BIT * sizeof *hash)) % size;
-	bitmask = static_cast<ulint>(1) << (fold % (CHAR_BIT * sizeof(*hash)));
-
-	if (*hash & bitmask) {
-
-		return(FALSE);
-	}
-
-	/* We have not seen this record yet.  Insert it. */
-	*hash |= bitmask;
-
-	return(TRUE);
+  /* We have not seen this record yet. Remember it. */
+  *hash|= bitmask;
+  return true;
 }
 
 #ifdef UNIV_DEBUG
@@ -2735,11 +2721,7 @@ ibuf_get_volume_buffered_count_func(
 	case IBUF_OP_DELETE_MARK:
 		/* There must be a record to delete-mark.
 		See if this record has been already buffered. */
-		if (n_recs && ibuf_get_volume_buffered_hash(
-			    rec, types + IBUF_REC_INFO_SIZE,
-			    types + len,
-			    types[IBUF_REC_OFFSET_FLAGS] & IBUF_REC_COMPACT,
-			    hash, size)) {
+		if (n_recs && ibuf_get_volume_buffered_hash(rec, hash, size)) {
 			(*n_recs)++;
 		}
 
@@ -3206,7 +3188,7 @@ ibuf_insert_low(
 	dtuple_t*	ibuf_entry;
 	mem_heap_t*	offsets_heap	= NULL;
 	mem_heap_t*	heap;
-	offset_t*	offsets		= NULL;
+	rec_offs*	offsets		= NULL;
 	ulint		buffered;
 	lint		min_n_recs;
 	rec_t*		ins_rec;
@@ -3643,7 +3625,7 @@ ibuf_insert_to_index_page_low(
 	buf_block_t*	block,	/*!< in/out: index page where the buffered
 				entry should be placed */
 	dict_index_t*	index,	/*!< in: record descriptor */
-	offset_t**	offsets,/*!< out: offsets on *rec */
+	rec_offs**	offsets,/*!< out: offsets on *rec */
 	mem_heap_t*	heap,	/*!< in/out: memory heap */
 	mtr_t*		mtr,	/*!< in/out: mtr */
 	page_cur_t*	page_cur)/*!< in/out: cursor positioned on the record
@@ -3719,7 +3701,7 @@ ibuf_insert_to_index_page(
 	ulint		low_match;
 	page_t*		page		= buf_block_get_frame(block);
 	rec_t*		rec;
-	offset_t*	offsets;
+	rec_offs*	offsets;
 	mem_heap_t*	heap;
 
 	DBUG_ENTER("ibuf_insert_to_index_page");
@@ -3961,8 +3943,8 @@ ibuf_delete(
 		/* TODO: the below should probably be a separate function,
 		it's a bastardized version of btr_cur_optimistic_delete. */
 
-		offset_t	offsets_[REC_OFFS_NORMAL_SIZE];
-		offset_t*	offsets	= offsets_;
+		rec_offs	offsets_[REC_OFFS_NORMAL_SIZE];
+		rec_offs*	offsets	= offsets_;
 		mem_heap_t*	heap = NULL;
 		ulint		max_ins_size = 0;
 
@@ -4221,8 +4203,9 @@ ibuf_merge_or_delete_for_page(
 	ulint		mops[IBUF_OP_COUNT];
 	ulint		dops[IBUF_OP_COUNT];
 
-	ut_ad(block == NULL || page_id == block->page.id);
+	ut_ad(!block || page_id == block->page.id);
 	ut_ad(!block || buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+	ut_ad(!block || block->page.status == buf_page_t::NORMAL);
 
 	if (trx_sys_hdr_page(page_id)
 	    || fsp_is_system_temporary(page_id.space())) {

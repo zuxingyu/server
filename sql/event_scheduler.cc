@@ -1,4 +1,5 @@
-/* Copyright (c) 2006, 2013, Oracle and/or its affiliates.
+/* Copyright (c) 2006, 2019, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2020, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -128,11 +129,12 @@ bool
 post_init_event_thread(THD *thd)
 {
   (void) init_new_connection_handler_thread();
-  if (init_thr_lock() || thd->store_globals())
+  if (init_thr_lock())
   {
     thd->cleanup();
     return TRUE;
   }
+  thd->store_globals();
   return FALSE;
 }
 
@@ -508,6 +510,7 @@ Event_scheduler::run(THD *thd)
       DBUG_PRINT("info", ("job_data is NULL, the thread was killed"));
     }
     DBUG_PRINT("info", ("state=%s", scheduler_states_names[state].str));
+    free_root(thd->mem_root, MYF(0));
   }
 
   LOCK_DATA();
