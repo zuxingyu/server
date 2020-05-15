@@ -357,7 +357,6 @@ buf_buddy_block_free(void* buf)
 	buf_block_t*	block;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_a(!ut_align_offset(buf, srv_page_size));
 
 	HASH_SEARCH(hash, buf_pool.zip_hash, fold, buf_page_t*, bpage,
@@ -390,7 +389,6 @@ buf_buddy_block_register(
 {
 	const ulint	fold = BUF_POOL_ZIP_FOLD(block);
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_ad(buf_block_get_state(block) == BUF_BLOCK_READY_FOR_USE);
 
 	buf_block_set_state(block, BUF_BLOCK_MEMORY);
@@ -445,7 +443,6 @@ byte *buf_buddy_alloc_low(ulint i, bool *lru)
 	buf_block_t*	block;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_ad(i >= buf_buddy_get_slot(UNIV_ZIP_SIZE_MIN));
 
 	if (i < BUF_BUDDY_SIZES) {
@@ -498,7 +495,6 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 	ulint		offset;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_ad(!ut_align_offset(src, size));
 	ut_ad(!ut_align_offset(dst, size));
 	ut_ad(i >= buf_buddy_get_slot(UNIV_ZIP_SIZE_MIN));
@@ -603,7 +599,6 @@ void buf_buddy_free_low(void* buf, ulint i)
 	buf_buddy_free_t*	buddy;
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_ad(i <= BUF_BUDDY_SIZES);
 	ut_ad(i >= buf_buddy_get_slot(UNIV_ZIP_SIZE_MIN));
 	ut_ad(buf_pool.buddy_stat[i].used > 0);
@@ -690,7 +685,6 @@ buf_buddy_realloc(void* buf, ulint size)
 	ulint		i = buf_buddy_get_slot(size);
 
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(!mutex_own(&buf_pool.zip_mutex));
 	ut_ad(i <= BUF_BUDDY_SIZES);
 	ut_ad(i >= buf_buddy_get_slot(UNIV_ZIP_SIZE_MIN));
 

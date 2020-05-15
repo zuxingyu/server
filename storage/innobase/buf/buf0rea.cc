@@ -120,31 +120,46 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
     ut_ad(mode == BUF_READ_ANY_PAGE);
 
   buf_page_t *bpage= nullptr;
-  buf_block_t *block= zip_size && !unzip && !recv_recovery_is_on()
-    ? nullptr
-    : buf_LRU_get_free_block();
+  buf_block_t *block= nullptr;
+  if (!zip_size || unzip || recv_recovery_is_on())
+  {
+    block= buf_LRU_get_free_block();
+    block->initialise(page_id, zip_size);
+  }
 
-  mutex_enter(&buf_pool.mutex); // FIXME: must we really hold this so long?
+  mutex_enter(&buf_pool.mutex);
 
   rw_lock_t *hash_lock= buf_pool.hash_lock_get(page_id);
   rw_lock_x_lock(hash_lock);
 
-  buf_page_t *watch_page= buf_pool.page_hash_get_low(page_id);
-  if (watch_page && !buf_pool.watch_is_sentinel(*watch_page))
+  buf_page_t *hash_page= buf_pool.page_hash_get_low(page_id);
+  if (hash_page && !buf_pool.watch_is_sentinel(*hash_page))
   {
     /* The page is already in the buffer pool. */
     rw_lock_x_unlock(hash_lock);
     if (block)
+    {
+      ut_d(block->page.state= BUF_BLOCK_READY_FOR_USE);
       buf_LRU_block_free_non_file_page(block);
-
+    }
     goto func_exit;
   }
 
   if (UNIV_LIKELY(block != nullptr))
   {
     bpage= &block->page;
-    buf_page_mutex_enter(block); // FIXME: why?
-    block->init(page_id, zip_size);
+
+    /* Insert into the hash table of file pages */
+    if (hash_page)
+    {
+      /* Preserve the reference count. */
+      auto buf_fix_count= hash_page->buf_fix_count;
+      ut_a(buf_fix_count > 0);
+      bpage->buf_fix_count+= buf_fix_count;
+      buf_pool.watch_remove(hash_page);
+    }
+
+    HASH_INSERT(buf_page_t, hash, buf_pool.page_hash, page_id.fold(), bpage);
 
     /* Note: We are using the hash_lock for protection. This is
     safe because no other thread can lookup the block from the
@@ -168,16 +183,11 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
 
     if (zip_size) {
 	    /* buf_pool.mutex may be released and
-	    reacquired by buf_buddy_alloc().  Thus, we
-	    must release block->mutex in order not to
-	    break the latching order in the reacquisition
-	    of buf_pool.mutex.  We also must defer this
+	    reacquired by buf_buddy_alloc(). We must defer this
 	    operation until after the block descriptor has
 	    been added to buf_pool.LRU and
 	    buf_pool.page_hash. */
-	    buf_page_mutex_exit(block);
 	    data = buf_buddy_alloc(zip_size, &lru);
-	    buf_page_mutex_enter(block);
 	    block->page.zip.data = (page_zip_t*) data;
 
 	    /* To maintain the invariant
@@ -188,8 +198,6 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
 	    ut_ad(buf_page_belongs_to_unzip_LRU(&block->page));
 	    buf_unzip_LRU_add_block(block, TRUE);
     }
-
-    buf_page_mutex_exit(block);
   }
   else
   {
@@ -209,10 +217,9 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
     check the page_hash again, as it may have been modified. */
     if (UNIV_UNLIKELY(lru))
     {
-      watch_page= buf_pool.page_hash_get_low(page_id);
+      hash_page= buf_pool.page_hash_get_low(page_id);
 
-      if (UNIV_UNLIKELY(watch_page &&
-			!buf_pool.watch_is_sentinel(*watch_page)))
+      if (UNIV_UNLIKELY(hash_page && !buf_pool.watch_is_sentinel(*hash_page)))
       {
         /* The block was added by some other thread. */
         rw_lock_x_unlock(hash_lock);
@@ -234,13 +241,13 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
     bpage->state= BUF_BLOCK_ZIP_PAGE;
     bpage->id= page_id;
 
-    if (watch_page)
+    if (hash_page)
     {
       /* Preserve the reference count. */
-      auto buf_fix_count= watch_page->buf_fix_count;
+      auto buf_fix_count= hash_page->buf_fix_count;
       ut_ad(buf_fix_count > 0);
       bpage->buf_fix_count+= buf_fix_count;
-      buf_pool.watch_remove(watch_page);
+      buf_pool.watch_remove(hash_page);
     }
 
     buf_page_set_io_fix(bpage, BUF_IO_READ);
@@ -258,10 +265,12 @@ static buf_page_t* buf_page_init_for_read(ulint mode, const page_id_t page_id,
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
   }
 
-  buf_pool.n_pend_reads++; // FIXME: outside mutex
+  mutex_exit(&buf_pool.mutex);
+  buf_pool.n_pend_reads++;
+  goto func_exit_no_mutex;
 func_exit:
   mutex_exit(&buf_pool.mutex);
-
+func_exit_no_mutex:
   if (mode == BUF_READ_IBUF_PAGES_ONLY)
     ibuf_mtr_commit(&mtr);
 

@@ -906,7 +906,7 @@ inline buf_block_t* buf_pool_t::block_from_ahi(const byte *ptr) const
   /* buf_pool_t::chunk_t::init() invokes buf_block_init() so that
   block[n].frame == block->frame + n * srv_page_size.  Check it. */
   ut_ad(block->frame == page_align(ptr));
-  /* Read the state of the block without holding a mutex.
+  /* Read the state of the block without holding hash_lock.
   A state transition from BUF_BLOCK_FILE_PAGE to
   BUF_BLOCK_REMOVE_HASH is possible during this execution. */
   ut_d(const buf_page_state state = buf_block_get_state(block));
@@ -1021,22 +1021,20 @@ fail:
 	buf_block_t* block = buf_pool.block_from_ahi(rec);
 
 	if (use_latch) {
-		mutex_enter(&block->mutex);
-
+		// FIXME: acquire hash_lock?
 		if (buf_block_get_state(block) == BUF_BLOCK_REMOVE_HASH) {
 			/* Another thread is just freeing the block
 			from the LRU list of the buffer pool: do not
 			try to access this page. */
-			mutex_exit(&block->mutex);
 			goto fail;
 		}
 
 		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 		DBUG_ASSERT(block->page.status != buf_page_t::FREED);
 
-		block->page.set_accessed();
 		buf_block_buf_fix_inc(block, __FILE__, __LINE__);
-		mutex_exit(&block->mutex);
+		// FIXME: release hash_lock
+		block->page.set_accessed();
 
 		buf_page_make_young_if_needed(&block->page);
 		mtr_memo_type_t	fix_type;

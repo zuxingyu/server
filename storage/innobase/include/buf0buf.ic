@@ -307,7 +307,7 @@ buf_block_set_io_fix(
 
 /*********************************************************************//**
 Makes a block sticky. A sticky block implies that even after we release
-the buf_pool.mutex and the block->mutex:
+buf_pool.mutex:
 * it cannot be removed from the flush_list
 * the block descriptor cannot be relocated
 * it cannot be removed from the LRU list
@@ -321,7 +321,6 @@ buf_page_set_sticky(
 	buf_page_t*	bpage)	/*!< in/out: control block */
 {
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_NONE);
 
 	bpage->io_fix = BUF_IO_PIN;
@@ -336,7 +335,6 @@ buf_page_unset_sticky(
 	buf_page_t*	bpage)	/*!< in/out: control block */
 {
 	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_PIN);
 
 	bpage->io_fix = BUF_IO_NONE;

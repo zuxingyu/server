@@ -519,11 +519,7 @@ performance schema instrumented if "UNIV_PFS_MUTEX"
 is defined */
 static PSI_mutex_info all_innodb_mutexes[] = {
 	PSI_KEY(autoinc_mutex),
-#  ifndef PFS_SKIP_BUFFER_MUTEX_RWLOCK
-	PSI_KEY(buffer_block_mutex),
-#  endif /* !PFS_SKIP_BUFFER_MUTEX_RWLOCK */
 	PSI_KEY(buf_pool_mutex),
-	PSI_KEY(buf_pool_zip_mutex),
 	PSI_KEY(cache_last_read_mutex),
 	PSI_KEY(dict_foreign_err_mutex),
 	PSI_KEY(dict_sys_mutex),

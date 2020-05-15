@@ -4173,7 +4173,7 @@ i_s_innodb_buffer_page_get_info(
 
 		page_info->fix_count = bpage->buf_fix_count;
 
-		page_info->oldest_mod = bpage->oldest_modification;
+		page_info->oldest_mod = bpage->oldest_modification();
 
 		page_info->access_time = bpage->access_time;
 
@@ -7196,17 +7196,9 @@ i_s_innodb_mutexes_fill_table(
 
 #ifdef JAN_TODO_FIXME
 	ib_mutex_t*	mutex;
-	ulint		block_mutex_oswait_count = 0;
-	ib_mutex_t*	block_mutex = NULL;
 	for (mutex = UT_LIST_GET_FIRST(os_mutex_list); mutex != NULL;
 	     mutex = UT_LIST_GET_NEXT(list, mutex)) {
 		if (mutex->count_os_wait == 0) {
-			continue;
-		}
-
-		if (buf_pool.is_block_mutex(mutex)) {
-			block_mutex = mutex;
-			block_mutex_oswait_count += mutex->count_os_wait;
 			continue;
 		}
 
@@ -7217,20 +7209,6 @@ i_s_innodb_mutexes_fill_table(
 		fields[MUTEXES_CREATE_LINE]->set_notnull();
 		OK(fields[MUTEXES_OS_WAITS]->store(lock->count_os_wait, true));
 		fields[MUTEXES_OS_WAITS]->set_notnull();
-		OK(schema_table_store_record(thd, tables->table));
-	}
-
-	if (block_mutex) {
-		char buf1[IO_SIZE];
-
-		snprintf(buf1, sizeof buf1, "combined %s",
-			 innobase_basename(block_mutex->cfile_name));
-
-		OK(field_store_string(fields[MUTEXES_NAME], block_mutex->cmutex_name));
-		OK(field_store_string(fields[MUTEXES_CREATE_FILE], buf1));
-		OK(fields[MUTEXES_CREATE_LINE]->store(block_mutex->cline, true));
-		fields[MUTEXES_CREATE_LINE]->set_notnull();
-		OK(fields[MUTEXES_OS_WAITS]->store((longlong)block_mutex_oswait_count), true);
 		OK(schema_table_store_record(thd, tables->table));
 	}
 

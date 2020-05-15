@@ -95,16 +95,6 @@ buf_flush_init_for_writing(
 	void*			page_zip_,
 	bool			use_full_checksum);
 
-# if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
-/** Writes a flushable page asynchronously from the buffer pool to a file.
-NOTE: block and LRU list mutexes must be held upon entering this function, and
-they will be released by this function after flushing. This is loosely based on
-buf_flush_batch() and buf_flush_page().
-@param[in,out]	block		buffer control block
-@return whether the page was flushed and the mutex released */
-bool buf_flush_page_try(buf_block_t* block)
-	MY_ATTRIBUTE((warn_unused_result));
-# endif /* UNIV_DEBUG || UNIV_IBUF_DEBUG */
 /** Do flushing batch of a given type.
 NOTE: The calling thread is not allowed to own any latches on pages!
 @param[in]	lru		true=buf_pool.LRU; false=buf_pool.flush_list
@@ -189,7 +179,6 @@ buf_flush_free_flush_rbt(void);
 /*==========================*/
 
 /** Write a flushable page from buf_pool to a file.
-NOTE: bpge->get_mutex() must be held upon entering this function.
 The buf_pool.mutex must be held if flush_type == SINGLE_PAGE.
 Both mutexes will be released by this function if it returns true.
 @param[in]	bpage		buffer control block

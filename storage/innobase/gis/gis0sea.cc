@@ -1510,7 +1510,7 @@ rtr_non_leaf_insert_stack_push(
 				my_cursor, mbr_inc);
 }
 
-/** Copy a buf_block_t strcuture, except "block->lock" and "block->mutex".
+/** Copy a buf_block_t, except "block->lock".
 @param[in,out]	matches	copy to match->block
 @param[in]	block	block to copy */
 static
@@ -1519,13 +1519,11 @@ rtr_copy_buf(
 	matched_rec_t*		matches,
 	const buf_block_t*	block)
 {
-	/* Copy all members of "block" to "matches->block" except "mutex"
-	and "lock". We skip "mutex" and "lock" because they are not used
+	/* Copy all members of "block" to "matches->block" except "lock".
+	We skip "lock" because it is not used
 	from the dummy buf_block_t we create here and because memcpy()ing
-	them generates (valid) compiler warnings that the vtable pointer
-	will be copied. It is also undefined what will happen with the
-	newly memcpy()ed mutex if the source mutex was acquired by
-	(another) thread while it was copied. */
+	it generates (valid) compiler warnings that the vtable pointer
+	will be copied. */
 	new (&matches->block.page) buf_page_t(block->page);
 	matches->block.frame = block->frame;
 	matches->block.unzip_LRU = block->unzip_LRU;
@@ -1533,7 +1531,6 @@ rtr_copy_buf(
 	ut_d(matches->block.in_unzip_LRU_list = block->in_unzip_LRU_list);
 	ut_d(matches->block.in_withdraw_list = block->in_withdraw_list);
 
-	/* Skip buf_block_t::mutex */
 	/* Skip buf_block_t::lock */
 	matches->block.lock_hash_val = block->lock_hash_val;
 	matches->block.modify_clock = block->modify_clock;

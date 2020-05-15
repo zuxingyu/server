@@ -196,10 +196,8 @@ extern const byte field_ref_zero[UNIV_PAGE_SIZE_MAX];
 #include "ut0mutex.h"
 #include "sync0rw.h"
 
-typedef ib_bpmutex_t BPageMutex;
 typedef ib_mutex_t BufPoolMutex;
 typedef ib_mutex_t FlushListMutex;
-typedef BPageMutex BufPoolZipMutex;
 typedef rw_lock_t BPageLock;
 #endif /* !UNIV_INNOCHECKSUM */
 

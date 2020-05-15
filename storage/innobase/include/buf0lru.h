@@ -75,8 +75,7 @@ NOTE: If this function returns true, it will temporarily
 release buf_pool.mutex.  Furthermore, the page frame will no longer be
 accessible via bpage.
 
-The caller must hold buf_pool.mutex and must not hold any
-bpage->get_mutex() when calling this function.
+The caller must hold buf_pool.mutex when calling this function.
 @return true if freed, false otherwise. */
 bool
 buf_LRU_free_page(

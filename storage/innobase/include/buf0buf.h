@@ -746,7 +746,6 @@ buf_block_set_state(
 	enum buf_page_state	state);	/*!< in: state */
 
 #define buf_page_in_file(bpage) ((bpage)->in_file())
-#define buf_page_get_mutex(bpage) ((bpage)->get_mutex())
 
 /*********************************************************************//**
 Determines if a block should be on unzip_LRU list.
@@ -794,7 +793,7 @@ buf_block_set_io_fix(
 	enum buf_io_fix	io_fix);/*!< in: io_fix state */
 /*********************************************************************//**
 Makes a block sticky. A sticky block implies that even after we release
-the buf_pool.mutex and the block->mutex:
+buf_pool.mutex:
 * it cannot be removed from the flush_list
 * the block descriptor cannot be relocated
 * it cannot be removed from the LRU list
@@ -1009,15 +1008,15 @@ public:
   /** Count of how manyfold this block is currently bufferfixed. */
   Atomic_counter<uint32_t> buf_fix_count;
 
-  /** type of pending I/O operation; also protected by
-  buf_pool.mutex for writes only. FIXME: clarify the rules! */
-  buf_io_fix io_fix;
+  /** type of pending I/O operation; protected by buf_pool.mutex
+  if in_LRU_list */
+  buf_io_fix io_fix; // FIXME: Atomic_counter?
 
   /** Block state. @see in_file()
   FIXME: Review/document the protection rules.
   Which transitions are possible while the block is in
   buf_pool.page_hash? Those transitions will be protected
-  by the hash bucket latch only, not get_mutex() or buf_pool.mutex. */
+  by the hash bucket latch only. */
   buf_page_state state;
   /* @} */
 
@@ -1076,34 +1075,34 @@ public:
 					in_flush_list
 					== (state == BUF_BLOCK_FILE_PAGE
 					    || state == BUF_BLOCK_ZIP_DIRTY)
-					Writes to this field must be
-					covered by both block->mutex
-					and buf_pool.flush_list_mutex. Hence
-					reads can happen while holding
-					any one of the two mutexes */
+					Protected by
+					buf_pool.flush_list_mutex. */
 	bool		in_free_list;	/*!< TRUE if in buf_pool.free; when
 					buf_pool.mutex is free, the following
 					should hold: in_free_list
 					== (state == BUF_BLOCK_NOT_USED) */
 #endif /* UNIV_DEBUG */
 
-	lsn_t		oldest_modification;
+private:
+	Atomic_counter<lsn_t> oldest_modification_;
 					/*!< log sequence number of
 					the START of the log entry
 					written of the oldest
 					modification to this block
 					which has not yet been flushed
 					on disk; zero if all
-					modifications are on disk.
-					Writes to this field must be
-					covered by both block->mutex
-					and buf_pool.flush_list_mutex. Hence
-					reads can happen while holding
-					any one of the two mutexes */
+					modifications are on disk. */
+public:
+	/** @return the oldest modification */
+	lsn_t oldest_modification() const { return oldest_modification_; }
+	/** Set oldest_modification when adding to buf_pool.flush_list */
+	inline void set_oldest_modification(lsn_t lsn);
+	/** Clear oldest_modification when removing from buf_pool.flush_list */
+	inline void clear_oldest_modification();
 	/* @} */
-	/** @name LRU replacement algorithm fields
-	These fields are protected by buf_pool.mutex only (not
-	buf_pool.zip_mutex or buf_block_t::mutex). */
+
+	/** @name LRU replacement algorithm fields.
+	Protected by buf_pool.mutex. */
 	/* @{ */
 
 	UT_LIST_NODE_T(buf_page_t) LRU;
@@ -1119,10 +1118,9 @@ public:
 					purposes without holding any
 					mutex or latch */
 	/* @} */
-	unsigned	access_time;	/*!< time of first access, or
+	Atomic_counter<unsigned>(access_time);	/*!< time of first access, or
 					0 if the block was never accessed
-					in the buffer pool. Protected by
-					block mutex for in_file() blocks.
+					in the buffer pool.
 
 					For state==BUF_BLOCK_MEMORY
 					blocks, this field can be repurposed
@@ -1159,7 +1157,7 @@ public:
     old= 0;
     freed_page_clock= 0;
     access_time= 0;
-    oldest_modification= 0;
+    oldest_modification_= 0;
     slot= nullptr;
     ibuf_exist= false;
     status= NORMAL;
@@ -1212,9 +1210,6 @@ public:
     return false;
   }
 
-  /** @return the block mutex */
-  inline BPageMutex *get_mutex();
-
   /** @return whether the block is modified and ready for flushing */
   inline bool ready_for_flush() const;
   /** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
@@ -1226,8 +1221,14 @@ public:
   inline bool is_old() const;
   /** Set whether a block is old in buf_pool.LRU */
   inline void set_old(bool old);
-  /** Flag a page accessed in buf_pool */
-  inline void set_accessed();
+  /** Flag a page accessed in buf_pool
+  @return whether this is not the first access */
+  bool set_accessed()
+  {
+    if (is_accessed()) return true;
+    access_time= static_cast<uint32_t>(ut_time_ms());
+    return false;
+  }
   /** @return ut_time_ms() at the time of first access of a block in buf_pool
   @retval 0 if not accessed */
   unsigned is_accessed() const { ut_ad(in_file()); return access_time; }
@@ -1264,7 +1265,7 @@ struct buf_block_t{
 	uint32_t	lock_hash_val;	/*!< hashed value of the page address
 					in the record lock hash table;
 					protected by buf_block_t::lock
-					(or buf_block_t::mutex, buf_pool.mutex
+					(or buf_pool.mutex
 				        in buf_page_get_gen(),
 					buf_page_init_for_read()
 					and buf_page_create()) */
@@ -1388,13 +1389,6 @@ struct buf_block_t{
 					debug utilities in sync0rw */
 	/* @} */
 # endif
-	BPageMutex	mutex;		/*!< mutex protecting this block:
-					state (also protected by the buffer
-					pool mutex), io_fix, buf_fix_count,
-					and accessed; we introduce this new
-					mutex in InnoDB-5.1 to relieve
-					contention on the buffer pool mutex */
-
   void fix() { page.fix(); }
   uint32_t unfix() { return page.unfix(); }
 
@@ -1408,7 +1402,7 @@ struct buf_block_t{
   /** Initialize the block.
   @param page_id page id
   @param zip_size ROW_FORMAT=COMPRESSED page size, or 0 */
-  void init(const page_id_t page_id, ulint zip_size);
+  void initialise(const page_id_t page_id, ulint zip_size);
 };
 
 /** Check if a buf_block_t object is in a valid state
@@ -1775,8 +1769,6 @@ public:
   inline buf_block_t* block_from_ahi(const byte *ptr) const;
 #endif /* BTR_CUR_HASH_ADAPT */
 
-  bool is_block_mutex(const BPageMutex *m) const
-  { return is_block_field(reinterpret_cast<const void*>(m)); }
   bool is_block_lock(const BPageLock *l) const
   { return is_block_field(reinterpret_cast<const void*>(l)); }
 
@@ -2013,9 +2005,6 @@ public:
 	/** @name General fields */
 	/* @{ */
 	BufPoolMutex	mutex;		/*!< Buffer pool mutex */
-	BufPoolZipMutex	zip_mutex;	/*!< Zip mutex, protects compressed
-					only pages (of type buf_page_t, not
-					buf_block_t */
 	ulint		curr_pool_size;	/*!< Current pool size in bytes */
 	ulint		LRU_old_ratio;  /*!< Reserve this much of the buffer
 					pool for "old" blocks */
@@ -2197,8 +2186,9 @@ public:
 	in the buffer pool only in compressed form. */
 	/* @{ */
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
+	/** unmodified ROW_FORMAT=COMPRESSED pages;
+	protected by buf_pool.mutex */
 	UT_LIST_BASE_NODE_T(buf_page_t)	zip_clean;
-					/*!< unmodified compressed pages */
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
 	UT_LIST_BASE_NODE_T(buf_buddy_free_t) zip_free[BUF_BUDDY_SIZES_MAX];
 					/*!< buddy free lists */
@@ -2268,31 +2258,40 @@ private:
 /** The InnoDB buffer pool */
 extern buf_pool_t buf_pool;
 
-/** @return the block mutex */
-inline BPageMutex *buf_page_t::get_mutex()
+/** Set oldest_modification when adding to buf_pool.flush_list */
+inline void buf_page_t::set_oldest_modification(lsn_t lsn)
 {
-  ut_ad (state != BUF_BLOCK_POOL_WATCH);
-  return UNIV_LIKELY(state >= BUF_BLOCK_NOT_USED)
-    ? &reinterpret_cast<buf_block_t*>(this)->mutex
-    : &buf_pool.zip_mutex;
+  ut_ad(mutex_own(&buf_pool.flush_list_mutex));
+  ut_ad(!in_flush_list);
+  ut_ad(!oldest_modification());
+  oldest_modification_= lsn;
+  ut_d(in_flush_list= true);
+}
+
+/** Clear oldest_modification when removing from buf_pool.flush_list */
+inline void buf_page_t::clear_oldest_modification()
+{
+  ut_ad(mutex_own(&buf_pool.flush_list_mutex));
+  oldest_modification_= 0;
+  ut_d(in_flush_list= false);
 }
 
 /** @return whether the block is modified and ready for flushing */
 inline bool buf_page_t::ready_for_flush() const
 {
   ut_ad(mutex_own(&buf_pool.mutex));
+  ut_ad(in_LRU_list);
   ut_a(in_file());
-  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
-  return oldest_modification && io_fix == BUF_IO_NONE;
+  return oldest_modification() && io_fix == BUF_IO_NONE;
 }
 
 /** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
 inline bool buf_page_t::ready_for_replace() const
 {
   ut_ad(mutex_own(&buf_pool.mutex));
+  ut_ad(in_LRU_list);
   ut_a(in_file());
-  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
-  return !oldest_modification && !buf_fix_count && io_fix == BUF_IO_NONE;
+  return !oldest_modification() && !buf_fix_count && io_fix == BUF_IO_NONE;
 }
 
 /** @return whether the block can be relocated in memory.
@@ -2308,8 +2307,7 @@ inline bool buf_page_t::can_relocate() const
 /** @return whether the block has been flagged old in buf_pool.LRU */
 inline bool buf_page_t::is_old() const
 {
-  ut_ad(mutex_own(&buf_pool.mutex) ||
-	mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
+  ut_ad(mutex_own(&buf_pool.mutex));
   ut_ad(in_file());
   ut_ad(in_LRU_list);
   return old;
@@ -2344,36 +2342,6 @@ inline void buf_page_t::set_old(bool old)
   this->old= old;
 }
 
-/** Flag a page accessed in buf_pool */
-inline void buf_page_t::set_accessed()
-{
-  ut_ad(!mutex_own(&buf_pool.mutex));
-  ut_ad(mutex_own(const_cast<buf_page_t*>(this)->get_mutex()));
-  ut_ad(in_file());
-
-  if (!access_time)
-    /* Make this the time of the first access. */
-    access_time= static_cast<uint32_t>(ut_time_ms());
-}
-
-/** @name Accessors for buffer pool mutexes
-Use these instead of accessing buffer pool mutexes directly. */
-/* @{ */
-
-/** Test if block->mutex is owned. */
-#define buf_page_mutex_own(b)	(b)->mutex.is_owned()
-
-/** Acquire the block->mutex. */
-#define buf_page_mutex_enter(b) do {			\
-	mutex_enter(&(b)->mutex);			\
-} while (0)
-
-/** Release the trx->mutex. */
-#define buf_page_mutex_exit(b) do {			\
-	(b)->mutex.exit();				\
-} while (0)
-
-
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 /** Forbid the release of the buffer pool mutex. */
 # define buf_pool_mutex_exit_forbid() do {	\
@@ -2391,7 +2359,6 @@ Use these instead of accessing buffer pool mutexes directly. */
 /** Allow the release of the buffer pool mutex. */
 # define buf_pool_mutex_exit_allow() ((void) 0)
 #endif
-/* @} */
 
 /**********************************************************************
 Let us list the consistency conditions for different control block states.

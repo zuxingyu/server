@@ -784,14 +784,11 @@ btr_cur_optimistic_latch_leaves(
 		mode = *latch_mode == BTR_SEARCH_PREV
 			? RW_S_LATCH : RW_X_LATCH;
 
-		buf_page_mutex_enter(block);
 		if (buf_block_get_state(block) != BUF_BLOCK_FILE_PAGE) {
-			buf_page_mutex_exit(block);
 			return(false);
 		}
 		/* pin the block not to be relocated */
 		buf_block_buf_fix_inc(block, file, line);
-		buf_page_mutex_exit(block);
 
 		rw_lock_s_lock(&block->lock);
 		if (block->modify_clock != modify_clock) {
