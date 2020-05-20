@@ -1177,19 +1177,19 @@ row_log_table_get_pk_col(
 			return(DB_INVALID_NULL);
 		}
 
-		ulint new_i = dict_col_get_clust_pos(ifield->col, index);
+		unsigned col_no = ifield->col->ind;
 
-		if (UNIV_UNLIKELY(new_i >= log->defaults->n_fields)) {
+		if (UNIV_UNLIKELY(col_no >= log->defaults->n_fields)) {
 			ut_ad(0);
 			return DB_INVALID_NULL;
 		}
 
 		field = static_cast<const byte*>(
-			log->defaults->fields[new_i].data);
+			log->defaults->fields[col_no].data);
 		if (!field) {
 			return(DB_INVALID_NULL);
 		}
-		len = log->defaults->fields[new_i].len;
+		len = log->defaults->fields[col_no].len;
 	}
 
 	if (rec_offs_nth_extern(offsets, i)) {

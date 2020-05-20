@@ -414,3 +414,33 @@ SELECT * FROM t1;
 SET DEBUG_SYNC='RESET';
 --disconnect con2
 DROP TABLE t1;
+
+--echo #
+--echo # MDEV-22637 Rollback of insert fails when prefix index
+--echo #		primary key DDL happens
+--echo #
+SET @@SQL_MODE = REPLACE(@@SQL_MODE, 'STRICT_TRANS_TABLES', '');
+SET @@SQL_MODE = REPLACE(@@SQL_MODE, 'STRICT_ALL_TABLES', '');
+CREATE TABLE t1(f1 int not null, f2 char(100),
+                f3 char(100), f4 char(100))engine=innodb;
+INSERT INTO t1 VALUES(1, "This is column2", "This is column3",
+                      "This is column4");
+set DEBUG_SYNC = 'row_log_table_apply1_before SIGNAL scanned WAIT_FOR insert_done';
+--send ALTER TABLE t1 ADD PRIMARY KEY (f4(3), f3(3), f2(3)), ALGORITHM=INPLACE
+connect(con1,localhost,root,,);
+SET DEBUG_SYNC = 'now WAIT_FOR scanned';
+begin;
+insert into t1(f1, f2) values(2, "This is column2 value");
+rollback;
+set DEBUG_SYNC = 'now SIGNAL insert_done';
+
+connection default;
+--disable_warnings
+reap;
+--enable_warnings
+SHOW CREATE TABLE t1;
+SELECT COUNT(*) FROM t1;
+disconnect con1;
+DROP TABLE t1;
+SET DEBUG_SYNC = 'RESET';
+SET SQL_MODE=DEFAULT;
