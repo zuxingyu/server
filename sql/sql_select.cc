@@ -8289,6 +8289,11 @@ choose_plan(JOIN *join, table_map join_tables)
             jtab_sort_func, (void*)join->emb_sjm_nest);
 
   Json_writer_object wrapper(thd);
+
+  if (join->conds)
+    wrapper.add("cardinality_accurate",
+                join->all_selectivity_accounted_for_join_cardinality());
+
   Json_writer_array trace_plan(thd,"considered_execution_plans");
 
   if (!join->emb_sjm_nest)
@@ -29310,6 +29315,92 @@ void build_notnull_conds_for_inner_nest_of_outer_join(JOIN *join,
       }
     }
   }
+}
+
+
+/*
+  @brief Check if selectivity is accounted for all parts of the WHERE condition
+
+  @detail
+    The analysis is done as follows: we require that the WHERE clause has form
+
+      simple_pred1 AND ... AND simple_predN
+
+    Where each simple_pred{i} is either
+    - a comparison e.g. "col < const" for which range and/or EITS analyzer
+      produced a range.
+    - A multiple equality:  col1=col2=col3= ...
+      Multiple equality must be "covered" by equalities and for each
+      column in the multiple equality number of distinct values for the column
+      is known
+
+*/
+bool JOIN::all_selectivity_accounted_for_join_cardinality()
+{
+  if (!conds)
+    return true;
+
+  if (conds->type() == Item::COND_ITEM)
+  {
+    bool is_and_level= ((Item_cond*) conds)->functype() == Item_func::COND_AND_FUNC;
+
+    if (is_and_level)
+    {
+      List_iterator<Item> li(*((Item_cond*) conds)->argument_list());
+      Item *item;
+      while ((item= li++))
+      {
+        SAME_FIELD arg= {NULL, this, FALSE};
+        if (item->walk(&Item::is_item_selectivity_covered, 0, &arg))
+          return false;
+      }
+    }
+    else
+    {
+      /*
+        FOR OR conditions there are cases when the entire OR condition
+        is dependent on a column then we MAY have correct estimates
+        for join cardinality.
+
+        Eg:
+           select * from t1 where t1.a = 2 or t1.a=3
+           so with an index on t1.a we would get accurate estimates.
+      */
+      SAME_FIELD arg= {NULL, this, FALSE};
+      return !conds->walk(&Item::is_item_selectivity_covered, 0, &arg);
+    }
+  }
+  else
+  {
+    SAME_FIELD arg= {NULL, this, FALSE};
+    return !conds->walk(&Item::is_item_selectivity_covered, 0, &arg);
+  }
+
+  return true;
+}
+
+
+/*
+  @brief Check if a field is present in multiple equalities
+
+  @retval
+    TRUE    Field found in multiple equalities
+    FALSE   OTHERWISE
+*/
+
+bool JOIN::is_present_in_multiple_equalities(Field *field)
+{
+  if (!cond_equal || !cond_equal->current_level.elements)
+    return false;
+
+  Item_equal *item_equal;
+  List_iterator_fast<Item_equal> it(cond_equal->current_level);
+  while ((item_equal= it++))
+  {
+    if (item_equal->contains(field))
+      return true;
+  }
+  return false;
 }
 
 

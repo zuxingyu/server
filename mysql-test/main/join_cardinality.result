@@ -1,0 +1,350 @@
+CREATE TABLE t1(a INT, b INT);
+INSERT INTO t1 SELECT seq, seq from seq_1_to_100;
+set optimizer_trace=1;
+ANALYZE TABLE t1 PERSISTENT FOR COLUMNS (a) INDEXES ();
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	Engine-independent statistics collected
+test.t1	analyze	status	OK
+#
+# For column b no statistics provides, so the estimate cardinality cannot be accurate
+#
+EXPLAIN EXTENDED SELECT * from t1 WHERE a >= 5 and b <= 6;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	95.31	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` >= 5 and `test`.`t1`.`b` <= 6
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+ANALYZE TABLE t1 PERSISTENT FOR COLUMNS (b) INDEXES ();
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	Engine-independent statistics collected
+test.t1	analyze	status	Table is already up to date
+#
+# Estimate for join cardinality should be accurate
+#
+EXPLAIN EXTENDED SELECT * from t1 WHERE a >= 5 and b <= 6;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	5.21	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` >= 5 and `test`.`t1`.`b` <= 6
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+#
+# For disjunctive condition we don't expect correct estimates for join cardinality
+#
+EXPLAIN EXTENDED SELECT * from t1 WHERE a >= 5 or b <= 6;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	100.00	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` >= 5 or `test`.`t1`.`b` <= 6
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+#
+# Estimate for join cardinality should be accurate
+#
+EXPLAIN EXTENDED SELECT * from t1 WHERE a IN (1,2,3);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	3.00	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` in (1,2,3)
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+#
+# Estimate for join cardinality should be accurate
+#
+EXPLAIN EXTENDED SELECT * from t1 WHERE a between 1 and 5;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	4.69	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` between 1 and 5
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+CREATE TABLE t2 (a int, b VARCHAR(3));
+INSERT INTO t2 VALUES (1, 'bar'),(2, 'baz'), (3, 'bc'), (4, 'fgh'), (5, 'xyz');
+ANALYZE TABLE t2 PERSISTENT FOR ALL;
+Table	Op	Msg_type	Msg_text
+test.t2	analyze	status	Engine-independent statistics collected
+test.t2	analyze	status	OK
+EXPLAIN EXTENDED SELECT * from t2 WHERE b LIKE 'b%';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	5	60.16	Using where
+Warnings:
+Note	1003	select `test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t2` where `test`.`t2`.`b` like 'b%'
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t2 WHERE b LIKE 'ba%';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	5	40.62	Using where
+Warnings:
+Note	1003	select `test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t2` where `test`.`t2`.`b` like 'ba%'
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+#
+# No range here so selectivity is not possible to be computed here, maybe with optimizer_use_condition_selectivity=5
+#
+EXPLAIN EXTENDED SELECT * from t2 WHERE b LIKE '%b%';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	5	100.00	Using where
+Warnings:
+Note	1003	select `test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t2` where `test`.`t2`.`b` like '%b%'
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+drop table t1, t2;
+#
+#  TESTS with equi-join conditions
+#
+CREATE TABLE t1(a INT, b INT, key key1(a,b));
+INSERT INTO t1 SELECT seq, seq from seq_1_to_100;
+CREATE TABLE t2(a INT, b INT);
+INSERT INTO t2 SELECT seq, seq from seq_1_to_100;
+#
+# For the column t2.a, number of distinct values is unknown
+#
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.a;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	Using where
+1	SIMPLE	t1	ref	key1	key1	5	test.t2.a	1	100.00	Using index
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = `test`.`t2`.`a`
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+ALTER TABLE t2 ADD INDEX key1(a);
+#
+# For the column t2.a, number of distinct values is known with index key1
+#
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.a;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	key1	NULL	NULL	NULL	100	100.00	Using where
+1	SIMPLE	t1	ref	key1	key1	5	test.t2.a	1	100.00	Using index
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = `test`.`t2`.`a`
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+#
+# For the column t2.b and t1.b, number of distinct values is unknown
+#
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.a and t1.b=t2.b;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	key1	NULL	NULL	NULL	100	100.00	Using where
+1	SIMPLE	t1	ref	key1	key1	10	test.t2.a,test.t2.b	1	100.00	Using index
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = `test`.`t2`.`a` and `test`.`t1`.`b` = `test`.`t2`.`b`
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+#
+# t1.a = const but for t2.a number of distinct values is unknow
+#
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.a and t1.a=1;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ref	key1	key1	5	const	1	100.00	Using index
+1	SIMPLE	t2	ref	key1	key1	5	const	1	100.00	
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = 1 and `test`.`t2`.`a` = 1
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+ANALYZE TABLE t1 PERSISTENT FOR ALL;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	Engine-independent statistics collected
+test.t1	analyze	status	Table is already up to date
+ANALYZE TABLE t2 PERSISTENT FOR ALL;
+Table	Op	Msg_type	Msg_text
+test.t2	analyze	status	Engine-independent statistics collected
+test.t2	analyze	status	Table is already up to date
+#
+# EITS gives distinct values for all columns in this case
+#
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.a and t1.b=t2.b;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	ALL	key1	NULL	NULL	NULL	100	100.00	Using where
+1	SIMPLE	t1	ref	key1	key1	10	test.t2.a,test.t2.b	1	100.00	Using index
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = `test`.`t2`.`a` and `test`.`t1`.`b` = `test`.`t2`.`b`
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+drop table t1, t2;
+CREATE TABLE t1(a INT, b INT, key(a));
+INSERT INTO t1 SELECT seq, seq from seq_1_to_100;
+CREATE TABLE t2(a INT, b INT, key(b));
+INSERT INTO t2 SELECT seq, seq from seq_1_to_100;
+set optimizer_trace=1;
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.b and (t1.a > 5 or t2.b < 1);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	a	NULL	NULL	NULL	100	98.00	Using where
+1	SIMPLE	t2	ref	b	b	5	test.t1.a	1	100.00	
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t2`.`b` = `test`.`t1`.`a` and (`test`.`t1`.`a` > 5 or `test`.`t1`.`a` < 1)
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE (t1.a =1 or t1.a=4);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	range	a	a	5	NULL	2	100.00	Using index condition
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	Using join buffer (flat, BNL join)
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = 1 or `test`.`t1`.`a` = 4
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE (t1.a =1 or t2.a=4);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	a	NULL	NULL	NULL	100	100.00	
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	Using where; Using join buffer (flat, BNL join)
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = 1 or `test`.`t2`.`a` = 4
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE abs(t1.a) >= 95 or t1.a <= 5;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	a	NULL	NULL	NULL	100	100.00	Using where
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where abs(`test`.`t1`.`a`) >= 95 or `test`.`t1`.`a` <= 5
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE ((t1.a between 1 and 3) or (t1.a = 5));
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	range	a	a	5	NULL	3	100.00	Using index condition
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` between 1 and 3 or `test`.`t1`.`a` = 5
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE ((t1.a IS NULL) or (t1.a = 5));
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ref_or_null	a	a	5	const	2	100.00	Using index condition
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` is null or `test`.`t1`.`a` = 5
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE t1.a = (select t2.a from t2 limit 1);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	PRIMARY	t1	ref	a	a	5	const	1	100.00	Using where
+2	SUBQUERY	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` = (/* select#2 */ select `test`.`t2`.`a` from `test`.`t2` limit 1)
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE t1.a = (select t2.a from t2 limit 1);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	PRIMARY	t1	ref	a	a	5	const	1	100.00	Using where
+2	SUBQUERY	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` = (/* select#2 */ select `test`.`t2`.`a` from `test`.`t2` limit 1)
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1  WHERE t1.a = (select t2.a from t2 where t1.b=t2.b limit 1);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	PRIMARY	t1	ALL	NULL	NULL	NULL	NULL	100	100.00	Using where
+2	DEPENDENT SUBQUERY	t2	ref	b	b	5	test.t1.b	1	100.00	
+Warnings:
+Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where `test`.`t1`.`a` = <expr_cache><`test`.`t1`.`b`>((/* select#2 */ select `test`.`t2`.`a` from `test`.`t2` where `test`.`t1`.`b` = `test`.`t2`.`b` limit 1))
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false,
+    false
+]
+ALTER TABLE t1 DROP KEY a;
+ALTER TABLE t2 DROP KEY b;
+ANALYZE TABLE t1 PERSISTENT FOR ALL;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	Engine-independent statistics collected
+test.t1	analyze	status	OK
+ANALYZE TABLE t2 PERSISTENT FOR ALL;
+Table	Op	Msg_type	Msg_text
+test.t2	analyze	status	Engine-independent statistics collected
+test.t2	analyze	status	OK
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE t1.a=t2.b and (t1.a > 5 or t2.b < 1);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	96.31	Using where
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	96.31	Using where; Using join buffer (flat, BNL join)
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t2`.`b` = `test`.`t1`.`a` and (`test`.`t1`.`a` > 5 or `test`.`t1`.`a` < 1)
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE (t1.a =1 or t1.a=4);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	2.00	Using where
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	Using join buffer (flat, BNL join)
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = 1 or `test`.`t1`.`a` = 4
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    true
+]
+EXPLAIN EXTENDED SELECT * from t1,t2 WHERE (t1.a =1 or t2.a=4);
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	ALL	NULL	NULL	NULL	NULL	100	100.00	
+1	SIMPLE	t2	ALL	NULL	NULL	NULL	NULL	100	100.00	Using where; Using join buffer (flat, BNL join)
+Warnings:
+Note	1003	select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where `test`.`t1`.`a` = 1 or `test`.`t2`.`a` = 4
+SELECT JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate')) FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+JSON_DETAILED(JSON_EXTRACT(trace, '$**.cardinality_accurate'))
+[
+    false
+]
+drop table t1, t2;
