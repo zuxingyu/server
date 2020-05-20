@@ -34,8 +34,8 @@ err_log=
 err_log_base=
 skip_err_log=0
 
-syslog_tag_mysqld=mysqld
-syslog_tag_mysqld_safe=mysqld_safe
+syslog_tag_mysqld=mariadbd
+syslog_tag_mysqld_safe=mariadbd-safe
 
 trap '' 1 2 3 15			# we shouldn't let anyone kill us
 
@@ -76,29 +76,29 @@ Usage: $0 [OPTIONS]
   --core-file-size=LIMIT     Limit core files to the specified size
   --defaults-file=FILE       Use the specified defaults file
   --defaults-extra-file=FILE Also use defaults from the specified file
-  --ledir=DIRECTORY          Look for mysqld in the specified directory
+  --ledir=DIRECTORY          Look for mariadbd in the specified directory
   --open-files-limit=LIMIT   Limit the number of open files
-  --crash-script=FILE        Script to call when mysqld crashes
+  --crash-script=FILE        Script to call when mariadbd crashes
   --timezone=TZ              Set the system timezone
   --malloc-lib=LIB           Preload shared library LIB if available
-  --mysqld=FILE              Use the specified file as mysqld
-  --mysqld-version=VERSION   Use "mysqld-VERSION" as mysqld
+  --mysqld=FILE              Use the specified file as mariadbd
+  --mysqld-version=VERSION   Use "mysqld-VERSION" as mariadbd
   --dry-run                  Simulate the start to detect errors but don't start
-  --nice=NICE                Set the scheduling priority of mysqld
-  --no-auto-restart          Exit after starting mysqld
-  --nowatch                  Exit after starting mysqld
+  --nice=NICE                Set the scheduling priority of mariadbd
+  --no-auto-restart          Exit after starting mariadbd
+  --nowatch                  Exit after starting mariadbd
   --plugin-dir=DIR           Plugins are under DIR or DIR/VERSION, if
                              VERSION is given
-  --skip-kill-mysqld         Don't try to kill stray mysqld processes
+  --skip-kill-mysqld         Don't try to kill stray mariadbd processes
   --syslog                   Log messages to syslog with 'logger'
   --skip-syslog              Log messages to error log (default)
   --syslog-tag=TAG           Pass -t "mysqld-TAG" to 'logger'
   --flush-caches             Flush and purge buffers/caches before
                              starting the server
-  --numa-interleave          Run mysqld with its memory interleaved
+  --numa-interleave          Run mariadbd with its memory interleaved
                              on all NUMA nodes
 
-All other options are passed to the mysqld program.
+All other options are passed to the mariadbd program.
 
 EOF
         exit 1
@@ -121,7 +121,7 @@ log_generic () {
   priority="$1"
   shift
 
-  msg="`date +'%y%m%d %H:%M:%S'` mysqld_safe $*"
+  msg="`date +'%y%m%d %H:%M:%S'` mariadbd-safe $*"
   echo "$msg"
   case $logging in
     init) ;;  # Just echo the message, don't save it anywhere
@@ -155,12 +155,12 @@ eval_log_error () {
      fi
      ;;
     syslog)
-      # mysqld often prefixes its messages with a timestamp, which is
+      # mariadbd often prefixes its messages with a timestamp, which is
       # redundant when logging to syslog (which adds its own timestamp)
       # However, we don't strip the timestamp with sed here, because
       # sed buffers output (only GNU sed supports a -u (unbuffered) option)
       # which means that messages may not get sent to syslog until the
-      # mysqld process quits.
+      # mariadbd process quits.
       cmd="$cmd 2>&1 | logger -t '$syslog_tag_mysqld' -p daemon.error"
       ;;
     *)
@@ -172,11 +172,11 @@ eval_log_error () {
   if test $nowatch -eq 1
   then
     # We'd prefer to exec $cmd here, but SELinux needs to be fixed first
-    #/usr/bin/logger "Running mysqld: $cmd"
+    #/usr/bin/logger "Running mariadbd: $cmd"
     eval "$cmd &"
     exit 0
   else
-    #echo "Running mysqld: [$cmd]"
+    #echo "Running mariadbd: [$cmd]"
     eval "$cmd"
   fi
 }
@@ -218,7 +218,7 @@ wsrep_pick_url() {
   echo $url
 }
 
-# Run mysqld with --wsrep-recover and parse recovered position from log.
+# Run mariadbd with --wsrep-recover and parse recovered position from log.
 # Position will be stored in wsrep_start_position_opt global.
 wsrep_start_position_opt=""
 wsrep_recover_position() {
@@ -291,7 +291,7 @@ parse_arguments() {
   for arg do
     val=`echo "$arg" | sed -e "s;--[^=]*=;;"`
     case "$arg" in
-      # these get passed explicitly to mysqld
+      # these get passed explicitly to mariadbd
       --basedir=*) MY_BASEDIR_VERSION="$val" ;;
       --datadir=*|--data=*) DATADIR="$val" ;;
       --pid[-_]file=*) pid_file="$val" ;;
@@ -303,7 +303,7 @@ parse_arguments() {
 	;;
 
       # these might have been set in a [mysqld_safe] section of my.cnf
-      # they are added to mysqld command line to override settings from my.cnf
+      # they are added to mariadbd command line to override settings from my.cnf
       --skip[-_]log[-_]error)
         err_log=;
         skip_err_log=1;
@@ -315,7 +315,7 @@ parse_arguments() {
       --port=*) mysql_tcp_port="$val" ;;
       --socket=*) mysql_unix_port="$val" ;;
 
-      # mysqld_safe-specific options - must be set in my.cnf ([mysqld_safe])!
+      # mariadbd-safe-specific options - must be set in my.cnf ([mysqld_safe])!
       --core[-_]file[-_]size=*) core_file_size="$val" ;;
       --ledir=*) ledir="$val" ;;
       --malloc[-_]lib=*) set_malloc_lib "$val" ;;
@@ -324,17 +324,17 @@ parse_arguments() {
       --mysqld[-_]version=*)
         if test -n "$val"
         then
-          MYSQLD="mysqld-$val"
+          MYSQLD="mariadbd-$val"
           PLUGIN_VARIANT="/$val"
         else
-          MYSQLD="mysqld"
+          MYSQLD="mariadbd"
         fi
         ;;
       --dry[-_]run) dry_run=1 ;;
       --nice=*) niceness="$val" ;;
       --nowatch|--no[-_]watch|--no[-_]auto[-_]restart) nowatch=1 ;;
       --open[-_]files[-_]limit=*) open_files="$val" ;;
-      --skip[-_]kill[-_]mysqld*) KILL_MYSQLD=0 ;;
+      --skip[-_]kill[-_]mariadbd*) KILL_MYSQLD=0 ;;
       --syslog) want_syslog=1 ;;
       --skip[-_]syslog) want_syslog=0 ;;
       --syslog[-_]tag=*) syslog_tag="$val" ;;
@@ -381,14 +381,14 @@ parse_arguments() {
 
 
 # Add a single shared library to the list of libraries which will be added to
-# LD_PRELOAD for mysqld
+# LD_PRELOAD for mariadbd
 #
 # Since LD_PRELOAD is a space-separated value (for historical reasons), if a
 # shared lib's path contains spaces, that path will be prepended to
 # LD_LIBRARY_PATH and stripped from the lib value.
 add_mysqld_ld_preload() {
   lib_to_add="$1"
-  log_notice "Adding '$lib_to_add' to LD_PRELOAD for mysqld"
+  log_notice "Adding '$lib_to_add' to LD_PRELOAD for mariadbd"
 
   case "$lib_to_add" in
     *' '*)
@@ -416,7 +416,7 @@ add_mysqld_ld_preload() {
 
 
 # Returns LD_PRELOAD (and LD_LIBRARY_PATH, if needed) text, quoted to be
-# suitable for use in the eval that calls mysqld.
+# suitable for use in the eval that calls mariadbd.
 #
 # All values in mysqld_ld_preload are prepended to LD_PRELOAD.
 mysqld_ld_preload_text() {
@@ -507,7 +507,7 @@ set_malloc_lib() {
 
 
 #
-# First, try to find BASEDIR and ledir (where mysqld is)
+# First, try to find BASEDIR and ledir (where mariadbd is)
 #
 
 MY_PWD=`dirname $0`
@@ -518,35 +518,35 @@ then
   # BASEDIR is already overridden on command line.  Do not re-set.
 
   # Use BASEDIR to discover le.
-  if test -x "$MY_BASEDIR_VERSION/libexec/mysqld"
+  if test -x "$MY_BASEDIR_VERSION/libexec/mariadbd"
   then
     ledir="$MY_BASEDIR_VERSION/libexec"
-  elif test -x "$MY_BASEDIR_VERSION/sbin/mysqld"
+  elif test -x "$MY_BASEDIR_VERSION/sbin/mariadbd"
   then
     ledir="$MY_BASEDIR_VERSION/sbin"
   else
     ledir="$MY_BASEDIR_VERSION/bin"
   fi
-elif test -x "$MY_PWD/bin/mysqld"
+elif test -x "$MY_PWD/bin/mariadbd"
 then
   MY_BASEDIR_VERSION="$MY_PWD"		# Where bin, share and data are
-  ledir="$MY_PWD/bin"			# Where mysqld is
+  ledir="$MY_PWD/bin"			# Where mariadbd is
 # Check for the directories we would expect from a source install
-elif test -x "$MY_PWD/libexec/mysqld"
+elif test -x "$MY_PWD/libexec/mariadbd"
 then
   MY_BASEDIR_VERSION="$MY_PWD"		# Where libexec, share and var are
-  ledir="$MY_PWD/libexec"		# Where mysqld is
-elif test -x "$MY_PWD/sbin/mysqld"
+  ledir="$MY_PWD/libexec"		# Where mariadbd is
+elif test -x "$MY_PWD/sbin/mariadbd"
 then
   MY_BASEDIR_VERSION="$MY_PWD"		# Where sbin, share and var are
-  ledir="$MY_PWD/sbin"			# Where mysqld is
+  ledir="$MY_PWD/sbin"			# Where mariadbd is
 # Since we didn't find anything, used the compiled-in defaults
 else
   MY_BASEDIR_VERSION='@prefix@'
   ledir='@libexecdir@'
 fi
 
-helper=`find_in_bin mysqld_safe_helper`
+helper=`find_in_bin mariadbd-safe-helper`
 print_defaults=`find_in_bin my_print_defaults`
 
 # Check if helper exists
@@ -639,7 +639,7 @@ if [ $want_syslog -eq 1 ]
 then
   if ! command -v logger > /dev/null
   then
-    log_error "--syslog requested, but no 'logger' program found.  Please ensure that 'logger' is in your PATH, or do not specify the --syslog option to mysqld_safe."
+    log_error "--syslog requested, but no 'logger' program found.  Please ensure that 'logger' is in your PATH, or do not specify the --syslog option to mariadbd-safe."
     exit 1
   fi
 fi
@@ -653,13 +653,13 @@ if [ -n "$err_log" -o $want_syslog -eq 0 ]
 then
   if [ -n "$err_log" ]
   then
-    # mysqld adds ".err" if there is no extension on the --log-error
+    # mariadbd adds ".err" if there is no extension on the --log-error
     # argument; must match that here, or mysqld_safe will write to a
-    # different log file than mysqld
+    # different log file than mariadbd
 
-    # mysqld does not add ".err" to "--log-error=foo."; it considers a
+    # mariadbd does not add ".err" to "--log-error=foo."; it considers a
     # trailing "." as an extension
-    
+
     if expr "$err_log" : '.*\.[^/]*$' > /dev/null
     then
         :
@@ -741,10 +741,10 @@ then
   chmod 755 $mysql_unix_port_dir
 fi
 
-# If the user doesn't specify a binary, we assume name "mysqld"
+# If the user doesn't specify a binary, we assume name "mariadbd"
 if test -z "$MYSQLD"
 then
-  MYSQLD=mysqld
+  MYSQLD=mariadbd
 fi
 
 if test ! -x "$ledir/$MYSQLD"
@@ -752,7 +752,7 @@ then
   log_error "The file $ledir/$MYSQLD
 does not exist or is not executable. Please cd to the mysql installation
 directory and restart this script from there as follows:
-./bin/mysqld_safe&
+./bin/mariadbd-safe&
 See https://mariadb.com/kb/en/mysqld_safe for more information"
   exit 1
 fi
@@ -845,8 +845,8 @@ then
   if @CHECK_PID@
   then
     if @FIND_PROC@
-    then    # The pid contains a mysqld process
-      log_error "A mysqld process already exists"
+    then    # The pid contains a mariadbd process
+      log_error "A mariadbd process already exists"
       exit 1
     fi
   fi
@@ -856,7 +856,7 @@ then
     log_error "Fatal error: Can't remove the pid file:
 $pid_file
 Please remove it manually and start $0 again;
-mysqld daemon not started"
+mariadbd daemon not started"
     exit 1
   fi
 fi
@@ -901,7 +901,7 @@ fi
 # checked and repaired during startup. You should add sensible key_buffer
 # and sort_buffer values to my.cnf to improve check performance or require
 # less disk space.
-# Alternatively, you can start mysqld with the "myisam-recover" option. See
+# Alternatively, you can start mariadbd with the "myisam-recover" option. See
 # the manual for details.
 #
 # echo "Checking tables in $DATADIR"
@@ -918,7 +918,7 @@ cmd="`mysqld_ld_preload_text`$NOHUP_NICENESS"
 [ $dry_run -eq 1 ] && cmd=''
 
 #
-# Set mysqld's memory interleave policy.
+# Set mariadbd's memory interleave policy.
 #
 
 if @TARGET_LINUX@ && test $numa_interleave -eq 1
@@ -934,7 +934,7 @@ then
     log_error "numactl failed, check if numactl is properly installed"
   fi
 
-  # Launch mysqld with numactl.
+  # Launch mariadbd with numactl.
   [ $dry_run -eq 0 ] && cmd="$cmd numactl --interleave=all"
 elif test $numa_interleave -eq 1
 then
@@ -1041,7 +1041,7 @@ do
   if @TARGET_LINUX@ && test $KILL_MYSQLD -eq 1
   then
     # Test if one process was hanging.
-    # This is only a fix for Linux (running as base 3 mysqld processes)
+    # This is only a fix for Linux (running as base 3 mariadbd processes)
     # but should work for the rest of the servers.
     # The only thing is ps x => redhat 5 gives warnings when using ps -x.
     # kill -9 is used or the process won't react on the kill.
@@ -1081,7 +1081,7 @@ do
     fi
   fi
 
-  log_notice "mysqld restarted"
+  log_notice "mariadbd restarted"
   if test -n "$crash_script"
   then
     crash_script_output=`$crash_script 2>&1`
@@ -1089,4 +1089,4 @@ do
   fi
 done
 
-log_notice "mysqld from pid file $pid_file ended"
+log_notice "mariadbd from pid file $pid_file ended"
