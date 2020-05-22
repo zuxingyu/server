@@ -467,6 +467,7 @@ pool_mark_busy(rpl_parallel_thread_pool *pool, THD *thd)
     So we protect the infrequent operations of FLUSH TABLES WITH READ LOCK and
     pool size changes with this condition wait.
   */
+  DBUG_EXECUTE_IF("mark_busy_mdev_22370",my_sleep(1000000););
   mysql_mutex_lock(&pool->LOCK_rpl_thread_pool);
   if (thd)
   {
@@ -2011,15 +2012,27 @@ rpl_parallel_thread_pool::init(uint32 size)
 void
 rpl_parallel_thread_pool::destroy()
 {
+  destroy_pool_deactivate();
+  destroy_pool_cond_mutex();
+}
+
+void
+rpl_parallel_thread_pool::destroy_pool_deactivate()
+{
   if (!inited)
     return;
   rpl_parallel_change_thread_count(this, 0, 1);
+}
+
+void
+rpl_parallel_thread_pool::destroy_pool_cond_mutex()
+{
+  if (!inited)
+    return;
   mysql_mutex_destroy(&LOCK_rpl_thread_pool);
   mysql_cond_destroy(&COND_rpl_thread_pool);
   inited= false;
 }
-
-
 /*
   Wait for a worker thread to become idle. When one does, grab the thread for
   our use and return it.
