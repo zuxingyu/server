@@ -2984,7 +2984,7 @@ static buf_block_t* buf_page_mtr_lock(buf_block_t *block,
   {
   case RW_NO_LATCH:
     fix_type= MTR_MEMO_BUF_FIX;
-    break;
+    goto done;
   case RW_S_LATCH:
     rw_lock_s_lock_inline(&block->lock, 0, file, line);
     fix_type= MTR_MEMO_PAGE_S_FIX;
@@ -3000,6 +3000,15 @@ static buf_block_t* buf_page_mtr_lock(buf_block_t *block,
     break;
   }
 
+#ifdef BTR_CUR_HASH_ADAPT
+  {
+    dict_index_t *index= block->index;
+    if (index && index->freed())
+      btr_search_drop_page_hash_index(block);
+  }
+#endif /* BTR_CUR_HASH_ADAPT */
+
+done:
   mtr_memo_push(mtr, block, fix_type);
   return block;
 }
@@ -3280,6 +3289,7 @@ evict_from_pool:
 			mutex_exit(&buf_pool.mutex);
 			return(NULL);
 		}
+
 		break;
 	default:
 		ut_error;
@@ -3873,6 +3883,11 @@ buf_page_create(const page_id_t page_id, ulint zip_size, mtr_t *mtr)
     buf_LRU_block_free_non_file_page(free_block);
     mutex_exit(&buf_pool.mutex);
 
+#ifdef BTR_CUR_HASH_ADAPT
+    if (block->page.state == BUF_BLOCK_FILE_PAGE &&
+        UNIV_LIKELY_NULL(block->index))
+      btr_search_drop_page_hash_index(block);
+#endif /* BTR_CUR_HASH_ADAPT */
     if (!recv_recovery_is_on())
       /* FIXME: Remove the redundant lookup and avoid
       the unnecessary invocation of buf_zip_decompress().
@@ -4293,6 +4308,9 @@ database_corrupted:
                     }
                     err= DB_SUCCESS;
                     goto page_not_corrupt;);
+
+    if (bpage->zip.data && bpage->state == BUF_BLOCK_FILE_PAGE)
+      memset(reinterpret_cast<buf_block_t*>(bpage)->frame, 0, srv_page_size);
 
     if (err == DB_PAGE_CORRUPTED)
     {

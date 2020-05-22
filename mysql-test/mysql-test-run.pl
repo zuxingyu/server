@@ -365,7 +365,7 @@ my $opt_max_save_core= env_or_val(MTR_MAX_SAVE_CORE => 5);
 my $opt_max_save_datadir= env_or_val(MTR_MAX_SAVE_DATADIR => 20);
 my $opt_max_test_fail= env_or_val(MTR_MAX_TEST_FAIL => 10);
 my $opt_core_on_failure= 0;
-my $opt_titlebar= 0;
+
 my $opt_parallel= $ENV{MTR_PARALLEL} || 1;
 my $opt_port_group_size = $ENV{MTR_PORT_GROUP_SIZE} || 20;
 
@@ -582,6 +582,7 @@ sub main {
     # Create minimalistic "test" for the reporting
     my $tinfo = My::Test->new
       (
+       suite          => { name => 'valgrind', },
        name           => 'valgrind_report',
       );
     # Set dummy worker id to align report with normal tests
@@ -784,8 +785,14 @@ sub run_test_server ($$$) {
               if ( $result->is_failed() ) {
                 my $worker_logdir= $result->{savedir};
                 my $log_file_name=dirname($worker_logdir)."/".$result->{shortname}.".log";
-                $result->{'logfile-failed'} = mtr_lastlinesfromfile($log_file_name, 20);
-                rename $log_file_name,$log_file_name.".failed";
+
+                if (-e $log_file_name) {
+                  $result->{'logfile-failed'} = mtr_lastlinesfromfile($log_file_name, 20);
+                } else {
+                  $result->{'logfile-failed'} = "";
+                }
+
+                rename $log_file_name, $log_file_name.".failed";
               }
 	      delete($result->{result});
 	      $result->{retries}= $retries+1;
@@ -909,7 +916,7 @@ sub run_test_server ($$$) {
 	  delete $next->{reserved};
 	}
 
-	titlebar_stat(scalar(@$tests)) if $set_titlebar && $opt_titlebar;
+	titlebar_stat(scalar(@$tests)) if $set_titlebar;
 
 	if ($next) {
 	  # We don't need this any more
@@ -1246,7 +1253,6 @@ sub command_line_setup {
              'start-and-exit'           => \$opt_start_exit,
              'start'                    => \$opt_start,
 	     'user-args'                => \$opt_user_args,
-             'titlebar'                 => \$opt_titlebar,
              'wait-all'                 => \$opt_wait_all,
 	     'print-testcases'          => \&collect_option,
 	     'repeat=i'                 => \$opt_repeat,
@@ -6505,8 +6511,6 @@ Misc options
                         leaves just the server running
   start-dirty           Only start the servers (without initialization) for
                         the first specified test case
-  titlebar              Enable progress stats on the windows title bar. Works
-                        on Windows and Xterm.
   user-args             In combination with start* and no test name, drops
                         arguments to mysqld except those specified with
                         --mysqld (if any)
