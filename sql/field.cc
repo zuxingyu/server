@@ -8467,6 +8467,10 @@ longlong Field_blob::val_int(void)
 String *Field_blob::val_str(String *val_buffer __attribute__((unused)),
 			    String *val_ptr)
 {
+  ulong binlog_row_image= table->in_use->variables.binlog_row_image;
+  if (table->read_set && !bitmap_is_set(table->read_set, field_index) &&
+          binlog_row_image == BINLOG_ROW_IMAGE_NOBLOB)
+    bitmap_set_bit(table->read_set, field_index);
   DBUG_ASSERT(marked_for_read());
   char *blob;
   memcpy(&blob, ptr+packlength, sizeof(char*));
