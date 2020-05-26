@@ -1701,7 +1701,7 @@ int binlog_init(void *p)
     // recover needs to be set to make xa{commit,rollback}_handlerton effective
     binlog_hton->recover= binlog_xa_recover_dummy;
   }
-  binlog_hton->flags= HTON_NOT_USER_SELECTABLE | HTON_HIDDEN;
+  binlog_hton->flags= HTON_NOT_USER_SELECTABLE | HTON_HIDDEN | HTON_NO_ROLLBACK;
   return 0;
 }
 
@@ -1774,7 +1774,7 @@ binlog_flush_cache(THD *thd, binlog_cache_mngr *cache_mngr,
 
   if ((using_stmt && !cache_mngr->stmt_cache.empty()) ||
       (using_trx && !cache_mngr->trx_cache.empty())   ||
-      thd->transaction.xid_state.is_explicit_XA())
+      thd->transaction->xid_state.is_explicit_XA())
   {
     if (using_stmt && thd->binlog_flush_pending_rows_event(TRUE, FALSE))
       DBUG_RETURN(1);
@@ -1879,11 +1879,11 @@ binlog_commit_flush_trx_cache(THD *thd, bool all, binlog_cache_mngr *cache_mngr)
   if (thd->lex->sql_command == SQLCOM_XA_COMMIT &&
       thd->lex->xa_opt != XA_ONE_PHASE)
   {
-    DBUG_ASSERT(thd->transaction.xid_state.is_explicit_XA());
-    DBUG_ASSERT(thd->transaction.xid_state.get_state_code() ==
+    DBUG_ASSERT(thd->transaction->xid_state.is_explicit_XA());
+    DBUG_ASSERT(thd->transaction->xid_state.get_state_code() ==
                 XA_PREPARED);
 
-    buflen= serialize_with_xid(thd->transaction.xid_state.get_xid(),
+    buflen= serialize_with_xid(thd->transaction->xid_state.get_xid(),
                                buf, query, q_len);
   }
   Query_log_event end_evt(thd, buf, buflen, TRUE, TRUE, TRUE, 0);
@@ -1910,11 +1910,11 @@ binlog_rollback_flush_trx_cache(THD *thd, bool all,
   char buf[q_len + ser_buf_size]= "ROLLBACK";
   size_t buflen= sizeof("ROLLBACK") - 1;
 
-  if (thd->transaction.xid_state.is_explicit_XA())
+  if (thd->transaction->xid_state.is_explicit_XA())
   {
     /* for not prepared use plain ROLLBACK */
-    if (thd->transaction.xid_state.get_state_code() == XA_PREPARED)
-      buflen= serialize_with_xid(thd->transaction.xid_state.get_xid(),
+    if (thd->transaction->xid_state.get_state_code() == XA_PREPARED)
+      buflen= serialize_with_xid(thd->transaction->xid_state.get_xid(),
                                  buf, query, q_len);
   }
   Query_log_event end_evt(thd, buf, buflen, TRUE, TRUE, TRUE, 0);
@@ -1999,7 +1999,7 @@ binlog_truncate_trx_cache(THD *thd, binlog_cache_mngr *cache_mngr, bool all)
 inline bool is_preparing_xa(THD *thd)
 {
   return
-    thd->transaction.xid_state.is_explicit_XA() &&
+    thd->transaction->xid_state.is_explicit_XA() &&
     thd->lex->sql_command == SQLCOM_XA_PREPARE;
 }
 
@@ -2039,15 +2039,15 @@ static int binlog_rollback_by_xid(handlerton *hton, XID *xid)
   (void) thd->binlog_setup_trx_data();
 
   DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_ROLLBACK ||
-              (thd->transaction.xid_state.get_state_code() == XA_ROLLBACK_ONLY));
+              (thd->transaction->xid_state.get_state_code() == XA_ROLLBACK_ONLY));
   return binlog_rollback(hton, thd, TRUE);
 }
 
 
 inline bool is_prepared_xa(THD *thd)
 {
-  return thd->transaction.xid_state.is_explicit_XA() &&
-    thd->transaction.xid_state.get_state_code() == XA_PREPARED;
+  return thd->transaction->xid_state.is_explicit_XA() &&
+    thd->transaction->xid_state.get_state_code() == XA_PREPARED;
 }
 
 
@@ -2084,7 +2084,7 @@ static bool trans_cannot_safely_rollback(THD *thd, bool all)
 static int binlog_commit_flush_xa_prepare(THD *thd, bool all,
                                           binlog_cache_mngr *cache_mngr)
 {
-  XID *xid= thd->transaction.xid_state.get_xid();
+  XID *xid= thd->transaction->xid_state.get_xid();
   {
     // todo assert wsrep_simulate || is_open()
 
@@ -2155,8 +2155,8 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
              ("all: %d, in_transaction: %s, all.modified_non_trans_table: %s, stmt.modified_non_trans_table: %s",
               all,
               YESNO(thd->in_multi_stmt_transaction_mode()),
-              YESNO(thd->transaction.all.modified_non_trans_table),
-              YESNO(thd->transaction.stmt.modified_non_trans_table)));
+              YESNO(thd->transaction->all.modified_non_trans_table),
+              YESNO(thd->transaction->stmt.modified_non_trans_table)));
 
 
   thd->backup_stage(&org_stage);
@@ -2167,7 +2167,7 @@ static int binlog_commit(handlerton *hton, THD *thd, bool all)
   }
 
   if (cache_mngr->trx_cache.empty() &&
-      thd->transaction.xid_state.get_state_code() != XA_PREPARED)
+      thd->transaction->xid_state.get_state_code() != XA_PREPARED)
   {
     /*
       we're here because cache_log was flushed in MYSQL_BIN_LOG::log_xid()
@@ -2227,8 +2227,8 @@ static int binlog_rollback(handlerton *hton, THD *thd, bool all)
 
   DBUG_PRINT("debug", ("all: %s, all.modified_non_trans_table: %s, stmt.modified_non_trans_table: %s",
                        YESNO(all),
-                       YESNO(thd->transaction.all.modified_non_trans_table),
-                       YESNO(thd->transaction.stmt.modified_non_trans_table)));
+                       YESNO(thd->transaction->all.modified_non_trans_table),
+                       YESNO(thd->transaction->stmt.modified_non_trans_table)));
 
   /*
     If an incident event is set we do not flush the content of the statement
@@ -2245,7 +2245,7 @@ static int binlog_rollback(handlerton *hton, THD *thd, bool all)
   }
 
   if (cache_mngr->trx_cache.empty() &&
-      thd->transaction.xid_state.get_state_code() != XA_PREPARED)
+      thd->transaction->xid_state.get_state_code() != XA_PREPARED)
   {
     /*
       we're here because cache_log was flushed in MYSQL_BIN_LOG::log_xid()
@@ -5611,17 +5611,19 @@ trans_has_updated_trans_table(const THD* thd)
 
   @param thd The client thread that executed the current statement.
   @return
-    @c true if a transactional table was updated, @c false otherwise.
+    @c true if a transactional table with rollback was updated,
+    @c false otherwise.
 */
 bool
 stmt_has_updated_trans_table(const THD *thd)
 {
   Ha_trx_info *ha_info;
 
-  for (ha_info= thd->transaction.stmt.ha_list; ha_info;
+  for (ha_info= thd->transaction->stmt.ha_list; ha_info;
        ha_info= ha_info->next())
   {
-    if (ha_info->is_trx_read_write() && ha_info->ht() != binlog_hton)
+    if (ha_info->is_trx_read_write() &&
+        !(ha_info->ht()->flags & HTON_NO_ROLLBACK))
       return (TRUE);
   }
   return (FALSE);
@@ -5697,8 +5699,8 @@ bool ending_single_stmt_trans(THD* thd, const bool all)
 */
 bool trans_has_updated_non_trans_table(const THD* thd)
 {
-  return (thd->transaction.all.modified_non_trans_table ||
-          thd->transaction.stmt.modified_non_trans_table);
+  return (thd->transaction->all.modified_non_trans_table ||
+          thd->transaction->stmt.modified_non_trans_table);
 }
 
 /**
@@ -5711,7 +5713,7 @@ bool trans_has_updated_non_trans_table(const THD* thd)
 */
 bool stmt_has_updated_non_trans_table(const THD* thd)
 {
-  return (thd->transaction.stmt.modified_non_trans_table);
+  return (thd->transaction->stmt.modified_non_trans_table);
 }
 
 /*
@@ -7581,7 +7583,7 @@ MYSQL_BIN_LOG::write_transaction_to_binlog(THD *thd,
   entry.using_stmt_cache= using_stmt_cache;
   entry.using_trx_cache= using_trx_cache;
   entry.need_unlog= is_preparing_xa(thd);
-  ha_info= all ? thd->transaction.all.ha_list : thd->transaction.stmt.ha_list;
+  ha_info= all ? thd->transaction->all.ha_list : thd->transaction->stmt.ha_list;
 
   for (; !entry.need_unlog && ha_info; ha_info= ha_info->next())
   {
@@ -8158,7 +8160,7 @@ MYSQL_BIN_LOG::trx_group_commit_leader(group_commit_entry *leader)
       */
       DBUG_ASSERT(!cache_mngr->stmt_cache.empty() ||
                   !cache_mngr->trx_cache.empty()  ||
-                  current->thd->transaction.xid_state.is_explicit_XA());
+                  current->thd->transaction->xid_state.is_explicit_XA());
 
       if (unlikely((current->error= write_transaction_or_stmt(current,
                                                               commit_id))))
@@ -9108,7 +9110,7 @@ void
 TC_LOG::run_prepare_ordered(THD *thd, bool all)
 {
   Ha_trx_info *ha_info=
-    all ? thd->transaction.all.ha_list : thd->transaction.stmt.ha_list;
+    all ? thd->transaction->all.ha_list : thd->transaction->stmt.ha_list;
 
   mysql_mutex_assert_owner(&LOCK_prepare_ordered);
   for (; ha_info; ha_info= ha_info->next())
@@ -9125,7 +9127,7 @@ void
 TC_LOG::run_commit_ordered(THD *thd, bool all)
 {
   Ha_trx_info *ha_info=
-    all ? thd->transaction.all.ha_list : thd->transaction.stmt.ha_list;
+    all ? thd->transaction->all.ha_list : thd->transaction->stmt.ha_list;
 
   mysql_mutex_assert_owner(&LOCK_commit_ordered);
   for (; ha_info; ha_info= ha_info->next())
@@ -10125,14 +10127,31 @@ int TC_LOG_BINLOG::unlog_xa_prepare(THD *thd, bool all)
     uint rw_count= ha_count_rw_all(thd, &ha_info);
     bool rc= false;
 
+#ifndef DBUG_OFF
+    if (rw_count > 1)
+    {
+      /*
+        There must be no binlog_hton used in a transaction consisting of more
+        than 1 engine, *when* (at this point) this transaction has not been
+        binlogged. The one exception is if there is an engine without a
+        prepare method, as in this case the engine doesn't support XA and
+        we have to ignore this check.
+      */
+      bool binlog= false, exist_hton_without_prepare= false;
+      for (ha_info= thd->transaction->all.ha_list; ha_info;
+           ha_info= ha_info->next())
+      {
+        if (ha_info->ht() == binlog_hton)
+          binlog= true;
+        if (!ha_info->ht()->prepare)
+          exist_hton_without_prepare= true;
+      }
+      DBUG_ASSERT(!binlog || exist_hton_without_prepare);
+    }
+#endif
     if (rw_count > 0)
     {
       /* an empty XA-prepare event group is logged */
-#ifndef DBUG_OFF
-      for (ha_info= thd->transaction.all.ha_list; rw_count > 1 && ha_info;
-           ha_info= ha_info->next())
-        DBUG_ASSERT(ha_info->ht() != binlog_hton);
-#endif
       rc= write_empty_xa_prepare(thd, cache_mngr); // normally gains need_unlog
       trans_register_ha(thd, true, binlog_hton, 0); // do it for future commmit
     }

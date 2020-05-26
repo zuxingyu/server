@@ -3686,15 +3686,16 @@ buf_page_optimistic_get(
 	ut_ad(mtr->is_active());
 	ut_ad(rw_latch == RW_S_LATCH || rw_latch == RW_X_LATCH);
 
-	// FIXME: acquire hash_lock, to protect state
+	rw_lock_t *hash_lock = buf_pool.hash_lock_get(block->page.id);
+	rw_lock_s_lock(hash_lock);
 
 	if (UNIV_UNLIKELY(buf_block_get_state(block) != BUF_BLOCK_FILE_PAGE)) {
+		rw_lock_s_unlock(hash_lock);
 		return(FALSE);
 	}
 
 	buf_block_buf_fix_inc(block, file, line);
-
-	// FIXME: release hash_lock
+	rw_lock_s_unlock(hash_lock);
 
 	const bool first_access = block->page.set_accessed();
 
@@ -3705,20 +3706,13 @@ buf_page_optimistic_get(
 
 	mtr_memo_type_t	fix_type;
 
-	switch (rw_latch) {
-	case RW_S_LATCH:
-		success = rw_lock_s_lock_nowait(&block->lock, file, line);
-
+	if (rw_latch == RW_S_LATCH) {
 		fix_type = MTR_MEMO_PAGE_S_FIX;
-		break;
-	case RW_X_LATCH:
+		success = rw_lock_s_lock_nowait(&block->lock, file, line);
+	} else {
+		fix_type = MTR_MEMO_PAGE_X_FIX;
 		success = rw_lock_x_lock_func_nowait_inline(
 			&block->lock, file, line);
-
-		fix_type = MTR_MEMO_PAGE_X_FIX;
-		break;
-	default:
-		ut_error; /* RW_SX_LATCH is not implemented yet */
 	}
 
 	if (!success) {
@@ -4097,10 +4091,11 @@ static void buf_corrupt_page_release(buf_page_t *bpage, const fil_node_t &node)
 {
   page_id_t old_page_id= bpage->id;
   rw_lock_t *hash_lock= buf_pool.hash_lock_get(old_page_id);
+
+  mutex_enter(&buf_pool.mutex);
   rw_lock_x_lock(hash_lock);
 
   /* First unfix and release lock on the bpage */
-  mutex_enter(&buf_pool.mutex);
   ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_READ);
   ut_ad(bpage->id.space() == node.space->id);
 

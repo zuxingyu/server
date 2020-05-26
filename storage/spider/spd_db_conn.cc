@@ -10189,7 +10189,7 @@ int spider_db_udf_direct_sql(
   if (direct_sql->real_table_used)
   {
     if (spider_sys_open_tables(c_thd, &direct_sql->table_list_first,
-      &direct_sql->open_tables_backup))
+                               &direct_sql->open_tables_backup))
     {
       direct_sql->real_table_used = FALSE;
       DBUG_RETURN(my_errno);
@@ -10219,7 +10219,7 @@ int spider_db_udf_direct_sql(
       need_trx_end = TRUE;
     } else {
 #endif
-      if (c_thd->transaction.stmt.ha_list)
+      if (c_thd->transaction->stmt.ha_list)
         need_trx_end = FALSE;
       else
         need_trx_end = TRUE;

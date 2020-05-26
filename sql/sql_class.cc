@@ -72,6 +72,7 @@
 #include "wsrep_trans_observer.h"
 #endif /* WITH_WSREP */
 #include "opt_trace.h"
+#include <mysql/psi/mysql_transaction.h>
 
 #ifdef HAVE_SYS_SYSCALL_H
 #include <sys/syscall.h>
@@ -813,12 +814,14 @@ THD::THD(my_thread_id id, bool is_wsrep_applier)
   system_thread= NON_SYSTEM_THREAD;
   cleanup_done= free_connection_done= abort_on_warning= 0;
   peer_port= 0;					// For SHOW PROCESSLIST
-  transaction.m_pending_rows_event= 0;
-  transaction.on= 1;
-  wt_thd_lazy_init(&transaction.wt, &variables.wt_deadlock_search_depth_short,
-                                    &variables.wt_timeout_short,
-                                    &variables.wt_deadlock_search_depth_long,
-                                    &variables.wt_timeout_long);
+  transaction= &default_transaction;
+  transaction->m_pending_rows_event= 0;
+  transaction->on= 1;
+  wt_thd_lazy_init(&transaction->wt,
+                   &variables.wt_deadlock_search_depth_short,
+                   &variables.wt_timeout_short,
+                   &variables.wt_deadlock_search_depth_long,
+                   &variables.wt_timeout_long);
 #ifdef SIGNAL_WITH_VIO_CLOSE
   active_vio = 0;
 #endif
@@ -1262,10 +1265,10 @@ void THD::init()
   if (variables.sql_mode & MODE_ANSI_QUOTES)
     server_status|= SERVER_STATUS_ANSI_QUOTES;
 
-  transaction.all.modified_non_trans_table=
-    transaction.stmt.modified_non_trans_table= FALSE;
-  transaction.all.m_unsafe_rollback_flags=
-    transaction.stmt.m_unsafe_rollback_flags= 0;
+  transaction->all.modified_non_trans_table=
+    transaction->stmt.modified_non_trans_table= FALSE;
+  transaction->all.m_unsafe_rollback_flags=
+    transaction->stmt.m_unsafe_rollback_flags= 0;
 
   open_options=ha_open_options;
   update_lock_default= (variables.low_priority_updates ?
@@ -1396,11 +1399,11 @@ void THD::init_for_queries()
 
   reset_root_defaults(mem_root, variables.query_alloc_block_size,
                       variables.query_prealloc_size);
-  reset_root_defaults(&transaction.mem_root,
+  reset_root_defaults(&transaction->mem_root,
                       variables.trans_alloc_block_size,
                       variables.trans_prealloc_size);
-  DBUG_ASSERT(!transaction.xid_state.is_explicit_XA());
-  DBUG_ASSERT(transaction.implicit_xid.is_null());
+  DBUG_ASSERT(!transaction->xid_state.is_explicit_XA());
+  DBUG_ASSERT(transaction->implicit_xid.is_null());
 }
 
 
@@ -1539,7 +1542,7 @@ void THD::cleanup(void)
   delete_dynamic(&user_var_events);
   close_temporary_tables();
 
-  if (transaction.xid_state.is_explicit_XA())
+  if (transaction->xid_state.is_explicit_XA())
     trans_xa_detach(this);
   else
     trans_rollback(this);
@@ -1565,7 +1568,7 @@ void THD::cleanup(void)
     decrease_user_connections(user_connect);
     user_connect= 0;                            // Safety
   }
-  wt_thd_destroy(&transaction.wt);
+  wt_thd_destroy(&transaction->wt);
 
   my_hash_free(&user_vars);
   my_hash_free(&sequences);
@@ -1697,7 +1700,7 @@ THD::~THD()
 #endif
   mdl_context.destroy();
 
-  free_root(&transaction.mem_root,MYF(0));
+  transaction->free();
   mysql_cond_destroy(&COND_wakeup_ready);
   mysql_mutex_destroy(&LOCK_wakeup_ready);
   mysql_mutex_destroy(&LOCK_thd_data);
@@ -2587,7 +2590,8 @@ void THD::add_changed_table(TABLE *table)
 {
   DBUG_ENTER("THD::add_changed_table(table)");
 
-  DBUG_ASSERT(in_multi_stmt_transaction_mode() && table->file->has_transactions());
+  DBUG_ASSERT(in_multi_stmt_transaction_mode() &&
+              table->file->has_transactions());
   add_changed_table(table->s->table_cache_key.str,
                     (long) table->s->table_cache_key.length);
   DBUG_VOID_RETURN;
@@ -2597,8 +2601,8 @@ void THD::add_changed_table(TABLE *table)
 void THD::add_changed_table(const char *key, size_t key_length)
 {
   DBUG_ENTER("THD::add_changed_table(key)");
-  CHANGED_TABLE_LIST **prev_changed = &transaction.changed_tables;
-  CHANGED_TABLE_LIST *curr = transaction.changed_tables;
+  CHANGED_TABLE_LIST **prev_changed = &transaction->changed_tables;
+  CHANGED_TABLE_LIST *curr = transaction->changed_tables;
 
   for (; curr; prev_changed = &(curr->next), curr = curr->next)
   {
@@ -5050,7 +5054,7 @@ thd_rpl_deadlock_check(MYSQL_THD thd, MYSQL_THD other_thd)
   if (!thd)
     return 0;
   DEBUG_SYNC(thd, "thd_report_wait_for");
-  thd->transaction.stmt.mark_trans_did_wait();
+  thd->transaction->stmt.mark_trans_did_wait();
   if (!other_thd)
     return 0;
   binlog_report_wait_for(thd, other_thd);
@@ -5153,7 +5157,7 @@ thd_need_ordering_with(const MYSQL_THD thd, const MYSQL_THD other_thd)
 
 extern "C" int thd_non_transactional_update(const MYSQL_THD thd)
 {
-  return(thd->transaction.all.modified_non_trans_table);
+  return(thd->transaction->all.modified_non_trans_table);
 }
 
 extern "C" int thd_binlog_format(const MYSQL_THD thd)
@@ -5362,7 +5366,7 @@ void THD::reset_sub_statement_state(Sub_statement_state *backup,
   backup->limit_found_rows= limit_found_rows;
   backup->cuted_fields=     cuted_fields;
   backup->client_capabilities= client_capabilities;
-  backup->savepoints= transaction.savepoints;
+  backup->savepoints= transaction->savepoints;
   backup->first_successful_insert_id_in_prev_stmt= 
     first_successful_insert_id_in_prev_stmt;
   backup->first_successful_insert_id_in_cur_stmt= 
@@ -5384,7 +5388,7 @@ void THD::reset_sub_statement_state(Sub_statement_state *backup,
   client_capabilities &= ~CLIENT_MULTI_RESULTS;
   in_sub_stmt|= new_state;
   cuted_fields= 0;
-  transaction.savepoints= 0;
+  transaction->savepoints= 0;
   first_successful_insert_id_in_cur_stmt= 0;
   reset_slow_query_state();
 }
@@ -5410,16 +5414,16 @@ void THD::restore_sub_statement_state(Sub_statement_state *backup)
     level. It is enough to release first savepoint set on this level since
     all later savepoints will be released automatically.
   */
-  if (transaction.savepoints)
+  if (transaction->savepoints)
   {
     SAVEPOINT *sv;
-    for (sv= transaction.savepoints; sv->prev; sv= sv->prev)
+    for (sv= transaction->savepoints; sv->prev; sv= sv->prev)
     {}
     /* ha_release_savepoint() never returns error. */
     (void)ha_release_savepoint(this, sv);
   }
   count_cuted_fields= backup->count_cuted_fields;
-  transaction.savepoints= backup->savepoints;
+  transaction->savepoints= backup->savepoints;
   variables.option_bits= backup->option_bits;
   in_sub_stmt=      backup->in_sub_stmt;
   enable_slow_log=  backup->enable_slow_log;
@@ -5737,6 +5741,95 @@ void THD::mark_transaction_to_rollback(bool all)
   if (in_sub_stmt)
     is_fatal_sub_stmt_error= true;
   transaction_rollback_request= all;
+}
+
+
+/**
+  Commit the whole transaction (both statment and all)
+
+  This is used mainly to commit an independent transaction,
+  like reading system tables.
+
+  @return  0  0k
+  @return <>0 error code. my_error() has been called()
+*/
+
+int THD::commit_whole_transaction_and_close_tables()
+{
+  int error, error2;
+  DBUG_ENTER("THD::commit_whole_transaction_and_close_tables");
+
+  /*
+    This can only happened if we failed to open any table in the
+    new transaction
+  */
+  DBUG_ASSERT(open_tables);
+
+  if (!open_tables)                             // Safety for production usage
+    DBUG_RETURN(0);
+
+  /*
+    Ensure table was locked (opened with open_and_lock_tables()). If not
+    the THD can't be part of any transactions and doesn't have to call
+    this function.
+  */
+  DBUG_ASSERT(lock);
+
+  error= ha_commit_trans(this, FALSE);
+  /* This will call external_lock to unlock all tables */
+  if ((error2= mysql_unlock_tables(this, lock)))
+  {
+    my_error(ER_ERROR_DURING_COMMIT, MYF(0), error2);
+    error= error2;
+  }
+  lock= 0;
+  if ((error2= ha_commit_trans(this, TRUE)))
+    error= error2;
+  close_thread_tables(this);
+  DBUG_RETURN(error);
+}
+
+/**
+   Start a new independent transaction
+*/
+
+start_new_trans::start_new_trans(THD *thd)
+{
+  org_thd= thd;
+  mdl_savepoint= thd->mdl_context.mdl_savepoint();
+  memcpy(old_ha_data, thd->ha_data, sizeof(old_ha_data));
+  thd->reset_n_backup_open_tables_state(&open_tables_state_backup);
+  bzero(thd->ha_data, sizeof(thd->ha_data));
+  old_transaction= thd->transaction;
+  thd->transaction= &new_transaction;
+  new_transaction.on= 1;
+  in_sub_stmt= thd->in_sub_stmt;
+  thd->in_sub_stmt= 0;
+  server_status= thd->server_status;
+  m_transaction_psi= thd->m_transaction_psi;
+  thd->m_transaction_psi= 0;
+  wsrep_on= thd->variables.wsrep_on;
+  thd->variables.wsrep_on= 0;
+  thd->server_status&= ~(SERVER_STATUS_IN_TRANS |
+                         SERVER_STATUS_IN_TRANS_READONLY);
+  thd->server_status|= SERVER_STATUS_AUTOCOMMIT;
+}
+
+
+void start_new_trans::restore_old_transaction()
+{
+  org_thd->transaction= old_transaction;
+  org_thd->restore_backup_open_tables_state(&open_tables_state_backup);
+  ha_close_connection(org_thd);
+  memcpy(org_thd->ha_data, old_ha_data, sizeof(old_ha_data));
+  org_thd->mdl_context.rollback_to_savepoint(mdl_savepoint);
+  org_thd->in_sub_stmt= in_sub_stmt;
+  org_thd->server_status= server_status;
+  if (org_thd->m_transaction_psi)
+    MYSQL_COMMIT_TRANSACTION(org_thd->m_transaction_psi);
+  org_thd->m_transaction_psi= m_transaction_psi;
+  org_thd->variables.wsrep_on= wsrep_on;
+  org_thd= 0;
 }
 
 

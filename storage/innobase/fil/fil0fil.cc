@@ -1972,7 +1972,8 @@ static ulint fil_check_pending_ops(const fil_space_t* space, ulint count)
 
 	if (ulint n_pending_ops = space->n_pending_ops) {
 
-		if (count > 5000) {
+          /* Give a warning every 10 second, starting after 1 second */
+          if ((count % 500) == 50) {
 			ib::warn() << "Trying to delete"
 				" tablespace '" << space->name
 				<< "' but there are " << n_pending_ops
@@ -2009,7 +2010,8 @@ fil_check_pending_io(
 
 		ut_a(!(*node)->being_extended);
 
-		if (count > 1000) {
+                /* Give a warning every 10 second, starting after 1 second */
+		if ((count % 500) == 50) {
 			ib::warn() << "Trying to delete"
 				" tablespace '" << space->name
 				<< "' but there are "
@@ -2060,7 +2062,7 @@ fil_check_pending_operations(
 		mutex_exit(&fil_system.mutex);
 
 		if (count) {
-			os_thread_sleep(20000);
+			os_thread_sleep(20000); // Wait 0.02 seconds
 		} else if (!sp) {
 			return nullptr;
 		}
@@ -2091,7 +2093,7 @@ fil_check_pending_operations(
 			break;
 		}
 
-		os_thread_sleep(20000);
+		os_thread_sleep(20000);         // Wait 0.02 seconds
 		mutex_enter(&fil_system.mutex);
 		sp = fil_space_get_by_id(id);
 

@@ -301,8 +301,7 @@ bool sequence_insert(THD *thd, LEX *lex, TABLE_LIST *org_table_list)
   if (!temporary_table)
   {
     /*
-      The following code works like open_system_tables_for_read() and
-      close_system_tables()
+      The following code works like open_system_tables_for_read()
       The idea is:
       - Copy the table_list object for the sequence that was created
       - Backup the current state of open tables and create a new
@@ -437,7 +436,7 @@ int SEQUENCE::read_initial_values(TABLE *table)
     MYSQL_LOCK *lock;
     bool mdl_lock_used= 0;
     THD *thd= table->in_use;
-    bool has_active_transaction= !thd->transaction.stmt.is_empty();
+    bool has_active_transaction= !thd->transaction->stmt.is_empty();
     /*
       There is already a mdl_ticket for this table. However, for list_fields
       the MDL lock is of type MDL_SHARED_HIGH_PRIO which is not usable
@@ -490,7 +489,7 @@ int SEQUENCE::read_initial_values(TABLE *table)
       But we also don't want to commit the stmt transaction while in a
       substatement, see MDEV-15977.
     */
-    if (!has_active_transaction && !thd->transaction.stmt.is_empty() &&
+    if (!has_active_transaction && !thd->transaction->stmt.is_empty() &&
         !thd->in_sub_stmt)
       trans_commit_stmt(thd);
   }

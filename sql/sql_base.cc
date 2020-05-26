@@ -793,7 +793,7 @@ int close_thread_tables(THD *thd)
     DEBUG_SYNC(thd, "before_close_thread_tables");
 #endif
 
-  DBUG_ASSERT(thd->transaction.stmt.is_empty() || thd->in_sub_stmt ||
+  DBUG_ASSERT(thd->transaction->stmt.is_empty() || thd->in_sub_stmt ||
               (thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
 
   for (table= thd->open_tables; table; table= table->next)
@@ -2351,7 +2351,7 @@ Locked_tables_list::unlock_locked_tables(THD *thd)
 
   TRANSACT_TRACKER(clear_trx_state(thd, TX_LOCKED_TABLES));
 
-  DBUG_ASSERT(thd->transaction.stmt.is_empty());
+  DBUG_ASSERT(thd->transaction->stmt.is_empty());
   error= close_thread_tables(thd);
 
   /*
@@ -4117,7 +4117,7 @@ bool open_tables(THD *thd, const DDL_options_st &options,
   DBUG_ENTER("open_tables");
 
   /* Data access in XA transaction is only allowed when it is active. */
-  if (*start && thd->transaction.xid_state.check_has_uncommitted_xa())
+  if (*start && thd->transaction->xid_state.check_has_uncommitted_xa())
     DBUG_RETURN(true);
 
   thd->current_tablenr= 0;
@@ -4259,7 +4259,7 @@ restart:
       list, we still need to call open_and_process_routine() to take
       MDL locks on the routines.
     */
-    if (thd->locked_tables_mode <= LTM_LOCK_TABLES)
+    if (thd->locked_tables_mode <= LTM_LOCK_TABLES && *sroutine_to_open)
     {
       /*
         Process elements of the prelocking set which are present there
@@ -5186,7 +5186,7 @@ end:
     table on the fly, and thus mustn't manipulate with the
     transaction of the enclosing statement.
   */
-  DBUG_ASSERT(thd->transaction.stmt.is_empty() ||
+  DBUG_ASSERT(thd->transaction->stmt.is_empty() ||
               (thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
   close_thread_tables(thd);
   /* Don't keep locks for a failed statement. */
@@ -5583,7 +5583,7 @@ void close_tables_for_reopen(THD *thd, TABLE_LIST **tables,
     table on the fly, and thus mustn't manipulate with the
     transaction of the enclosing statement.
   */
-  DBUG_ASSERT(thd->transaction.stmt.is_empty() ||
+  DBUG_ASSERT(thd->transaction->stmt.is_empty() ||
               (thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
   close_thread_tables(thd);
   thd->mdl_context.rollback_to_savepoint(start_of_statement_svp);
@@ -8881,17 +8881,16 @@ bool is_equal(const LEX_CSTRING *a, const LEX_CSTRING *b)
     open_system_tables_for_read()
       thd         Thread context.
       table_list  List of tables to open.
-      backup      Pointer to Open_tables_state instance where
-                  information about currently open tables will be
-                  saved, and from which will be restored when we will
-                  end work with system tables.
 
   NOTES
+    Caller should have used start_new_trans object to start a new
+    transcation when reading system tables.
+
     Thanks to restrictions which we put on opening and locking of
     system tables for writing, we can open and lock them for reading
-    even when we already have some other tables open and locked.  One
-    must call close_system_tables() to close systems tables opened
-    with this call.
+    even when we already have some other tables open and locked.
+    One should call thd->commit_whole_transaction_and_close_tables()
+    to close systems tables opened with this call.
 
   NOTES
    In some situations we  use this function to open system tables for
@@ -8905,22 +8904,20 @@ bool is_equal(const LEX_CSTRING *a, const LEX_CSTRING *b)
 */
 
 bool
-open_system_tables_for_read(THD *thd, TABLE_LIST *table_list,
-                            Open_tables_backup *backup)
+open_system_tables_for_read(THD *thd, TABLE_LIST *table_list)
 {
   Query_tables_list query_tables_list_backup;
   LEX *lex= thd->lex;
   DBUG_ENTER("open_system_tables_for_read");
+  DBUG_ASSERT(thd->internal_transaction());
 
   /*
     Besides using new Open_tables_state for opening system tables,
     we also have to backup and reset/and then restore part of LEX
     which is accessed by open_tables() in order to determine if
     prelocking is needed and what tables should be added for it.
-    close_system_tables() doesn't require such treatment.
   */
   lex->reset_n_backup_query_tables_list(&query_tables_list_backup);
-  thd->reset_n_backup_open_tables_state(backup);
   thd->lex->sql_command= SQLCOM_SELECT;
 
   /*
@@ -8935,7 +8932,6 @@ open_system_tables_for_read(THD *thd, TABLE_LIST *table_list,
                              MYSQL_LOCK_IGNORE_TIMEOUT : 0))))
   {
     lex->restore_backup_query_tables_list(&query_tables_list_backup);
-    thd->restore_backup_open_tables_state(backup);
     DBUG_RETURN(TRUE);
   }
 
@@ -8949,33 +8945,6 @@ open_system_tables_for_read(THD *thd, TABLE_LIST *table_list,
 
   DBUG_RETURN(FALSE);
 }
-
-
-/*
-  Close system tables, opened with open_system_tables_for_read().
-
-  SYNOPSIS
-    close_system_tables()
-      thd     Thread context
-      backup  Pointer to Open_tables_backup instance which holds
-              information about tables which were open before we
-              decided to access system tables.
-*/
-
-void
-close_system_tables(THD *thd, Open_tables_backup *backup)
-{
-  /*
-    Inform the transaction handler that we are closing the
-    system tables and we don't need the read view anymore.
-  */
-  for (TABLE *table= thd->open_tables ; table ; table= table->next)
-    table->file->extra(HA_EXTRA_PREPARE_FOR_FORCED_CLOSE);
-
-  close_thread_tables(thd);
-  thd->restore_backup_open_tables_state(backup);
-}
-
 
 /**
   A helper function to close a mysql.* table opened
@@ -9085,9 +9054,17 @@ open_log_table(THD *thd, TABLE_LIST *one_table, Open_tables_backup *backup)
   @param thd The current thread
   @param backup [in] the context to restore.
 */
+
 void close_log_table(THD *thd, Open_tables_backup *backup)
 {
-  close_system_tables(thd, backup);
+  /*
+    Inform the transaction handler that we are closing the
+    system tables and we don't need the read view anymore.
+  */
+  for (TABLE *table= thd->open_tables ; table ; table= table->next)
+    table->file->extra(HA_EXTRA_PREPARE_FOR_FORCED_CLOSE);
+  close_thread_tables(thd);
+  thd->restore_backup_open_tables_state(backup);
 }
 
 

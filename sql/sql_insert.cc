@@ -1144,7 +1144,7 @@ values_loop_end:
         table->file->ha_rnd_end();
     }
 
-    transactional_table= table->file->has_transactions();
+    transactional_table= table->file->has_transactions_and_rollback();
 
     if (likely(changed= (info.copied || info.deleted || info.updated)))
     {
@@ -1156,13 +1156,13 @@ values_loop_end:
       query_cache_invalidate3(thd, table_list, 1);
     }
 
-    if (thd->transaction.stmt.modified_non_trans_table)
-      thd->transaction.all.modified_non_trans_table= TRUE;
-    thd->transaction.all.m_unsafe_rollback_flags|=
-      (thd->transaction.stmt.m_unsafe_rollback_flags & THD_TRANS::DID_WAIT);
+    if (thd->transaction->stmt.modified_non_trans_table)
+      thd->transaction->all.modified_non_trans_table= TRUE;
+    thd->transaction->all.m_unsafe_rollback_flags|=
+      (thd->transaction->stmt.m_unsafe_rollback_flags & THD_TRANS::DID_WAIT);
 
     if (error <= 0 ||
-        thd->transaction.stmt.modified_non_trans_table ||
+        thd->transaction->stmt.modified_non_trans_table ||
 	was_insert_delayed)
     {
       if(WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open())
@@ -1225,7 +1225,7 @@ values_loop_end:
       }
     }
     DBUG_ASSERT(transactional_table || !changed || 
-                thd->transaction.stmt.modified_non_trans_table);
+                thd->transaction->stmt.modified_non_trans_table);
   }
   THD_STAGE_INFO(thd, stage_end);
   /*
@@ -2055,8 +2055,8 @@ int write_record(THD *thd, TABLE *table, COPY_INFO *info, select_result *sink)
             info->deleted++;
           else
             info->updated++;
-          if (!table->file->has_transactions())
-            thd->transaction.stmt.modified_non_trans_table= TRUE;
+          if (!table->file->has_transactions_and_rollback())
+            thd->transaction->stmt.modified_non_trans_table= TRUE;
           if (table->triggers &&
               table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
                                                 TRG_ACTION_AFTER, TRUE))
@@ -2121,8 +2121,8 @@ ok:
 after_trg_or_ignored_err:
   if (key)
     my_safe_afree(key,table->s->max_unique_length);
-  if (!table->file->has_transactions())
-    thd->transaction.stmt.modified_non_trans_table= TRUE;
+  if (!table->file->has_transactions_and_rollback())
+    thd->transaction->stmt.modified_non_trans_table= TRUE;
   DBUG_RETURN(trg_error);
 
 err:
@@ -4104,13 +4104,13 @@ void select_insert::store_values(List<Item> &values)
 bool select_insert::prepare_eof()
 {
   int error;
-  bool const trans_table= table->file->has_transactions();
+  bool const trans_table= table->file->has_transactions_and_rollback();
   bool changed;
   bool binary_logged= 0;
   killed_state killed_status= thd->killed;
 
   DBUG_ENTER("select_insert::prepare_eof");
-  DBUG_PRINT("enter", ("trans_table=%d, table_type='%s'",
+  DBUG_PRINT("enter", ("trans_table: %d, table_type: '%s'",
                        trans_table, table->file->table_type()));
 
 #ifdef WITH_WSREP
@@ -4139,13 +4139,13 @@ bool select_insert::prepare_eof()
     query_cache_invalidate3(thd, table, 1);
   }
 
-  if (thd->transaction.stmt.modified_non_trans_table)
-    thd->transaction.all.modified_non_trans_table= TRUE;
-  thd->transaction.all.m_unsafe_rollback_flags|=
-    (thd->transaction.stmt.m_unsafe_rollback_flags & THD_TRANS::DID_WAIT);
+  if (thd->transaction->stmt.modified_non_trans_table)
+    thd->transaction->all.modified_non_trans_table= TRUE;
+  thd->transaction->all.m_unsafe_rollback_flags|=
+    (thd->transaction->stmt.m_unsafe_rollback_flags & THD_TRANS::DID_WAIT);
 
   DBUG_ASSERT(trans_table || !changed || 
-              thd->transaction.stmt.modified_non_trans_table);
+              thd->transaction->stmt.modified_non_trans_table);
 
   /*
     Write to binlog before commiting transaction.  No statement will
@@ -4154,7 +4154,7 @@ bool select_insert::prepare_eof()
     ha_autocommit_or_rollback() is issued below.
   */
   if ((WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open()) &&
-      (likely(!error) || thd->transaction.stmt.modified_non_trans_table))
+      (likely(!error) || thd->transaction->stmt.modified_non_trans_table))
   {
     int errcode= 0;
     int res;
@@ -4273,12 +4273,12 @@ void select_insert::abort_result_set()
       zero, so no check for that is made.
     */
     changed= (info.copied || info.deleted || info.updated);
-    transactional_table= table->file->has_transactions();
-    if (thd->transaction.stmt.modified_non_trans_table ||
+    transactional_table= table->file->has_transactions_and_rollback();
+    if (thd->transaction->stmt.modified_non_trans_table ||
         thd->log_current_statement)
     {
         if (!can_rollback_data())
-          thd->transaction.all.modified_non_trans_table= TRUE;
+          thd->transaction->all.modified_non_trans_table= TRUE;
 
         if(WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open())
         {
@@ -4294,7 +4294,7 @@ void select_insert::abort_result_set()
 	  query_cache_invalidate3(thd, table, 1);
     }
     DBUG_ASSERT(transactional_table || !changed ||
-		thd->transaction.stmt.modified_non_trans_table);
+		thd->transaction->stmt.modified_non_trans_table);
 
     table->s->table_creation_was_logged|= binary_logged;
     table->file->ha_release_auto_increment();
@@ -4874,7 +4874,7 @@ bool select_create::send_eof()
     mark the flag at this point.
   */
   if (table->s->tmp_table)
-    thd->transaction.stmt.mark_created_temp_table();
+    thd->transaction->stmt.mark_created_temp_table();
 
   if (thd->slave_thread)
     thd->variables.binlog_annotate_row_events= 0;
@@ -5039,7 +5039,7 @@ void select_create::abort_result_set()
   save_option_bits= thd->variables.option_bits;
   thd->variables.option_bits&= ~OPTION_BIN_LOG;
   select_insert::abort_result_set();
-  thd->transaction.stmt.modified_non_trans_table= FALSE;
+  thd->transaction->stmt.modified_non_trans_table= FALSE;
   thd->variables.option_bits= save_option_bits;
 
   /* possible error of writing binary log is ignored deliberately */
