@@ -394,9 +394,38 @@ static int io_poll_associate_fd(TP_file_handle pollfd, TP_file_handle fd, void *
 }
 
 
+typedef LONG NTSTATUS;
+
+typedef struct _IO_STATUS_BLOCK {
+  union {
+    NTSTATUS Status;
+    PVOID Pointer;
+  };
+  ULONG_PTR Information;
+} IO_STATUS_BLOCK, * PIO_STATUS_BLOCK;
+
+struct FILE_COMPLETION_INFORMATION {
+  HANDLE Port;
+  PVOID Key;
+};
+
+enum FILE_INFORMATION_CLASS {
+  FileReplaceCompletionInformation = 0x3D
+};
+
+
+typedef NTSTATUS(WINAPI* pNtSetInformationFile)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+
 int io_poll_disassociate_fd(TP_file_handle pollfd, TP_file_handle fd)
 {
-  /* Not possible to unbind/rebind file descriptor in IOCP. */
+  static pNtSetInformationFile my_NtSetInformationFile = (pNtSetInformationFile)
+    GetProcAddress(GetModuleHandle("ntdll"), "NtSetInformationFile");
+  if (!my_NtSetInformationFile)
+    return -1; /* unexpected, we only support Windows 8.1+*/
+  IO_STATUS_BLOCK iosb{};
+  FILE_COMPLETION_INFORMATION fci{};
+  if (my_NtSetInformationFile(fd,&iosb,&fci,sizeof(fci),FileReplaceCompletionInformation))
+    return -1;
   return 0;
 }
 
@@ -1346,6 +1375,12 @@ static void set_next_timeout_check(ulonglong abstime)
   DBUG_VOID_RETURN;
 }
 
+static size_t get_group_id(my_thread_id tid)
+{
+  return size_t(tid % group_count);
+}
+
+
 TP_connection_generic::TP_connection_generic(CONNECT *c):
   TP_connection(c),
   thread_group(0),
@@ -1353,9 +1388,13 @@ TP_connection_generic::TP_connection_generic(CONNECT *c):
   prev_in_queue(0),
   abs_wait_timeout(ULONGLONG_MAX),
   bound_to_poll_descriptor(false),
-  waiting(false)
+  waiting(false),
+  fix_group(false)
 #ifdef HAVE_IOCP
 , overlapped()
+#endif
+#ifdef _WIN32
+, vio_type(c->vio_type)
 #endif
 {
   DBUG_ASSERT(c->vio_type != VIO_CLOSED);
@@ -1369,8 +1408,7 @@ TP_connection_generic::TP_connection_generic(CONNECT *c):
 
   /* Assign connection to a group. */
   thread_group_t *group=
-    &all_groups[c->thread_id%group_count];
-
+    &all_groups[get_group_id(c->thread_id)];
   thread_group=group;
 
   mysql_mutex_lock(&group->mutex);
@@ -1409,7 +1447,6 @@ void TP_connection_generic::set_io_timeout(int timeout_sec)
 }
 
 
-#ifndef HAVE_IOCP
 /**
   Handle a (rare) special case,where connection needs to 
   migrate to a different group because group_count has changed
@@ -1444,11 +1481,10 @@ static int change_group(TP_connection_generic *c,
   mysql_mutex_unlock(&new_group->mutex);
   return ret;
 }
-#endif
+
 
 int TP_connection_generic::start_io()
 {
-#ifndef HAVE_IOCP
   /*
     Usually, connection will stay in the same group for the entire
     connection's life. However, we do allow group_count to
@@ -1458,16 +1494,18 @@ int TP_connection_generic::start_io()
 
     So we recalculate in which group the connection should be, based
     on thread_id and current group count, and migrate if necessary.
-  */ 
-  thread_group_t *group = 
-    &all_groups[thd->thread_id%group_count];
-
-  if (group != thread_group)
+  */
+  if (fix_group)
   {
-    if (change_group(this, thread_group, group))
-      return -1;
+    fix_group = false;
+    thread_group_t *new_group= &all_groups[get_group_id(thd->thread_id)];
+
+    if (new_group != thread_group)
+    {
+      if (change_group(this, thread_group, new_group))
+        return -1;
+    }
   }
-#endif
 
   /* 
     Bind to poll descriptor if not yet done. 
@@ -1590,6 +1628,14 @@ TP_pool_generic::~TP_pool_generic()
 }
 
 
+static my_bool thd_reset_group(THD* thd, void*)
+{
+  auto c= (TP_connection_generic*)thd->event_scheduler.data;
+  if(c)
+    c->fix_group= true;
+  return FALSE;
+}
+
 /** Ensure that poll descriptors are created when threadpool_size changes */
 int TP_pool_generic::set_pool_size(uint size)
 {
@@ -1616,6 +1662,7 @@ int TP_pool_generic::set_pool_size(uint size)
     }
   }
   group_count= size;
+  server_threads.iterate(thd_reset_group);
   return 0;
 }
 

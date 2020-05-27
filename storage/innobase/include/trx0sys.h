@@ -363,6 +363,13 @@ struct rw_trx_hash_element_t
 
 
   trx_id_t id; /* lf_hash_init() relies on this to be first in the struct */
+
+  /**
+    Transaction serialization number.
+
+    Assigned shortly before the transaction is moved to COMMITTED_IN_MEMORY
+    state. Initially set to TRX_ID_MAX.
+  */
   Atomic_counter<trx_id_t> no;
   trx_t *trx;
   ib_mutex_t mutex;
@@ -814,7 +821,7 @@ public:
   */
   MY_ALIGNED(CACHE_LINE_SIZE) Atomic_counter<uint32_t> rseg_history_len;
 
-  /** Mutex protecting trx_list. */
+  /** Mutex protecting trx_list AND NOTHING ELSE. */
   MY_ALIGNED(CACHE_LINE_SIZE) mutable TrxSysMutex mutex;
 
   /** List of all transactions. */
@@ -930,8 +937,7 @@ public:
   */
   void assign_new_trx_no(trx_t *trx)
   {
-    trx->no= get_new_trx_id_no_refresh();
-    trx->rw_trx_hash_element->no= trx->no;
+    trx->rw_trx_hash_element->no= get_new_trx_id_no_refresh();
     refresh_rw_trx_hash_version();
   }
 
@@ -955,7 +961,7 @@ public:
     @param[in,out] caller_trx used to get access to rw_trx_hash_pins
     @param[out]    ids        array to store registered transaction identifiers
     @param[out]    max_trx_id variable to store m_max_trx_id value
-    @param[out]    mix_trx_no variable to store min(trx->no) value
+    @param[out]    mix_trx_no variable to store min(no) value
   */
 
   void snapshot_ids(trx_t *caller_trx, trx_ids_t *ids, trx_id_t *max_trx_id,
@@ -1086,7 +1092,7 @@ public:
     in. This function is called by purge thread to determine whether it should
     purge the delete marked record or not.
   */
-  void clone_oldest_view();
+  void clone_oldest_view(ReadViewBase *view) const;
 
 
   /** @return the number of active views */
@@ -1098,7 +1104,7 @@ public:
     for (const trx_t *trx= UT_LIST_GET_FIRST(trx_list); trx;
          trx= UT_LIST_GET_NEXT(trx_list, trx))
     {
-      if (trx->read_view.get_state() == READ_VIEW_STATE_OPEN)
+      if (trx->read_view.is_open())
         ++count;
     }
     mutex_exit(&mutex);
