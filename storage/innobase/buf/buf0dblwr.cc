@@ -239,7 +239,7 @@ too_small:
 		has not been written to in doublewrite. */
 
 		ut_ad(rw_lock_get_x_lock_count(&new_block->lock) == 1);
-		page_no = new_block->page.id.page_no();
+		page_no = new_block->page.id().page_no();
 		/* We only do this in the debug build, to ensure that
 		the check in buf_flush_init_for_writing() will see a valid
 		page type. The flushes of new_block are actually
@@ -693,7 +693,7 @@ void buf_dblwr_update(const buf_page_t &bpage, bool single_page)
 {
   ut_ad(srv_use_doublewrite_buf);
   ut_ad(buf_dblwr);
-  ut_ad(!fsp_is_system_temporary(bpage.id.space()));
+  ut_ad(!fsp_is_system_temporary(bpage.id().space()));
   ut_ad(!srv_read_only_mode);
 
   if (!single_page)
@@ -757,12 +757,13 @@ static void buf_dblwr_check_page_lsn(const page_t* page, const fil_space_t& s)
   ut_ad(!memcmp_aligned<4>(lsn_start, lsn_end, 4));
 }
 
-static void buf_dblwr_check_page_lsn(const buf_page_t& b, const byte* page)
+static void buf_dblwr_check_page_lsn(const buf_page_t &b, const byte *page)
 {
-	if (fil_space_t* space = fil_space_acquire_for_io(b.id.space())) {
-		buf_dblwr_check_page_lsn(page, *space);
-		space->release_for_io();
-	}
+  if (fil_space_t *space= fil_space_acquire_for_io(b.id().space()))
+  {
+    buf_dblwr_check_page_lsn(page, *space);
+    space->release_for_io();
+  }
 }
 #endif /* UNIV_DEBUG */
 
@@ -778,7 +779,7 @@ buf_dblwr_assert_on_corrupt_block(
 	buf_page_print(block->frame);
 
 	ib::fatal() << "Apparent corruption of an index page "
-		<< block->page.id
+		<< block->page.id()
 		<< " to be written to data file. We intentionally crash"
 		" the server to prevent corrupt data from ending up in"
 		" data files.";
@@ -793,7 +794,7 @@ buf_dblwr_check_block(
 /*==================*/
 	const buf_block_t*	block)	/*!< in: block to check */
 {
-	ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+	ut_ad(block->page.state() == BUF_BLOCK_FILE_PAGE);
 
 	if (block->skip_flush_check) {
 		return;
@@ -859,16 +860,16 @@ buf_dblwr_write_block_to_datafile(const buf_dblwr_t::element &e, bool sync)
 	if (bpage->zip.data) {
 		ut_ad(bpage->zip_size());
 
-		fio = fil_io(request, sync, bpage->id, bpage->zip_size(), 0,
+		fio = fil_io(request, sync, bpage->id(), bpage->zip_size(), 0,
 			     bpage->zip_size(), frame, bpage);
 	} else {
-		ut_ad(bpage->state == BUF_BLOCK_FILE_PAGE);
+		ut_ad(bpage->state() == BUF_BLOCK_FILE_PAGE);
 		ut_ad(!bpage->zip_size());
 
 		ut_d(buf_dblwr_check_page_lsn(*bpage, static_cast<const byte*>
 					      (frame)));
 		fio = fil_io(request,
-			     sync, bpage->id, bpage->zip_size(), 0,
+			     sync, bpage->id(), bpage->zip_size(), 0,
 			     e.size, frame, bpage);
 	}
 
@@ -944,7 +945,7 @@ try_again:
 
 		buf_page_t* bpage= buf_dblwr->buf_block_arr[i].bpage;
 
-		if (bpage->state != BUF_BLOCK_FILE_PAGE || bpage->zip.data) {
+		if (bpage->state() != BUF_BLOCK_FILE_PAGE || bpage->zip.data) {
 			/* No simple validate for compressed
 			pages exists. */
 			continue;
@@ -1083,7 +1084,7 @@ this function.
 @param size    payload size in bytes */
 void buf_dblwr_t::write_single_page(buf_page_t *bpage, bool sync, size_t size)
 {
-  ut_ad(buf_page_in_file(bpage));
+  ut_ad(bpage->in_file());
   ut_ad(srv_use_doublewrite_buf);
   ut_ad(this == buf_dblwr);
 
@@ -1093,7 +1094,7 @@ void buf_dblwr_t::write_single_page(buf_page_t *bpage, bool sync, size_t size)
   ut_a(slots > srv_doublewrite_batch_size);
   ulint n_slots= slots - srv_doublewrite_batch_size;
 
-  if (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE)
+  if (bpage->state() == BUF_BLOCK_FILE_PAGE)
   {
     /* Check that the actual page in the buffer pool is not corrupt
     and the LSN values are sane. */

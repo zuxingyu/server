@@ -94,12 +94,7 @@ enum buf_page_state {
 					page that is in the
 					buf_pool.flush_list */
 
-	BUF_BLOCK_NOT_USED,		/*!< is in the free list;
-					must be after the BUF_BLOCK_ZIP_
-					constants for compressed-only pages
-					@see buf_block_state_valid() */
-	BUF_BLOCK_READY_FOR_USE,	/*!< when buf_LRU_get_free_block
-					returns a block, it is in this state */
+	BUF_BLOCK_NOT_USED,		/*!< is in the free list */
 	BUF_BLOCK_FILE_PAGE,		/*!< contains a buffered file page */
 	BUF_BLOCK_MEMORY,		/*!< contains some main memory
 					object */
@@ -223,8 +218,7 @@ buf_page_free_descriptor(
 
 /** Allocate a buffer block.
 @return own: the allocated block, in state BUF_BLOCK_MEMORY */
-buf_block_t*
-buf_block_alloc();
+inline buf_block_t *buf_block_alloc();
 /********************************************************************//**
 Frees a buffer block which does not contain a file page. */
 UNIV_INLINE
@@ -642,16 +636,6 @@ buf_block_get_lock_hash_val(
 buf_block_t* buf_pool_contains_zip(const void* data);
 #endif /* UNIV_DEBUG */
 
-/***********************************************************************
-FIXME_FTS: Gets the frame the pointer is pointing to. */
-UNIV_INLINE
-buf_frame_t*
-buf_frame_align(
-/*============*/
-                        /* out: pointer to frame */
-        byte*   ptr);   /* in: pointer to a frame */
-
-
 /** Dump a page to stderr.
 @param[in]	read_buf	database page
 @param[in]	zip_size	compressed page size, or 0 */
@@ -710,120 +694,6 @@ buf_block_dbg_add_level(
 #else /* UNIV_DEBUG */
 # define buf_block_dbg_add_level(block, level) /* nothing */
 #endif /* UNIV_DEBUG */
-/*********************************************************************//**
-Gets the state of a block.
-@return state */
-UNIV_INLINE
-enum buf_page_state
-buf_page_get_state(
-/*===============*/
-	const buf_page_t*	bpage);	/*!< in: pointer to the control
-					block */
-/*********************************************************************//**
-Gets the state of a block.
-@return state */
-UNIV_INLINE
-enum buf_page_state
-buf_block_get_state(
-/*================*/
-	const buf_block_t*	block)	/*!< in: pointer to the control block */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Sets the state of a block. */
-UNIV_INLINE
-void
-buf_page_set_state(
-/*===============*/
-	buf_page_t*		bpage,	/*!< in/out: pointer to control block */
-	enum buf_page_state	state);	/*!< in: state */
-/*********************************************************************//**
-Sets the state of a block. */
-UNIV_INLINE
-void
-buf_block_set_state(
-/*================*/
-	buf_block_t*		block,	/*!< in/out: pointer to control block */
-	enum buf_page_state	state);	/*!< in: state */
-
-#define buf_page_in_file(bpage) ((bpage)->in_file())
-
-/*********************************************************************//**
-Determines if a block should be on unzip_LRU list.
-@return TRUE if block belongs to unzip_LRU */
-UNIV_INLINE
-ibool
-buf_page_belongs_to_unzip_LRU(
-/*==========================*/
-	const buf_page_t*	bpage)	/*!< in: pointer to control block */
-	MY_ATTRIBUTE((warn_unused_result));
-
-/*********************************************************************//**
-Gets the io_fix state of a block.
-@return io_fix state */
-UNIV_INLINE
-enum buf_io_fix
-buf_page_get_io_fix(
-/*================*/
-	const buf_page_t*	bpage)	/*!< in: pointer to the control block */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Gets the io_fix state of a block.
-@return io_fix state */
-UNIV_INLINE
-enum buf_io_fix
-buf_block_get_io_fix(
-/*================*/
-	const buf_block_t*	block)	/*!< in: pointer to the control block */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Sets the io_fix state of a block. */
-UNIV_INLINE
-void
-buf_page_set_io_fix(
-/*================*/
-	buf_page_t*	bpage,	/*!< in/out: control block */
-	enum buf_io_fix	io_fix);/*!< in: io_fix state */
-/*********************************************************************//**
-Sets the io_fix state of a block. */
-UNIV_INLINE
-void
-buf_block_set_io_fix(
-/*=================*/
-	buf_block_t*	block,	/*!< in/out: control block */
-	enum buf_io_fix	io_fix);/*!< in: io_fix state */
-/*********************************************************************//**
-Makes a block sticky. A sticky block implies that even after we release
-buf_pool.mutex:
-* it cannot be removed from the flush_list
-* the block descriptor cannot be relocated
-* it cannot be removed from the LRU list
-Note that:
-* the block can still change its position in the LRU list
-* the next and previous pointers can change. */
-UNIV_INLINE
-void
-buf_page_set_sticky(
-/*================*/
-	buf_page_t*	bpage);	/*!< in/out: control block */
-/*********************************************************************//**
-Removes stickiness of a block. */
-UNIV_INLINE
-void
-buf_page_unset_sticky(
-/*==================*/
-	buf_page_t*	bpage);	/*!< in/out: control block */
-
-/*********************************************************************//**
-Gets the buf_block_t handle of a buffered file block if an uncompressed
-page frame exists, or NULL. Note: even though bpage is not declared a
-const we don't update its value.
-@return control block, or NULL */
-UNIV_INLINE
-buf_block_t*
-buf_page_get_block(
-/*===============*/
-	buf_page_t*	bpage)	/*!< in: control block, or NULL */
-	MY_ATTRIBUTE((warn_unused_result));
 
 #ifdef UNIV_DEBUG
 /*********************************************************************//**
@@ -994,32 +864,37 @@ for compressed and uncompressed frames */
 /** Number of bits used for buffer page states. */
 #define BUF_PAGE_STATE_BITS	3
 
+class buf_pool_t;
+
 class buf_page_t
 {
-public:
+  friend buf_pool_t;
+  friend buf_block_t;
   /** @name General fields */
   /* @{ */
 
-  /** Page id. Protected by buf_pool.mutex. FIXME. Really? @see state */
-  page_id_t id;
-  /** buf_pool.page_hash bucket link; protected by the hash bucket latch */
-  buf_page_t *hash;
-
+public: // FIXME: fix fil_iterate()
+  /** Page id. Protected by buf_pool.hash_lock_get(id) when
+  the page is in buf_pool.page_hash. */
+  page_id_t id_;
+private:
   /** Count of how manyfold this block is currently bufferfixed. */
-  Atomic_counter<uint32_t> buf_fix_count;
+  Atomic_counter<uint32_t> buf_fix_count_;
 
   /** type of pending I/O operation; protected by buf_pool.mutex
   if in_LRU_list */
-  buf_io_fix io_fix; // FIXME: Atomic_counter?
+  Atomic_relaxed<buf_io_fix> io_fix_;
+  /** Block state. @see in_file().
+  State transitions between in_file() states and to
+  BUF_BLOCK_REMOVE_HASH are protected by buf_pool.hash_lock_get(id)
+  when the block is in buf_pool.page_hash.
+  Other transitions when in_LRU_list are protected by buf_pool.mutex. */
+  buf_page_state state_;
 
-  /** Block state. @see in_file()
-  FIXME: Review/document the protection rules.
-  Which transitions are possible while the block is in
-  buf_pool.page_hash? Those transitions will be protected
-  by the hash bucket latch only. */
-  buf_page_state state;
+public:
+  /** buf_pool.page_hash link; protected by buf_pool.hash_lock_get(id) */
+  buf_page_t *hash;
   /* @} */
-
 	page_zip_des_t	zip;		/*!< compressed page; zip.data
 					(but not the data it points to) is
 					also protected by buf_pool.mutex;
@@ -1031,76 +906,40 @@ public:
 					used for encryption/compression
 					or NULL */
 #ifdef UNIV_DEBUG
-  /** whether the block is in buf_pool.zip_hash; protected by buf_pool.mutex */
+  /** whether this->list is in buf_pool.zip_hash; protected by buf_pool.mutex */
   bool in_zip_hash;
-  /** whether the page is in buf_pool.LRU; protected by buf_pool.mutex */
+  /** whether this->LRU is in buf_pool.LRU (in_file() holds);
+  protected by buf_pool.mutex */
   bool in_LRU_list;
+  /** whether this->list in buf_pool.flush_list
+  (state() == BUF_BLOCK_FILE_PAGE || state() == BUF_BLOCK_ZIP_DIRTY);
+  protected by buf_pool.mutex and buf_pool.flush_list_mutex */
+  bool in_flush_list;
+  /** whether this->list is in buf_pool.free (state() == BUF_BLOCK_NOT_USED);
+  protected by buf_pool.flush_list_mutex */
+  bool in_free_list;
 #endif /* UNIV_DEBUG */
+  /** list member in one of the lists of buf_pool; protected by
+  buf_pool.mutex or buf_pool.flush_list_mutex
 
-	/** @name Page flushing fields
-	All these are protected by buf_pool.mutex. */
-	/* @{ */
+  state() == BUF_BLOCK_NOT_USED: buf_pool.free or buf_pool.withdraw
 
-	UT_LIST_NODE_T(buf_page_t) list;
-					/*!< based on state, this is a
-					list node, protected either by
-					buf_pool.mutex or by
-					buf_pool.flush_list_mutex,
-					in one of the following lists in
-					buf_pool:
+  state() == BUF_BLOCK_FILE_PAGE || state() == BUF_BLOCK_ZIP_DIRTY:
+  buf_pool.flush_list (protected by buf_pool.flush_list_mutex)
 
-					- BUF_BLOCK_NOT_USED:	free, withdraw
-					- BUF_BLOCK_FILE_PAGE:	flush_list
-					- BUF_BLOCK_ZIP_DIRTY:	flush_list
-					- BUF_BLOCK_ZIP_PAGE:	zip_clean
+  state() == BUF_BLOCK_ZIP_PAGE: buf_pool.zip_clean
 
-					If bpage is part of flush_list
-					then the node pointers are
-					covered by buf_pool.flush_list_mutex.
-					Otherwise these pointers are
-					protected by buf_pool.mutex.
-
-					The contents of the list node
-					is undefined if !in_flush_list
-					&& state == BUF_BLOCK_FILE_PAGE,
-					or if state is one of
-					BUF_BLOCK_MEMORY,
-					BUF_BLOCK_REMOVE_HASH or
-					BUF_BLOCK_READY_IN_USE. */
-
-#ifdef UNIV_DEBUG
-	bool		in_flush_list;	/*!< TRUE if in buf_pool.flush_list;
-					when buf_pool.flush_list_mutex is
-					free, the following should hold:
-					in_flush_list
-					== (state == BUF_BLOCK_FILE_PAGE
-					    || state == BUF_BLOCK_ZIP_DIRTY)
-					Protected by
-					buf_pool.flush_list_mutex. */
-	bool		in_free_list;	/*!< TRUE if in buf_pool.free; when
-					buf_pool.mutex is free, the following
-					should hold: in_free_list
-					== (state == BUF_BLOCK_NOT_USED) */
-#endif /* UNIV_DEBUG */
+  The contents is undefined if
+  !in_flush_list && state() == BUF_BLOCK_FILE_PAGE,
+  or if state() is not any of the above. */
+  UT_LIST_NODE_T(buf_page_t) list;
 
 private:
-	Atomic_counter<lsn_t> oldest_modification_;
-					/*!< log sequence number of
-					the START of the log entry
-					written of the oldest
-					modification to this block
-					which has not yet been flushed
-					on disk; zero if all
-					modifications are on disk. */
+  /** log sequence number of the START of the log entry written of the
+  oldest modification to this block which has not yet been written
+  to the data file; 0 if no modifications are pending. */
+  Atomic_counter<lsn_t> oldest_modification_;
 public:
-	/** @return the oldest modification */
-	lsn_t oldest_modification() const { return oldest_modification_; }
-	/** Set oldest_modification when adding to buf_pool.flush_list */
-	inline void set_oldest_modification(lsn_t lsn);
-	/** Clear oldest_modification when removing from buf_pool.flush_list */
-	inline void clear_oldest_modification();
-	/* @} */
-
 	/** @name LRU replacement algorithm fields.
 	Protected by buf_pool.mutex. */
 	/* @{ */
@@ -1131,10 +970,10 @@ public:
 					the field is protected by
 					recv_sys_t::mutex. */
   /** Change buffer entries for the page exist.
-  Protected by io_fix==BUF_IO_READ or by buf_block_t::lock. */
+  Protected by io_fix()==BUF_IO_READ or by buf_block_t::lock. */
   bool ibuf_exist;
 
-  /** Block initialization status. Can be modified while holding io_fix
+  /** Block initialization status. Can be modified while holding io_fix()
   or buf_block_t::lock X-latch */
   enum {
     /** the page was read normally and should be flushed normally */
@@ -1152,8 +991,8 @@ public:
   /** Initialize some fields */
   void init()
   {
-    io_fix= BUF_IO_NONE;
-    buf_fix_count= 0;
+    io_fix_= BUF_IO_NONE;
+    buf_fix_count_= 0;
     old= 0;
     freed_page_clock= 0;
     access_time= 0;
@@ -1168,10 +1007,51 @@ public:
     HASH_INVALIDATE(this, hash);
   }
 
-  void fix() { buf_fix_count++; }
+  /** Initialize some more fields */
+  void init(buf_page_state state, page_id_t id, uint32_t buf_fix_count= 0)
+  {
+    init();
+    state_= state;
+    id_= id;
+    buf_fix_count_= buf_fix_count;
+  }
+
+public:
+  const page_id_t &id() const { return id_; }
+  buf_page_state state() const { return state_; }
+  uint32_t buf_fix_count() const { return buf_fix_count_; }
+  buf_io_fix io_fix() const { return io_fix_; }
+  void io_unfix()
+  {
+    ut_d(const auto old_io_fix= io_fix());
+    ut_ad(old_io_fix == BUF_IO_READ || old_io_fix == BUF_IO_PIN);
+    io_fix_= BUF_IO_NONE;
+  }
+
+  /** @return if this belongs to buf_pool.unzip_LRU */
+  bool belongs_to_unzip_LRU() const
+  {
+    ut_ad(in_file());
+    return zip.data && state() == BUF_BLOCK_FILE_PAGE;
+  }
+
+  inline void add_buf_fix_count(uint32_t count);
+  inline void set_buf_fix_count(uint32_t count);
+  inline void set_state(buf_page_state state);
+  inline void set_io_fix(buf_io_fix io_fix);
+  inline void set_corrupt_id();
+
+  /** @return the oldest modification */
+  lsn_t oldest_modification() const { return oldest_modification_; }
+  /** Set oldest_modification when adding to buf_pool.flush_list */
+  inline void set_oldest_modification(lsn_t lsn);
+  /** Clear oldest_modification when removing from buf_pool.flush_list */
+  inline void clear_oldest_modification();
+
+  void fix() { buf_fix_count_++; }
   uint32_t unfix()
   {
-    uint32_t count= buf_fix_count--;
+    uint32_t count= buf_fix_count_--;
     ut_ad(count != 0);
     return count - 1;
   }
@@ -1192,7 +1072,7 @@ public:
   /** @return whether the block is mapped to a data file */
   bool in_file() const
   {
-    switch (state) {
+    switch (state_) {
     case BUF_BLOCK_POOL_WATCH:
       break;
     case BUF_BLOCK_ZIP_PAGE:
@@ -1200,7 +1080,6 @@ public:
     case BUF_BLOCK_FILE_PAGE:
       return true;
     case BUF_BLOCK_NOT_USED:
-    case BUF_BLOCK_READY_FOR_USE:
     case BUF_BLOCK_MEMORY:
     case BUF_BLOCK_REMOVE_HASH:
       return false;
@@ -1213,7 +1092,8 @@ public:
   /** @return whether the block is modified and ready for flushing */
   inline bool ready_for_flush() const;
   /** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
-  inline bool ready_for_replace() const;
+  bool ready_for_replace() const
+  { return !oldest_modification() && can_relocate(); }
   /** @return whether the block can be relocated in memory.
   The block can be dirty, but it must not be I/O-fixed or bufferfixed. */
   inline bool can_relocate() const;
@@ -1251,17 +1131,21 @@ struct buf_block_t{
 					srv_page_size */
 	BPageLock	lock;		/*!< read-write lock of the buffer
 					frame */
+#ifdef UNIV_DEBUG
+  /** whether page.list is in buf_pool.withdraw
+  ((state() == BUF_BLOCK_NOT_USED)) and the buffer pool is being shrunk;
+  protected by buf_pool.mutex */
+  bool in_withdraw_list;
+  /** whether unzip_LRU is in buf_pool.unzip_LRU
+  (state() == BUF_BLOCK_FILE_PAGE and zip.data != nullptr);
+  protected by buf_pool.mutex */
+  bool in_unzip_LRU_list;
+#endif
 	UT_LIST_NODE_T(buf_block_t) unzip_LRU;
 					/*!< node of the decompressed LRU list;
 					a block is in the unzip_LRU list
-					if page.state == BUF_BLOCK_FILE_PAGE
+					if page.state() == BUF_BLOCK_FILE_PAGE
 					and page.zip.data != NULL */
-#ifdef UNIV_DEBUG
-	ibool		in_unzip_LRU_list;/*!< TRUE if the page is in the
-					decompressed LRU list;
-					used in debugging */
-	ibool		in_withdraw_list;
-#endif /* UNIV_DEBUG */
 	uint32_t	lock_hash_val;	/*!< hashed value of the page address
 					in the record lock hash table;
 					protected by buf_block_t::lock
@@ -1404,14 +1288,6 @@ struct buf_block_t{
   @param zip_size ROW_FORMAT=COMPRESSED page size, or 0 */
   void initialise(const page_id_t page_id, ulint zip_size);
 };
-
-/** Check if a buf_block_t object is in a valid state
-@param block buffer block
-@return TRUE if valid */
-#define buf_block_state_valid(block)				\
-(buf_block_get_state(block) >= BUF_BLOCK_NOT_USED		\
- && (buf_block_get_state(block) <= BUF_BLOCK_REMOVE_HASH))
-
 
 /**********************************************************************//**
 Compute the hash fold value for blocks in buf_pool.zip_hash. */
@@ -1739,6 +1615,10 @@ public:
     return false;
   }
 
+  /** Release and evict a corrupted page.
+  @param bpage    page that was being read */
+  void corrupted_evict(buf_page_t *bpage);
+
 #ifdef UNIV_DEBUG
   /** Find a block that points to a ROW_FORMAT=COMPRESSED page
   @param data  pointer to the start of a ROW_FORMAT=COMPRESSED page frame
@@ -1801,11 +1681,10 @@ public:
   }
 #endif
 
-  /** Ensure that the correct hash bucket is latched, with concurrent resize()
+  /** Acquire a page_hash bucket latch, tolerating concurrent resize()
   @tparam exclusive  whether the latch is to be acquired exclusively
-  @param latch   page_hash bucket latch
   @param fold    hash bucket key */
-  template<bool exclusive> rw_lock_t *page_hash_lock_confirmed(ulint fold)
+  template<bool exclusive> rw_lock_t *page_hash_lock(ulint fold)
   {
     rw_lock_t *latch= hash_lock_get_low(fold);
     if (exclusive)
@@ -1820,8 +1699,7 @@ public:
       else
         rw_lock_s_unlock(latch);
       /* FIXME: what if we resize() completes several times while we
-      are not holding any latch here? Is the page_hash_latch actually
-      guaranteed to be valid? */
+      are not holding any latch here? Is the latch guaranteed to be valid? */
       if (exclusive)
         rw_lock_x_lock(l);
       else
@@ -1842,35 +1720,8 @@ public:
     buf_page_t* bpage;
     /* Look for the page in the hash table */
     HASH_SEARCH(hash, page_hash, id.fold(), buf_page_t*, bpage,,
-                id == bpage->id);
+                id == bpage->id());
     return bpage;
-  }
-
-  /** Ensure that the correct hash bucket is latched, with concurrent resize()
-  @tparam exclusive  whether the latch is to be acquired exclusively
-  @param latch   page_hash bucket latch
-  @param fold    hash bucket key */
-  template<bool exclusive>
-  rw_lock_t *page_hash_lock_confirm(rw_lock_t *latch, const ulint fold)
-  {
-    ut_ad(rw_lock_own(latch, exclusive ? RW_LOCK_X : RW_LOCK_S));
-    rw_lock_t *l;
-    while ((l= hash_lock_get_low(fold)) != latch)
-    {
-      if (exclusive)
-        rw_lock_x_unlock(latch);
-      else
-        rw_lock_s_unlock(latch);
-      /* FIXME: what if we resize() completes several times while we
-      are not holding any latch here? Is the page_hash_latch actually
-      guaranteed to be valid? */
-      if (exclusive)
-        rw_lock_x_lock(l);
-      else
-        rw_lock_s_lock(l);
-      latch= l;
-    }
-    return latch;
   }
 
   /** Acquire exclusive latches on all page_hash buckets. */
@@ -1896,17 +1747,17 @@ public:
   @return whether bpage a sentinel for a buffer pool watch */
   bool watch_is_sentinel(const buf_page_t &bpage)
   {
-    ut_ad(rw_lock_own_flagged(hash_lock_get(bpage.id),
+    ut_ad(rw_lock_own_flagged(hash_lock_get(bpage.id()),
                               RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
     ut_ad(bpage.in_file());
 
     if (&bpage < &watch[0] || &bpage >= &watch[BUF_POOL_WATCH_SIZE])
     {
-      ut_ad(bpage.state != BUF_BLOCK_ZIP_PAGE || bpage.zip.data);
+      ut_ad(bpage.state() != BUF_BLOCK_ZIP_PAGE || bpage.zip.data);
       return false;
     }
 
-    ut_ad(bpage.state == BUF_BLOCK_ZIP_PAGE);
+    ut_ad(bpage.state() == BUF_BLOCK_ZIP_PAGE);
     ut_ad(!bpage.in_zip_hash);
     ut_ad(!bpage.zip.data);
     return true;
@@ -1918,7 +1769,7 @@ public:
   @return whether the page was read to the buffer pool */
   bool watch_occurred(const page_id_t id)
   {
-    rw_lock_t *hash_lock= page_hash_lock_confirmed<false>(id.fold());
+    rw_lock_t *hash_lock= page_hash_lock<false>(id.fold());
     /* The page must exist because watch_set() increments buf_fix_count. */
     buf_page_t *bpage= page_hash_get_low(id);
     const bool is_sentinel= watch_is_sentinel(*bpage);
@@ -1941,18 +1792,18 @@ public:
   void watch_unset(const page_id_t id)
   {
     const ulint fold= id.fold();
-    rw_lock_t *hash_lock= page_hash_lock_confirmed<true>(fold);
+    rw_lock_t *hash_lock= page_hash_lock<true>(fold);
     /* The page must exist because watch_set() increments buf_fix_count. */
     buf_page_t *watch= page_hash_get_low(id);
     if (watch->unfix() == 0 && watch_is_sentinel(*watch))
     {
-      /* The following is based on buf_pool_watch_remove(). */
+      /* The following is based on watch_remove(). */
       HASH_DELETE(buf_page_t, hash, page_hash, fold, watch);
       rw_lock_x_unlock(hash_lock);
       // Now that the watch is detached from page_hash, release it to watch[].
       mutex_enter(&mutex);
-      watch->buf_fix_count= 0;
-      watch->state= BUF_BLOCK_POOL_WATCH;
+      watch->set_buf_fix_count(0);
+      watch->set_state(BUF_BLOCK_POOL_WATCH);
       mutex_exit(&mutex);
     }
     else
@@ -1963,7 +1814,7 @@ public:
   real block. watch_unset() or watch_occurred() will notice
   that the block has been replaced with the real block.
   @param watch   sentinel */
-  void watch_remove(buf_page_t *watch);
+  inline void watch_remove(buf_page_t *watch);
 
   /** @return whether less than 1/4 of the buffer pool is available */
   bool running_out() const
@@ -2258,6 +2109,50 @@ private:
 /** The InnoDB buffer pool */
 extern buf_pool_t buf_pool;
 
+inline void buf_page_t::add_buf_fix_count(uint32_t count)
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  buf_fix_count_+= count;
+}
+
+inline void buf_page_t::set_buf_fix_count(uint32_t count)
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  buf_fix_count_= count;
+}
+
+inline void buf_page_t::set_state(buf_page_state state)
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  state_= state;
+}
+
+inline void buf_page_t::set_io_fix(buf_io_fix io_fix)
+{
+  ut_ad(mutex_own(&buf_pool.mutex));
+  io_fix_= io_fix;
+}
+
+inline void buf_page_t::set_corrupt_id()
+{
+#ifdef UNIV_DEBUG
+  switch (state()) {
+  case BUF_BLOCK_REMOVE_HASH:
+    break;
+  case BUF_BLOCK_ZIP_PAGE:
+  case BUF_BLOCK_FILE_PAGE:
+    ut_ad(rw_lock_own(buf_pool.hash_lock_get(id_), RW_LOCK_X));
+    break;
+  case BUF_BLOCK_POOL_WATCH:
+  case BUF_BLOCK_ZIP_DIRTY:
+  case BUF_BLOCK_NOT_USED:
+  case BUF_BLOCK_MEMORY:
+    ut_ad("invalid state" == 0);
+  }
+#endif
+  id_= page_id_t(~0ULL);
+}
+
 /** Set oldest_modification when adding to buf_pool.flush_list */
 inline void buf_page_t::set_oldest_modification(lsn_t lsn)
 {
@@ -2282,16 +2177,7 @@ inline bool buf_page_t::ready_for_flush() const
   ut_ad(mutex_own(&buf_pool.mutex));
   ut_ad(in_LRU_list);
   ut_a(in_file());
-  return oldest_modification() && io_fix == BUF_IO_NONE;
-}
-
-/** @return whether the state can be changed to BUF_BLOCK_NOT_USED */
-inline bool buf_page_t::ready_for_replace() const
-{
-  ut_ad(mutex_own(&buf_pool.mutex));
-  ut_ad(in_LRU_list);
-  ut_a(in_file());
-  return !oldest_modification() && !buf_fix_count && io_fix == BUF_IO_NONE;
+  return oldest_modification() && io_fix_ == BUF_IO_NONE;
 }
 
 /** @return whether the block can be relocated in memory.
@@ -2301,7 +2187,7 @@ inline bool buf_page_t::can_relocate() const
   ut_ad(mutex_own(&buf_pool.mutex));
   ut_ad(in_file());
   ut_ad(in_LRU_list);
-  return io_fix == BUF_IO_NONE && buf_fix_count == 0;
+  return io_fix_ == BUF_IO_NONE && !buf_fix_count_;
 }
 
 /** @return whether the block has been flagged old in buf_pool.LRU */
@@ -2365,8 +2251,6 @@ Let us list the consistency conditions for different control block states.
 
 NOT_USED:	is in free list, not in LRU list, not in flush list, nor
 		page hash table
-READY_FOR_USE:	is not in free list, LRU list, or flush list, nor page
-		hash table
 MEMORY:		is not in free list, LRU list, or flush list, nor page
 		hash table
 FILE_PAGE:	space and offset are defined, is in page hash table
@@ -2394,9 +2278,8 @@ FILE_PAGE:	space and offset are defined, is in page hash table
 
 State transitions:
 
-NOT_USED => READY_FOR_USE
-READY_FOR_USE => MEMORY
-READY_FOR_USE => FILE_PAGE
+NOT_USED => MEMORY
+MEMORY => FILE_PAGE
 MEMORY => NOT_USED
 FILE_PAGE => NOT_USED	NOTE: This transition is allowed if and only if
 				(1) buf_fix_count == 0,

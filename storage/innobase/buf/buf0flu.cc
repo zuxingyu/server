@@ -306,9 +306,8 @@ buf_flush_block_cmp(
 	const void*	p1,		/*!< in: block1 */
 	const void*	p2)		/*!< in: block2 */
 {
-	int			ret;
-	const buf_page_t*	b1 = *(const buf_page_t**) p1;
-	const buf_page_t*	b2 = *(const buf_page_t**) p2;
+	const buf_page_t* b1 = *static_cast<const buf_page_t*const*>(p1);
+	const buf_page_t* b2 = *static_cast<const buf_page_t*const*>(p2);
 
 	ut_ad(b1 != NULL);
 	ut_ad(b2 != NULL);
@@ -327,11 +326,13 @@ buf_flush_block_cmp(
 		return(-1);
 	}
 
-	/* If oldest_modification is same then decide on the space. */
-	ret = (int)(b2->id.space() - b1->id.space());
-
-	/* Or else decide ordering on the page number. */
-	return(ret ? ret : (int) (b2->id.page_no() - b1->id.page_no()));
+	if (b2->id() > b1->id()) {
+		return 1;
+	}
+	if (b2->id() < b1->id()) {
+		return -1;
+	}
+	return 0;
 }
 
 /********************************************************************//**
@@ -435,18 +436,17 @@ void buf_flush_remove(buf_page_t* bpage)
 	the bpage from flush list. */
 	buf_pool.flush_hp.adjust(bpage);
 
-	switch (buf_page_get_state(bpage)) {
+	switch (bpage->state()) {
 	case BUF_BLOCK_POOL_WATCH:
 	case BUF_BLOCK_ZIP_PAGE:
 		/* Clean compressed pages should not be on the flush list */
 	case BUF_BLOCK_NOT_USED:
-	case BUF_BLOCK_READY_FOR_USE:
 	case BUF_BLOCK_MEMORY:
 	case BUF_BLOCK_REMOVE_HASH:
 		ut_error;
 		return;
 	case BUF_BLOCK_ZIP_DIRTY:
-		buf_page_set_state(bpage, BUF_BLOCK_ZIP_PAGE);
+		bpage->set_state(BUF_BLOCK_ZIP_PAGE);
 		UT_LIST_REMOVE(buf_pool.flush_list, bpage);
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 		buf_LRU_insert_zip_clean(bpage);
@@ -521,7 +521,7 @@ buf_flush_relocate_on_flush_list(
 
 	/* Must be done after we have removed it from the flush_rbt
 	because we assert on in_flush_list in comparison function. */
-	ut_d(bpage->in_flush_list = FALSE);
+	ut_d(bpage->in_flush_list = false);
 
 	prev = UT_LIST_GET_PREV(list, bpage);
 	UT_LIST_REMOVE(buf_pool.flush_list, bpage);
@@ -579,9 +579,9 @@ void buf_page_write_complete(buf_page_t *bpage, const IORequest &request,
 {
   ut_ad(request.is_write());
   ut_ad(bpage->in_file());
-  ut_ad(bpage->io_fix == BUF_IO_WRITE);
-  ut_ad(bpage->id.space() != TRX_SYS_SPACE ||
-        !buf_dblwr_page_inside(bpage->id.page_no()));
+  ut_ad(bpage->io_fix() == BUF_IO_WRITE);
+  ut_ad(bpage->id().space() != TRX_SYS_SPACE ||
+        !buf_dblwr_page_inside(bpage->id().page_no()));
 
   /* We do not need protect io_fix here by mutex to read it because
   this and buf_page_write_complete() are the only functions where we can
@@ -594,18 +594,18 @@ void buf_page_write_complete(buf_page_t *bpage, const IORequest &request,
     bpage->slot= nullptr;
   }
 
-  mutex_enter(&buf_pool.mutex);
-
-  buf_page_set_io_fix(bpage, BUF_IO_NONE);
   if (UNIV_UNLIKELY(MONITOR_IS_ON(MONITOR_MODULE_BUF_PAGE)))
     buf_page_monitor(bpage, BUF_IO_WRITE);
-
+  DBUG_PRINT("ib_buf", ("write page %u:%u",
+                        bpage->id().space(), bpage->id().page_no()));
+  mutex_enter(&buf_pool.mutex);
+  bpage->set_io_fix(BUF_IO_NONE);
   buf_flush_write_complete(bpage, request.flush_type(), dblwr);
 
   /* Because this thread which does the unlocking might not be the same that
   did the locking, we use a pass value != 0 in unlock, which simply
   removes the newest lock debug record, without checking the thread id. */
-  if (bpage->state == BUF_BLOCK_FILE_PAGE)
+  if (bpage->state() == BUF_BLOCK_FILE_PAGE)
     rw_lock_sx_unlock_gen(&((buf_block_t*) bpage)->lock, BUF_IO_WRITE);
 
   buf_pool.stat.n_pages_written++;
@@ -613,8 +613,6 @@ void buf_page_write_complete(buf_page_t *bpage, const IORequest &request,
   if (evict)
     buf_LRU_free_page(bpage, true);
 
-  DBUG_PRINT("ib_buf", ("write page %u:%u",
-                        bpage->id.space(), bpage->id.page_no()));
   mutex_exit(&buf_pool.mutex);
 }
 
@@ -729,9 +727,9 @@ buf_flush_init_for_writing(
 		ulint	page_type = fil_page_get_type(page);
 		ulint	reset_type = page_type;
 
-		switch (block->page.id.page_no() % 16384) {
+		switch (block->page.id().page_no() % 16384) {
 		case 0:
-			reset_type = block->page.id.page_no() == 0
+			reset_type = block->page.id().page_no() == 0
 				? FIL_PAGE_TYPE_FSP_HDR
 				: FIL_PAGE_TYPE_XDES;
 			break;
@@ -739,10 +737,8 @@ buf_flush_init_for_writing(
 			reset_type = FIL_PAGE_IBUF_BITMAP;
 			break;
 		case FSP_TRX_SYS_PAGE_NO:
-			if (block->page.id.page_no()
-			    == TRX_SYS_PAGE_NO
-			    && block->page.id.space()
-			    == TRX_SYS_SPACE) {
+			if (block->page.id()
+			    == page_id_t(TRX_SYS_SPACE, TRX_SYS_PAGE_NO)) {
 				reset_type = FIL_PAGE_TYPE_TRX_SYS;
 				break;
 			}
@@ -777,7 +773,7 @@ buf_flush_init_for_writing(
 		if (UNIV_UNLIKELY(page_type != reset_type)) {
 			ib::info()
 				<< "Resetting invalid page "
-				<< block->page.id << " type "
+				<< block->page.id() << " type "
 				<< page_type << " to "
 				<< reset_type << " when flushing.";
 			fil_page_set_type(page, reset_type);
@@ -876,13 +872,14 @@ static byte *buf_page_encrypt(fil_space_t* space, buf_page_t* bpage, byte* s,
                               size_t *size)
 {
   ut_ad(bpage->status != buf_page_t::FREED);
-  ut_ad(space->id == bpage->id.space());
+  ut_ad(space->id == bpage->id().space());
 
   ut_d(fil_page_type_validate(space, s));
+  const uint32_t page_no= bpage->id().page_no();
 
-  switch (bpage->id.page_no()) {
+  switch (page_no) {
   case TRX_SYS_PAGE_NO:
-    if (bpage->id.space() != TRX_SYS_SPACE)
+    if (bpage->id().space() != TRX_SYS_SPACE)
       break;
     /* The TRX_SYS page is neither encrypted nor compressed, because
     it contains the address of the doublewrite buffer. */
@@ -943,8 +940,8 @@ static byte *buf_page_encrypt(fil_space_t* space, buf_page_t* bpage, byte* s,
   {
 not_compressed:
     byte *tmp= space->purpose == FIL_TYPE_TEMPORARY
-      ? buf_tmp_page_encrypt(bpage->id.page_no(), s, d)
-      : fil_space_encrypt(space, bpage->id.page_no(), s, d);
+      ? buf_tmp_page_encrypt(page_no, s, d)
+      : fil_space_encrypt(space, page_no, s, d);
 
     slot->out_buf= d= tmp;
 
@@ -957,8 +954,7 @@ not_compressed:
     buf_tmp_reserve_compression_buf(slot);
     byte *tmp= slot->comp_buf;
     ulint len= fil_page_compress(s, tmp, space->flags,
-                                 fil_space_get_block_size(space,
-                                                          bpage->id.page_no()),
+                                 fil_space_get_block_size(space, page_no),
                                  encrypted);
 
     if (!len)
@@ -984,7 +980,7 @@ not_compressed:
     ut_d(fil_page_type_validate(space, tmp));
 
     if (encrypted)
-      tmp = fil_space_encrypt(space, bpage->id.page_no(), tmp, d);
+      tmp = fil_space_encrypt(space, page_no, tmp, d);
 
     if (full_crc32)
     {
@@ -1012,11 +1008,11 @@ releasing the page from flush list and its associated mutex.
 static void buf_flush_freed_page(buf_page_t *bpage, const fil_space_t &space)
 {
   ut_ad(bpage->in_file());
-  const bool uncompressed= buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE;
-  const page_id_t page_id(bpage->id);
+  const bool uncompressed= bpage->state() == BUF_BLOCK_FILE_PAGE;
+  const page_id_t page_id(bpage->id());
   const auto zip_size= bpage->zip_size();
   mutex_enter(&buf_pool.mutex);
-  buf_page_set_io_fix(bpage, BUF_IO_NONE);
+  bpage->set_io_fix(BUF_IO_NONE);
   bpage->status= buf_page_t::NORMAL;
   buf_flush_remove(bpage);
   buf_pool.stat.n_pages_written++;
@@ -1024,7 +1020,7 @@ static void buf_flush_freed_page(buf_page_t *bpage, const fil_space_t &space)
 
   if (uncompressed)
     rw_lock_sx_unlock_gen(&reinterpret_cast<buf_block_t*>(bpage)->lock,
-			  BUF_IO_WRITE);
+                          BUF_IO_WRITE);
 
   const bool punch_hole=
 #if defined(HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE) || defined(_WIN32)
@@ -1047,28 +1043,29 @@ static void buf_flush_freed_page(buf_page_t *bpage, const fil_space_t &space)
 }
 
 /** Write a flushable page from buf_pool to a file.
-The buf_pool.mutex must be held if flush_type == SINGLE_PAGE.
-Both mutexes will be released by this function if it returns true.
-@param[in]	bpage		buffer control block
-@param[in]	flush_type	type of flush
-@param[in]	sync		whether this is a synchronous request
-				(only for flush_type=SINGLE_PAGE)
-@return whether the page was flushed */
+buf_pool.mutex must be held.
+@param bpage       buffer control block
+@param flush_type  type of flush
+@param space       tablespace (or nullptr if not known)
+@param sync        whether this is a synchronous request
+                   (only for flush_type=SINGLE_PAGE)
+@return whether the page was flushed and buf_pool.mutex was released */
 bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
-                    bool sync)
+                    fil_space_t *space, bool sync)
 {
   ut_ad(bpage->in_file());
   ut_ad(bpage->ready_for_flush());
   ut_ad(!sync || flush_type == IORequest::SINGLE_PAGE);
+  ut_ad(mutex_own(&buf_pool.mutex));
 
   rw_lock_t *rw_lock;
-  bool no_fix_count= bpage->buf_fix_count == 0;
+  bool no_fix_count= bpage->buf_fix_count() == 0;
 
-  if (bpage->state != BUF_BLOCK_FILE_PAGE)
+  if (bpage->state() != BUF_BLOCK_FILE_PAGE)
     rw_lock= nullptr;
   else if (!(no_fix_count || flush_type == IORequest::FLUSH_LIST) ||
            (!no_fix_count && srv_shutdown_state <= SRV_SHUTDOWN_CLEANUP &&
-            fsp_is_system_temporary(bpage->id.space())))
+            fsp_is_system_temporary(bpage->id().space())))
     /* This is a heuristic, to avoid expensive SX attempts. */
     /* For table residing in temporary tablespace sync is done
     using IO_FIX and so before scheduling for flush ensure that
@@ -1083,13 +1080,13 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
   }
 
   /* We are committed to flushing by the time we get here */
-  bpage->io_fix= BUF_IO_WRITE;
-  mutex_exit(&buf_pool.mutex); // FIXME: can we remove this?
+  bpage->set_io_fix(BUF_IO_WRITE);
+  mutex_exit(&buf_pool.mutex);
 
   if (flush_type == IORequest::FLUSH_LIST && rw_lock &&
       !rw_lock_sx_lock_nowait(rw_lock, BUF_IO_WRITE))
   {
-    if (!fsp_is_system_temporary(bpage->id.space()))
+    if (!fsp_is_system_temporary(bpage->id().space()))
       /* Avoid a potential deadlock with the doublewrite buffer,
       which might be holding another buf_block_t::lock. */
       buf_dblwr_flush_buffered_writes();
@@ -1110,14 +1107,19 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
   ut_ad(!rw_lock || rw_lock_own(rw_lock, RW_LOCK_SX));
 #endif
 
-  fil_space_t *space= fil_space_acquire_for_io(bpage->id.space());
+  const fil_space_t * const provided_space= space;
   if (!space)
   {
-    bpage->status= buf_page_t::NORMAL;
-    bpage->io_fix= BUF_IO_NONE; // FIXME: atomics? zip_mutex?
-    if (rw_lock)
-      rw_lock_sx_unlock_gen(rw_lock, BUF_IO_WRITE);
-    return false;
+    space= fil_space_acquire_for_io(bpage->id().space());
+    if (UNIV_UNLIKELY(!space))
+    {
+      mutex_enter(&buf_pool.mutex);
+      bpage->status= buf_page_t::NORMAL;
+      bpage->set_io_fix(BUF_IO_NONE);
+      if (rw_lock)
+        rw_lock_sx_unlock_gen(rw_lock, BUF_IO_WRITE);
+      return false;
+    }
   }
   ut_ad((space->purpose == FIL_TYPE_TEMPORARY) ==
         (space == fil_system.temp_space));
@@ -1126,12 +1128,13 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
 
   DBUG_PRINT("ib_buf", ("flush %s %u page %u:%u",
                         sync ? "sync" : "async", (unsigned) flush_type,
-                        bpage->id.space(), bpage->id.page_no()));
+                        bpage->id().space(), bpage->id().page_no()));
   ut_ad(!mutex_own(&buf_pool.mutex));
   ut_ad(!mutex_own(&buf_pool.flush_list_mutex));
-  ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_WRITE);
+  ut_ad(bpage->io_fix() == BUF_IO_WRITE);
   ut_ad(bpage->oldest_modification());
-  ut_ad(bpage->state == (rw_lock ? BUF_BLOCK_FILE_PAGE : BUF_BLOCK_ZIP_DIRTY));
+  ut_ad(bpage->state() ==
+        (rw_lock ? BUF_BLOCK_FILE_PAGE : BUF_BLOCK_ZIP_DIRTY));
 
   /* Because bpage->status can only be changed while buf_block_t
   exists, it cannot be modified for ROW_FORMAT=COMPRESSED pages
@@ -1229,8 +1232,8 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
     use_doublewrite= false;
     if (size != orig_size)
       request.set_punch_hole();
-    /* TODO: pass the tablespace to fil_io() */
-    fil_io_t fio= fil_io(request, sync, bpage->id, bpage->zip_size(), 0,
+    /* FIXME: pass space to fil_io() */
+    fil_io_t fio= fil_io(request, sync, bpage->id(), bpage->zip_size(), 0,
                          bpage->physical_size(), frame, bpage);
     ut_ad(!fio.node || fio.node->space == space);
     if (fio.node && sync)
@@ -1239,7 +1242,7 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
 
   if (sync)
   {
-    ut_ad(bpage->io_fix == BUF_IO_WRITE);
+    ut_ad(bpage->io_fix() == BUF_IO_WRITE);
 
     /* When flushing single page synchronously, we flush the changes
     only for the tablespace we are working on. */
@@ -1252,7 +1255,8 @@ bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
   }
 
 done:
-  space->release_for_io();
+  if (!provided_space)
+    space->release_for_io();
   /* Increment the I/O operation count used for selecting LRU policy. */
   buf_LRU_stat_inc_io();
   return true;
@@ -1412,8 +1416,8 @@ buf_flush_try_neighbors(
 		if (flush != IORequest::LRU
 		    || id == page_id || bpage->is_old()) {
 			if (bpage->ready_for_flush()
-			    && (id == page_id || bpage->buf_fix_count == 0)
-			    && buf_flush_page(bpage, flush, false)) {
+			    && (id == page_id || bpage->buf_fix_count() == 0)
+			    && buf_flush_page(bpage, flush, space, false)) {
 				    ++count;
 				    continue;
 			}
@@ -1526,7 +1530,7 @@ static void buf_flush_LRU_list_batch(ulint max, flush_counters_t *n)
     {
       /* Block is ready for flush. Dispatch an IO request. The IO
       helper thread will put it on free list in IO completion routine. */
-      const page_id_t page_id= bpage->id;
+      const page_id_t page_id(bpage->id());
       mutex_exit(&buf_pool.mutex);
       n->flushed+= buf_flush_try_neighbors(page_id, IORequest::LRU, n->flushed,
                                            max);
@@ -1623,7 +1627,7 @@ static ulint buf_do_flush_list_batch(ulint min_n, lsn_t lsn_limit)
 
     if (flushed)
     {
-      const page_id_t page_id= bpage->id;
+      const page_id_t page_id(bpage->id());
       mutex_exit(&buf_pool.mutex);
       count+= buf_flush_try_neighbors(page_id, IORequest::FLUSH_LIST,
 				      count, min_n);
@@ -1809,7 +1813,7 @@ void buf_flush_wait_flushed(lsn_t new_oldest)
 		page is about to be evicted from the buffer pool, and the page
 		contents is still needed (the page has not been freed). */
 		for (bpage = UT_LIST_GET_LAST(buf_pool.flush_list);
-		     bpage && fsp_is_system_temporary(bpage->id.space());
+		     bpage && fsp_is_system_temporary(bpage->id().space());
 		     bpage = UT_LIST_GET_PREV(list, bpage)) {
 			ut_ad(bpage->in_flush_list);
 		}
@@ -1884,7 +1888,8 @@ bool buf_flush_single_page_from_LRU()
 			continue;
 		}
 
-		if (!bpage->buf_fix_count && buf_LRU_free_page(bpage, true)) {
+		if (!bpage->buf_fix_count()
+		    && buf_LRU_free_page(bpage, true)) {
 			/* block is ready for eviction i.e., it is
 			clean and is not IO-fixed or buffer fixed. */
 			freed = true;
@@ -1899,7 +1904,7 @@ bool buf_flush_single_page_from_LRU()
 			been freed, only that it has been flushed to disk */
 
 			freed = buf_flush_page(bpage, IORequest::SINGLE_PAGE,
-					       true);
+					       nullptr, true);
 
 			if (freed) {
 				goto found;
@@ -2937,7 +2942,7 @@ static void buf_flush_validate_low()
 		in the flush list waiting to acquire the
 		buf_pool.flush_list_mutex to complete the relocation. */
 		ut_a(bpage->in_file()
-		     || bpage->state == BUF_BLOCK_REMOVE_HASH);
+		     || bpage->state() == BUF_BLOCK_REMOVE_HASH);
 		ut_a(om > 0);
 
 		if (UNIV_LIKELY_NULL(buf_pool.flush_rbt)) {

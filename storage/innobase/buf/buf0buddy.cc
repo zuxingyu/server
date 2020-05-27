@@ -360,11 +360,11 @@ buf_buddy_block_free(void* buf)
 	ut_a(!ut_align_offset(buf, srv_page_size));
 
 	HASH_SEARCH(hash, buf_pool.zip_hash, fold, buf_page_t*, bpage,
-		    ut_ad(buf_page_get_state(bpage) == BUF_BLOCK_MEMORY
+		    ut_ad(bpage->state() == BUF_BLOCK_MEMORY
 			  && bpage->in_zip_hash),
 		    ((buf_block_t*) bpage)->frame == buf);
 	ut_a(bpage);
-	ut_a(buf_page_get_state(bpage) == BUF_BLOCK_MEMORY);
+	ut_a(bpage->state() == BUF_BLOCK_MEMORY);
 	ut_ad(bpage->in_zip_hash);
 	ut_d(bpage->in_zip_hash = false);
 	HASH_DELETE(buf_page_t, hash, buf_pool.zip_hash, fold, bpage);
@@ -388,10 +388,7 @@ buf_buddy_block_register(
 	buf_block_t*	block)	/*!< in: buffer frame to allocate */
 {
 	const ulint	fold = BUF_POOL_ZIP_FOLD(block);
-	ut_ad(mutex_own(&buf_pool.mutex));
-	ut_ad(buf_block_get_state(block) == BUF_BLOCK_READY_FOR_USE);
-
-	buf_block_set_state(block, BUF_BLOCK_MEMORY);
+	ut_ad(block->page.state() == BUF_BLOCK_MEMORY);
 
 	ut_a(block->frame);
 	ut_a(!ut_align_offset(block->frame, srv_page_size));
@@ -462,9 +459,7 @@ byte *buf_buddy_alloc_low(ulint i, bool *lru)
 	}
 
 	/* Try replacing an uncompressed page in the buffer pool. */
-	mutex_exit(&buf_pool.mutex);
-	block = buf_LRU_get_free_block();
-	mutex_enter(&buf_pool.mutex);
+	block = buf_LRU_get_free_block(true);
 	if (lru) {
 		*lru = true;
 	}
@@ -538,7 +533,8 @@ static bool buf_buddy_relocate(void* src, void* dst, ulint i, bool force)
 		bpage = UT_LIST_GET_FIRST(buf_pool.LRU);
 		while (bpage != NULL) {
 			if (bpage->zip.data == src) {
-				hash_lock = buf_pool.hash_lock_get(bpage->id);
+				ut_ad(bpage->id() == page_id);
+				hash_lock = buf_pool.hash_lock_get(page_id);
 				rw_lock_x_lock(hash_lock);
 				break;
 			}

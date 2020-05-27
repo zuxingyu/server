@@ -674,7 +674,7 @@ rtr_page_get_father(
 	ulint	page_no = btr_node_ptr_get_child_page_no(cursor->page_cur.rec,
 							 offsets);
 
-	ut_ad(page_no == block->page.id.page_no());
+	ut_ad(page_no == block->page.id().page_no());
 #else
 	rtr_page_get_father_block(
 		NULL, heap, index, block, mtr, sea_cur, cursor);
@@ -820,7 +820,7 @@ rtr_page_get_father_node_ptr(
 	dict_index_t*	index;
 	rtr_mbr_t	mbr;
 
-	page_no = btr_cur_get_block(cursor)->page.id.page_no();
+	page_no = btr_cur_get_block(cursor)->page.id().page_no();
 	index = btr_cur_get_index(cursor);
 
 	ut_ad(srv_read_only_mode
@@ -1198,7 +1198,7 @@ rtr_check_discard_page(
 				the root page */
 	buf_block_t*	block)	/*!< in: block of page to be discarded */
 {
-	const ulint pageno = block->page.id.page_no();
+	const ulint pageno = block->page.id().page_no();
 
 	mutex_enter(&index->rtr_track->rtr_active_mutex);
 
@@ -1219,7 +1219,7 @@ rtr_check_discard_page(
 		if (rtr_info->matches) {
 			mutex_enter(&rtr_info->matches->rtr_match_mutex);
 
-			if ((&rtr_info->matches->block)->page.id.page_no()
+			if ((&rtr_info->matches->block)->page.id().page_no()
 			     == pageno) {
 				if (!rtr_info->matches->matched_recs->empty()) {
 					rtr_info->matches->matched_recs->clear();
@@ -1494,7 +1494,7 @@ rtr_non_leaf_insert_stack_push(
 {
 	node_seq_t	new_seq;
 	btr_pcur_t*	my_cursor;
-	ulint		page_no = block->page.id.page_no();
+	ulint		page_no = block->page.id().page_no();
 
 	my_cursor = static_cast<btr_pcur_t*>(
 		ut_malloc_nokey(sizeof(*my_cursor)));
@@ -1694,7 +1694,7 @@ rtr_cur_search_with_match(
 	const rec_t*	best_rec;
 	const rec_t*	last_match_rec = NULL;
 	bool		match_init = false;
-	ulint		space = block->page.id.space();
+	ulint		space = block->page.id().space();
 	page_cur_mode_t	orig_mode = mode;
 	const rec_t*	first_rec = NULL;
 

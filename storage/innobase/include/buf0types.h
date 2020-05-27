@@ -176,9 +176,6 @@ public:
     m_id= (m_id & ~uint64_t{0} << 32) | page_no;
   }
 
-  /** Set the FIL_NULL for the space and page_no */
-  void set_corrupt_id() { m_id= ~uint64_t{0}; }
-
   ulonglong raw() { return m_id; }
 private:
   /** The page identifier */

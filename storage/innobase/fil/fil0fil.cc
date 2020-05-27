@@ -3989,13 +3989,14 @@ write_completed:
   introduce deadlocks. We never close the system tablespace (0) data
   files via fil_system.LRU and we use a dedicated I/O thread to serve
   change buffer requests. */
+  const page_id_t id(bpage->id());
 
   if (dberr_t err= buf_page_read_complete(bpage, *node))
   {
     if (recv_recovery_is_on() && !srv_force_recovery)
       recv_sys.found_corrupt_fs= true;
 
-    ib::error() << "Failed to read page " << bpage->id.page_no()
+    ib::error() << "Failed to read page " << id.page_no()
                 << " from file '" << node->name << "': "
                 << ut_strerr(err);
   }

@@ -17729,7 +17729,7 @@ func_exit:
 		space->zip_size(), RW_X_LATCH, &mtr);
 
 	if (block != NULL) {
-		ib::info() << "Dirtying page: " << block->page.id;
+		ib::info() << "Dirtying page: " << block->page.id();
 		mtr.write<1,mtr_t::FORCED>(*block,
 					   block->frame + FIL_PAGE_SPACE_ID,
 					   block->frame[FIL_PAGE_SPACE_ID]);
@@ -18201,7 +18201,7 @@ static bool innodb_buffer_pool_evict_uncompressed()
 	for (buf_block_t* block = UT_LIST_GET_LAST(buf_pool.unzip_LRU);
 	     block != NULL; ) {
 		buf_block_t*	prev_block = UT_LIST_GET_PREV(unzip_LRU, block);
-		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+		ut_ad(block->page.state() == BUF_BLOCK_FILE_PAGE);
 		ut_ad(block->in_unzip_LRU_list);
 		ut_ad(block->page.in_LRU_list);
 

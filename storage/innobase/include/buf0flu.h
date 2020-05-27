@@ -179,15 +179,15 @@ buf_flush_free_flush_rbt(void);
 /*==========================*/
 
 /** Write a flushable page from buf_pool to a file.
-The buf_pool.mutex must be held if flush_type == SINGLE_PAGE.
-Both mutexes will be released by this function if it returns true.
-@param[in]	bpage		buffer control block
-@param[in]	flush_type	type of flush
-@param[in]	sync		whether this is a synchronous request
-				(only for flush_type=SINGLE_PAGE)
-@return whether the page was flushed */
+buf_pool.mutex must be held.
+@param bpage       buffer control block
+@param flush_type  type of flush
+@param space       tablespace (or nullptr if not known)
+@param sync        whether this is a synchronous request
+                   (only for flush_type=SINGLE_PAGE)
+@return whether the page was flushed and buf_pool.mutex was released */
 bool buf_flush_page(buf_page_t *bpage, IORequest::flush_t flush_type,
-                    bool sync);
+                    fil_space_t *space, bool sync);
 
 /** Synchronously flush dirty blocks.
 NOTE: The calling thread is not allowed to hold any buffer page latches! */

@@ -3310,7 +3310,7 @@ Row_sel_get_clust_rec_for_mysql::operator()(
 			same as btr_pcur_get_block(prebuilt->pcur),
 			and is it not unsafe to use RW_NO_LATCH here? */
 			buf_block_t*	block = buf_page_get_gen(
-				btr_pcur_get_block(prebuilt->pcur)->page.id,
+				btr_pcur_get_block(prebuilt->pcur)->page.id(),
 				btr_pcur_get_block(prebuilt->pcur)->zip_size(),
 				RW_NO_LATCH, NULL, BUF_GET,
 				__FILE__, __LINE__, mtr, &err);
@@ -4777,12 +4777,12 @@ wrong_offs:
 				<< static_cast<const void*>(rec)
 				<< ", buf block fix count "
 				<< btr_pcur_get_block(pcur)->page
-					.buf_fix_count;
+				.buf_fix_count();
 
 			ib::error() << "Index corruption: rec offs "
 				<< page_offset(rec) << " next offs "
-				<< next_offs << ", page no "
-				<< btr_pcur_get_block(pcur)->page.id.page_no()
+				<< next_offs
+				<< btr_pcur_get_block(pcur)->page.id()
 				<< ", index " << index->name
 				<< " of table " << index->table->name
 				<< ". Run CHECK TABLE. You may need to"
@@ -4798,8 +4798,8 @@ wrong_offs:
 
 			ib::info() << "Index corruption: rec offs "
 				<< page_offset(rec) << " next offs "
-				<< next_offs << ", page no "
-				<< btr_pcur_get_block(pcur)->page.id.page_no()
+				<< next_offs
+				<< btr_pcur_get_block(pcur)->page.id()
 				<< ", index " << index->name
 				<< " of table " << index->table->name
 				<< ". We try to skip the rest of the page.";
@@ -4826,8 +4826,8 @@ wrong_offs:
 
 			ib::error() << "Index corruption: rec offs "
 				<< page_offset(rec) << " next offs "
-				<< next_offs << ", page no "
-				<< btr_pcur_get_block(pcur)->page.id.page_no()
+				<< next_offs
+				<< btr_pcur_get_block(pcur)->page.id()
 				<< ", index " << index->name
 				<< " of table " << index->table->name
 				<< ". We try to skip the record.";

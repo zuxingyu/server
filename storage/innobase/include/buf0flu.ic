@@ -53,9 +53,9 @@ buf_flush_note_modification(
 					modified this block */
 {
 	ut_ad(!srv_read_only_mode
-	      || fsp_is_system_temporary(block->page.id.space()));
-	ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
-	ut_ad(block->page.buf_fix_count > 0);
+	      || fsp_is_system_temporary(block->page.id().space()));
+	ut_ad(block->page.state() == BUF_BLOCK_FILE_PAGE);
+	ut_ad(block->page.buf_fix_count());
 	ut_ad(mach_read_from_8(block->frame + FIL_PAGE_LSN) <= end_lsn);
 	mach_write_to_8(block->frame + FIL_PAGE_LSN, end_lsn);
 	if (UNIV_LIKELY_NULL(block->page.zip.data)) {
