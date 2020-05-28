@@ -587,7 +587,7 @@ struct fil_node_t {
 			   );
 
 	/** Close the file handle. */
-	void close();
+	pfs_os_file_t close(bool leak_handle=false);
 };
 
 /** Value of fil_node_t::magic_n */
@@ -1183,7 +1183,9 @@ bool fil_table_accessible(const dict_table_t* table)
 @param[in]	id		tablespace identifier
 @param[in]	if_exists	whether to ignore missing tablespace
 @return	DB_SUCCESS or error */
-dberr_t fil_delete_tablespace(ulint id, bool if_exists= false);
+dberr_t fil_delete_tablespace(ulint id, bool if_exists = false,
+			      std::vector<pfs_os_file_t>* leaked_handles
+			      = nullptr);
 
 /** Prepare to truncate an undo tablespace.
 @param[in]	space_id	undo tablespace id
