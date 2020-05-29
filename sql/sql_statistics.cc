@@ -2795,6 +2795,7 @@ int collect_statistics_for_table(THD *thd, TABLE *table)
     table->collected_stats->cardinality_is_null= FALSE;
     table->collected_stats->cardinality=
       static_cast<ha_rows>(rows / sample_fraction);
+    DBUG_PRINT("QQ1", ("records: %lu", (ulong) table->collected_stats->cardinality));
   }
 
   bitmap_clear_all(table->write_set);
@@ -3774,6 +3775,8 @@ void set_statistics_for_table(THD *thd, TABLE *table)
     (!check_eits_preferred(thd) ||
      !table->stats_is_read || read_stats->cardinality_is_null) ?
     table->file->stats.records : read_stats->cardinality;
+
+  DBUG_PRINT("QQ1", ("records: %lu", (ulong) table->used_stat_records));
 
   /*
     For partitioned table, EITS statistics is based on data from all partitions.
