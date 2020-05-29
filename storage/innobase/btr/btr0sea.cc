@@ -1821,7 +1821,7 @@ btr_search_update_hash_on_insert(btr_cur_t* cursor)
 		if (locked) {
 			rw_lock_x_lock(latch);
 
-			if (!btr_search_enabled) {
+			if (!btr_search_enabled || !block->index) {
 				goto function_exit;
 			}
 
@@ -1838,7 +1838,7 @@ btr_search_update_hash_on_insert(btr_cur_t* cursor)
 			locked = true;
 			rw_lock_x_lock(latch);
 
-			if (!btr_search_enabled) {
+			if (!btr_search_enabled || !block->index) {
 				goto function_exit;
 			}
 			table = btr_get_search_table(index);
@@ -1859,7 +1859,7 @@ check_next_rec:
 				locked = true;
 				rw_lock_x_lock(latch);
 
-				if (!btr_search_enabled) {
+				if (!btr_search_enabled || !block->index) {
 					goto function_exit;
 				}
 				table = btr_get_search_table(index);
@@ -1876,7 +1876,7 @@ check_next_rec:
 			locked = true;
 			rw_lock_x_lock(latch);
 
-			if (!btr_search_enabled) {
+			if (!btr_search_enabled || !block->index) {
 				goto function_exit;
 			}
 			table = btr_get_search_table(index);
